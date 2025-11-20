@@ -2,11 +2,19 @@
 set -euo pipefail
 
 # ----- Read environment with defaults -----
+# Root directory where all ShakeMap profiles, projects, inputs, 
+# and outputs are stored inside the container
 DATA_ROOT="${SHAKEMAP_DATA_ROOT:-/data/shakemap}"
+# Name of the ShakeMap profile to use/create (must match a profile known to sm_profile)
 PROFILE="${SHAKEMAP_PROFILE:-default}"
+# If set to 1, require that DATA_ROOT is a mounted volume; abort startup if it is not.
+# The mount is done at 'docker run' or 'docker compose' stage.
 REQUIRE_MOUNT="${SHAKEMAP_REQUIRE_MOUNT:-0}"
+# Internal port on which the FastAPI/uvicorn service listens inside the container
 PORT="${SHAKEMAP_PORT:-9010}"
 
+# ----- Log environment -----
+echo "[entrypoint] Starting ShakeMap Docker entrypoint..."
 echo "[entrypoint] SHAKEMAP_DATA_ROOT      = ${DATA_ROOT}"
 echo "[entrypoint] SHAKEMAP_PROFILE        = ${PROFILE}"
 echo "[entrypoint] SHAKEMAP_PORT           = ${PORT}"
