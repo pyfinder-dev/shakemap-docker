@@ -376,13 +376,13 @@ def test_no_run_id() -> None:
 # ── Test 9: No queue/worker/submission API ────────────────────────
 
 def test_no_queue_worker_api() -> None:
-    _section("9. No queue/worker/submission API added")
+    _section("9. No queue/worker/execution modules added")
 
     svc_dir = Path(__file__).resolve().parent.parent / "shakemap_service"
 
     _check("No queue.py", not (svc_dir / "queue.py").exists())
     _check("No worker.py", not (svc_dir / "worker.py").exists())
-    _check("No submission.py", not (svc_dir / "submission.py").exists())
+    # submission.py is expected after Phase 03.
     _check("No bridge.py", not (svc_dir / "bridge.py").exists())
     _check("No provenance.py", not (svc_dir / "provenance.py").exists())
     _check("No publisher.py", not (svc_dir / "publisher.py").exists())
@@ -392,9 +392,9 @@ def test_no_queue_worker_api() -> None:
     _check("runner.py does not import status", "from .status" not in runner_text)
     _check("runner.py does not reference RequestStatus", "RequestStatus" not in runner_text)
 
-    # Check no POST endpoints in main.py.
+    # @app.post for /events/submit is expected after Phase 03.
+    # Verify no execution/mutation endpoints beyond submission exist.
     main_text = (svc_dir / "main.py").read_text(encoding="utf-8")
-    _check("No @app.post in main.py", "@app.post" not in main_text)
     _check("No @app.put in main.py", "@app.put" not in main_text)
     _check("No @app.delete in main.py", "@app.delete" not in main_text)
 

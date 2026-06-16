@@ -1,22 +1,82 @@
 # -*- coding: utf-8 -*-
-"""ShakeMap service — FastAPI application with comprehensive health endpoint.
+"""ShakeMap service — FastAPI application.
 
-Phase 01 exposes only ``GET /healthz``. The endpoint performs real
-infrastructure, ShakeMap-tool, and configuration checks and returns one
-of ``healthy``, ``degraded``, or ``not_ready``.
+Phase 01: ``GET /healthz`` — comprehensive health and readiness.
+Phase 03: ``POST /events/submit`` — event submission and staging.
 """
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import subprocess
+from typing import Annotated
 
-from fastapi import FastAPI
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import JSONResponse
 
 from .config import settings
 from . import paths
+from .submission import submit_event, SubmissionResult
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="ShakeMap Service", version="0.1.0")
+
+
+# ------------------------------------------------------------------
+# POST /events/submit — event submission (Phase 03)
+# ------------------------------------------------------------------
+
+@app.post("/events/submit")
+async def submit_event_endpoint(
+    event_id: Annotated[str, Form()],
+    user_id: Annotated[str, Form()],
+    files: list[UploadFile] = File(...),
+) -> dict:
+    """Submit an event for ShakeMap processing.
+
+    Accepts ``event_id``, ``user_id`` as form fields, and one or more
+    input files as multipart file uploads. Delegates all logic to
+    ``submission.submit_event()``.
+
+    Returns ``event_id``, ``status``, ``status_path``, and
+    ``replaced_previous``.
+    """
+    # Read file payloads into memory
+    file_payloads: dict[str, bytes] = {}
+    for upload in files:
+        if upload.filename:
+            content = await upload.read()
+            file_payloads[upload.filename] = content
+
+    if not file_payloads:
+        raise HTTPException(status_code=400, detail="No files provided.")
+
+    try:
+        result: SubmissionResult = submit_event(
+            event_id=event_id,
+            user_id=user_id,
+            files=file_payloads,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Submission failed for event_id=%s", event_id)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    body = {
+        "event_id": result.event_id,
+        "status": result.status,
+        "status_path": result.status_path,
+        "replaced_previous": result.replaced_previous,
+        "validation_errors": result.validation_errors,
+    }
+
+    if result.status == "VALIDATION_FAILED":
+        return JSONResponse(content=body, status_code=422)
+
+    return body
 
 
 # ------------------------------------------------------------------
