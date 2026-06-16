@@ -316,7 +316,7 @@ def recover_interrupted_events() -> list[str]:
             )
             recovered.append(record.event_id)
             logger.info(
-                "Recovered interrupted event '%s' → %s",
+                "Recovered interrupted event '%s' -> %s",
                 record.event_id, result.status,
             )
         except (ValueError, FileNotFoundError) as exc:

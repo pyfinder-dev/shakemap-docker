@@ -441,19 +441,19 @@ print("\n--- Test 14: Accepted station filename variants ---")
 _cleanup_event("test_station_json")
 r = submit_event("test_station_json", "tester",
                   {"event.xml": SAMPLE_EVENT_XML, "stationlist.json": SAMPLE_STATION_JSON})
-_check("stationlist.json accepted → QUEUED", r.status == "QUEUED")
+_check("stationlist.json accepted -> QUEUED", r.status == "QUEUED")
 
 # stationlist.xml
 _cleanup_event("test_station_xml")
 r = submit_event("test_station_xml", "tester",
                   {"event.xml": SAMPLE_EVENT_XML, "stationlist.xml": SAMPLE_STATION_XML})
-_check("stationlist.xml accepted → QUEUED", r.status == "QUEUED")
+_check("stationlist.xml accepted -> QUEUED", r.status == "QUEUED")
 
 # event_dat.xml
 _cleanup_event("test_event_dat")
 r = submit_event("test_event_dat", "tester",
                   {"event.xml": SAMPLE_EVENT_XML, "event_dat.xml": SAMPLE_EVENT_DAT})
-_check("event_dat.xml accepted → QUEUED", r.status == "QUEUED")
+_check("event_dat.xml accepted -> QUEUED", r.status == "QUEUED")
 
 # Optional rupture.json alongside required files
 _cleanup_event("test_with_rupture")
@@ -462,7 +462,7 @@ r = submit_event("test_with_rupture", "tester", {
     "stationlist.json": SAMPLE_STATION_JSON,
     "rupture.json": SAMPLE_RUPTURE,
 })
-_check("rupture.json + required files → QUEUED", r.status == "QUEUED")
+_check("rupture.json + required files -> QUEUED", r.status == "QUEUED")
 incoming = paths.event_incoming_dir("test_with_rupture")
 _check("rupture.json staged", (incoming / "rupture.json").is_file())
 
@@ -520,7 +520,7 @@ r2 = submit_event("test_terminal_resubmit", "tester_v2", {
     "event.xml": b"<resubmitted/>",
     "stationlist.json": b'{"resubmitted": true}',
 })
-_check("Resubmission after terminal → QUEUED", r2.status == "QUEUED")
+_check("Resubmission after terminal -> QUEUED", r2.status == "QUEUED")
 _check("Resubmission marked as replaced", r2.replaced_previous is True)
 
 record2 = read_status("test_terminal_resubmit")
@@ -534,21 +534,21 @@ _check("Record has QUEUED status", record2.status == "QUEUED")
 print("\n--- Test 17: validate_inputs standalone ---")
 
 errors = validate_inputs(["event.xml", "stationlist.json"])
-_check("Valid input set → no errors", len(errors) == 0)
+_check("Valid input set -> no errors", len(errors) == 0)
 
 errors = validate_inputs(["stationlist.json"])
-_check("Missing event.xml → error", len(errors) == 1)
+_check("Missing event.xml -> error", len(errors) == 1)
 _check("Error mentions event.xml", "event.xml" in errors[0])
 
 errors = validate_inputs(["event.xml"])
-_check("Missing station → error", len(errors) == 1)
+_check("Missing station -> error", len(errors) == 1)
 _check("Error mentions station", "station" in errors[0].lower())
 
 errors = validate_inputs([])
-_check("Empty input → two errors", len(errors) == 2)
+_check("Empty input -> two errors", len(errors) == 2)
 
 errors = validate_inputs(["event.xml", "stationlist.json", "rupture.json"])
-_check("With optional rupture → no errors", len(errors) == 0)
+_check("With optional rupture -> no errors", len(errors) == 0)
 
 # ==================================================================
 # Test 18: HTTP 422 for validation failure, 200 for valid submission
@@ -570,7 +570,7 @@ resp = client.post(
         ("files", ("stationlist.json", SAMPLE_STATION_JSON, "application/json")),
     ],
 )
-_check("Valid submission → HTTP 200", resp.status_code == 200)
+_check("Valid submission -> HTTP 200", resp.status_code == 200)
 body = resp.json()
 _check("Response has event_id", body["event_id"] == "test_http_valid")
 _check("Response status is QUEUED", body["status"] == "QUEUED")
@@ -586,7 +586,7 @@ resp2 = client.post(
         ("files", ("event.xml", SAMPLE_EVENT_XML, "application/xml")),
     ],
 )
-_check("Missing station → HTTP 422", resp2.status_code == 422)
+_check("Missing station -> HTTP 422", resp2.status_code == 422)
 body2 = resp2.json()
 _check("422 response has event_id", body2["event_id"] == "test_http_invalid")
 _check("422 response status is VALIDATION_FAILED", body2["status"] == "VALIDATION_FAILED")

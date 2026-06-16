@@ -190,24 +190,24 @@ def test_status_transitions() -> None:
 
     # REGISTERED → VALIDATING
     r = transition_to_validating("ev_lifecycle")
-    _check("→ VALIDATING", r.status == "VALIDATING")
+    _check("-> VALIDATING", r.status == "VALIDATING")
 
     # VALIDATING → QUEUED
     r = transition_to_queued("ev_lifecycle")
-    _check("→ QUEUED", r.status == "QUEUED")
+    _check("-> QUEUED", r.status == "QUEUED")
     _check("validated_at set", r.validated_at is not None)
     _check("queued_at set", r.queued_at is not None)
 
     # QUEUED → RUNNING
     r = transition_to_running("ev_lifecycle")
-    _check("→ RUNNING", r.status == "RUNNING")
+    _check("-> RUNNING", r.status == "RUNNING")
     _check("current_attempt is 1", r.current_attempt == 1)
     _check("attempt_history has 1 entry", len(r.attempt_history) == 1)
     _check("attempt status is RUNNING", r.attempt_history[0].status == "RUNNING")
 
     # RUNNING → SUCCESS
     r = transition_to_success("ev_lifecycle", products_dir="products/ev_lifecycle")
-    _check("→ SUCCESS", r.status == "SUCCESS")
+    _check("-> SUCCESS", r.status == "SUCCESS")
     _check("completed_at set", r.completed_at is not None)
     _check("published_products_directory set",
            r.published_products_directory == "products/ev_lifecycle")
@@ -219,14 +219,14 @@ def test_status_transitions() -> None:
 
     # SUCCESS → ARCHIVED
     r = transition_to_archived("ev_lifecycle")
-    _check("→ ARCHIVED", r.status == "ARCHIVED")
+    _check("-> ARCHIVED", r.status == "ARCHIVED")
 
     _section("4b. Status transitions -- validation failure path")
 
     create_event_record("ev_valfail", "pyfinder")
     transition_to_validating("ev_valfail")
     r = transition_to_validation_failed("ev_valfail", ["Missing event.xml", "Bad format"])
-    _check("→ VALIDATION_FAILED", r.status == "VALIDATION_FAILED")
+    _check("-> VALIDATION_FAILED", r.status == "VALIDATION_FAILED")
     _check("validation_errors has 2 entries", len(r.validation_errors) == 2)
     _check("validated_at set", r.validated_at is not None)
 
@@ -237,7 +237,7 @@ def test_status_transitions() -> None:
     transition_to_queued("ev_fail")
     transition_to_running("ev_fail")
     r = transition_to_failed("ev_fail", "ShakeMap exit code 1")
-    _check("→ FAILED", r.status == "FAILED")
+    _check("-> FAILED", r.status == "FAILED")
     _check("failure_reason set", r.failure_reason == "ShakeMap exit code 1")
     _check("attempt failure_reason set",
            r.attempt_history[0].failure_reason == "ShakeMap exit code 1")
@@ -248,7 +248,7 @@ def test_status_transitions() -> None:
     transition_to_validating("ev_cancel")
     transition_to_queued("ev_cancel")
     r = transition_to_cancelled("ev_cancel")
-    _check("→ CANCELLED from QUEUED", r.status == "CANCELLED")
+    _check("-> CANCELLED from QUEUED", r.status == "CANCELLED")
     _check("completed_at set", r.completed_at is not None)
 
 
@@ -262,23 +262,23 @@ def test_invalid_transitions() -> None:
     # REGISTERED → QUEUED (must go through VALIDATING first)
     try:
         transition_to_queued("ev_invalid")
-        _check("REGISTERED → QUEUED raises", False)
+        _check("REGISTERED -> QUEUED raises", False)
     except ValueError as e:
-        _check("REGISTERED → QUEUED raises ValueError", True, str(e))
+        _check("REGISTERED -> QUEUED raises ValueError", True, str(e))
 
     # REGISTERED → SUCCESS (invalid)
     try:
         transition_to_success("ev_invalid")
-        _check("REGISTERED → SUCCESS raises", False)
+        _check("REGISTERED -> SUCCESS raises", False)
     except ValueError as e:
-        _check("REGISTERED → SUCCESS raises ValueError", True, str(e))
+        _check("REGISTERED -> SUCCESS raises ValueError", True, str(e))
 
     # REGISTERED → FAILED (invalid)
     try:
         transition_to_failed("ev_invalid", "reason")
-        _check("REGISTERED → FAILED raises", False)
+        _check("REGISTERED -> FAILED raises", False)
     except ValueError as e:
-        _check("REGISTERED → FAILED raises ValueError", True, str(e))
+        _check("REGISTERED -> FAILED raises ValueError", True, str(e))
 
 
 # ── Test 6: Scan existing records ────────────────────────────────

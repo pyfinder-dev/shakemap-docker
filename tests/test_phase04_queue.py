@@ -301,7 +301,7 @@ print()
 # ------------------------------------------------------------------
 # Test 6: claim_next transitions QUEUED → RUNNING with attempt history
 # ------------------------------------------------------------------
-print("--- Test 6: claim_next transitions QUEUED → RUNNING ---")
+print("--- Test 6: claim_next transitions QUEUED -> RUNNING ---")
 _cleanup()
 
 _make_queued_event("claim_a", queued_at=_iso(10))
@@ -491,11 +491,11 @@ _make_queued_event("tie_c", queued_at=_iso(10), submitted_at=_iso(8))
 
 queued, _ = discover_queue()
 check("Tiebreaker: 3 events", len(queued) == 3)
-check("Same queued_at → sort by submitted_at: tie_a first",
+check("Same queued_at -> sort by submitted_at: tie_a first",
       queued[0].event_id == "tie_a" if queued else False)
-check("Same queued_at → sort by submitted_at: tie_b second",
+check("Same queued_at -> sort by submitted_at: tie_b second",
       queued[1].event_id == "tie_b" if len(queued) > 1 else False)
-check("Same queued_at → sort by submitted_at: tie_c third",
+check("Same queued_at -> sort by submitted_at: tie_c third",
       queued[2].event_id == "tie_c" if len(queued) > 2 else False)
 
 # Same queued_at AND submitted_at → event_id tiebreaker

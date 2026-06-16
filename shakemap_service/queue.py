@@ -309,7 +309,7 @@ class QueueSnapshot:
         try:
             updated = _claim_with_lock(event_id)
             logger.info(
-                "Claimed event '%s': QUEUED → RUNNING (attempt %d)",
+                "Claimed event '%s': QUEUED -> RUNNING (attempt %d)",
                 event_id, updated.current_attempt,
             )
             return ClaimResult(
@@ -359,7 +359,7 @@ class QueueSnapshot:
         try:
             updated = _claim_with_lock(event_id)
             logger.info(
-                "Claimed event '%s': QUEUED → RUNNING (attempt %d)",
+                "Claimed event '%s': QUEUED -> RUNNING (attempt %d)",
                 event_id, updated.current_attempt,
             )
             return ClaimResult(

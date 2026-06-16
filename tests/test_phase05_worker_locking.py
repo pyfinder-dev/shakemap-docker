@@ -230,7 +230,7 @@ fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
 # "Worker B" tries to claim while lock is held
 try:
     _claim_with_lock("mp_contest")
-    check("Worker B claim while lock held → should fail", False,
+    check("Worker B claim while lock held -> should fail", False,
           "No exception raised")
 except BlockingIOError:
     check("Worker B gets BlockingIOError when lock held by Worker A", True)
@@ -444,7 +444,7 @@ print()
 # ------------------------------------------------------------------
 # Test 8: Worker skeleton — placeholder execution returns to QUEUED
 # ------------------------------------------------------------------
-print("--- Test 8: Worker placeholder execution → QUEUED ---")
+print("--- Test 8: Worker placeholder execution -> QUEUED ---")
 _cleanup()
 
 _make_queued_event("wk_placeholder")
@@ -620,11 +620,11 @@ check("rec_b recovered", "rec_b" in recovered)
 
 # rec_a should be QUEUED (attempts remaining)
 ra = read_status("rec_a")
-check("rec_a → QUEUED", ra.status == "QUEUED" if ra else False)
+check("rec_a -> QUEUED", ra.status == "QUEUED" if ra else False)
 
 # rec_b should be FAILED (no attempts remaining)
 rb = read_status("rec_b")
-check("rec_b → FAILED", rb.status == "FAILED" if rb else False)
+check("rec_b -> FAILED", rb.status == "FAILED" if rb else False)
 
 # rec_c should be unchanged
 rc = read_status("rec_c")
