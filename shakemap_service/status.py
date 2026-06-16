@@ -572,3 +572,109 @@ def scan_event_records() -> list[RequestStatus]:
             )
 
     return records
+
+
+# ------------------------------------------------------------------
+# Recovery helpers — stale RUNNING detection
+# ------------------------------------------------------------------
+
+def find_stale_running() -> list[RequestStatus]:
+    """Find all events with status RUNNING on disk.
+
+    This helper is intended for restart recovery (contract §3.5):
+    events found RUNNING after a service restart should be treated as
+    potentially interrupted.  The caller decides whether to re-queue
+    or fail them based on attempt budget.
+
+    Does NOT automatically change any status — callers must decide
+    the recovery action.  This is safe to call at any time.
+
+    Returns:
+        List of ``RequestStatus`` records with status RUNNING, sorted
+        by ``started_at`` (oldest first) for deterministic processing.
+    """
+    records = scan_event_records()
+    running = [r for r in records if r.status == EventStatus.RUNNING.value]
+
+    def _sort_key(r: RequestStatus) -> str:
+        return r.started_at or ""
+
+    running.sort(key=_sort_key)
+    return running
+
+
+def record_interrupted_attempt(
+    event_id: str,
+    reason: str = "Interrupted -- process no longer active",
+) -> RequestStatus:
+    """Record the current RUNNING attempt as interrupted and re-queue or fail.
+
+    Contract §3.5 recovery:
+    - If the service cannot verify an active owner, it MUST record the
+      previous attempt as interrupted in ``attempt_history``.
+    - After an interrupted attempt is recorded, the event MUST be
+      re-queued if attempts remain.
+    - If no attempts remain, the event MUST transition to FAILED.
+
+    This helper:
+    1. Completes the current attempt with status ``FAILED`` and the
+       given ``reason``.
+    2. If ``current_attempt < max_attempts``, transitions the event
+       back to ``QUEUED`` so it can be retried.
+    3. If ``current_attempt >= max_attempts``, transitions to ``FAILED``.
+
+    Raises:
+        FileNotFoundError: if no record exists for ``event_id``.
+        ValueError: if the event is not currently RUNNING.
+    """
+    record = read_status(event_id)
+    if record is None:
+        raise FileNotFoundError(f"No record for event '{event_id}'")
+
+    if record.status != EventStatus.RUNNING.value:
+        raise ValueError(
+            f"Cannot record interrupted attempt for event '{event_id}' "
+            f"with status '{record.status}' -- must be RUNNING"
+        )
+
+    now = _now_iso()
+
+    # Complete the current attempt as FAILED.
+    if record.attempt_history:
+        current = record.attempt_history[-1]
+        current.completed_at = now
+        current.status = "FAILED"
+        current.failure_reason = reason
+        if current.started_at:
+            try:
+                started = datetime.fromisoformat(current.started_at)
+                completed = datetime.fromisoformat(now)
+                current.duration_seconds = round(
+                    (completed - started).total_seconds(), 3
+                )
+            except (ValueError, TypeError):
+                current.duration_seconds = None
+
+    # Decide: re-queue or fail.
+    if record.current_attempt < record.max_attempts:
+        # Re-queue for another attempt.
+        record.status = EventStatus.QUEUED.value
+        record.started_at = None
+        record.completed_at = None
+        record.failure_reason = None
+        logger.info(
+            "Event '%s' interrupted attempt %d/%d -- re-queued",
+            event_id, record.current_attempt, record.max_attempts,
+        )
+    else:
+        # All attempts exhausted.
+        record.status = EventStatus.FAILED.value
+        record.completed_at = now
+        record.failure_reason = reason
+        logger.info(
+            "Event '%s' interrupted attempt %d/%d -- FAILED (no attempts left)",
+            event_id, record.current_attempt, record.max_attempts,
+        )
+
+    write_status_atomic(event_id, record)
+    return record

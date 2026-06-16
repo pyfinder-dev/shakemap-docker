@@ -85,9 +85,9 @@ def _check(label: str, condition: bool, detail: str = "") -> None:
 
 
 def _section(title: str) -> None:
-    print(f"\n{'─' * 60}")
+    print(f"\n{'-' * 60}")
     print(f"  {title}")
-    print(f"{'─' * 60}")
+    print(f"{'-' * 60}")
 
 
 # ── Setup ─────────────────────────────────────────────────────────
@@ -184,7 +184,7 @@ def test_update_status() -> None:
 # ── Test 4: Status transitions — full lifecycle ──────────────────
 
 def test_status_transitions() -> None:
-    _section("4. Status transitions — happy path")
+    _section("4. Status transitions -- happy path")
 
     create_event_record("ev_lifecycle", "pyfinder")
 
@@ -221,7 +221,7 @@ def test_status_transitions() -> None:
     r = transition_to_archived("ev_lifecycle")
     _check("→ ARCHIVED", r.status == "ARCHIVED")
 
-    _section("4b. Status transitions — validation failure path")
+    _section("4b. Status transitions -- validation failure path")
 
     create_event_record("ev_valfail", "pyfinder")
     transition_to_validating("ev_valfail")
@@ -230,7 +230,7 @@ def test_status_transitions() -> None:
     _check("validation_errors has 2 entries", len(r.validation_errors) == 2)
     _check("validated_at set", r.validated_at is not None)
 
-    _section("4c. Status transitions — failure path")
+    _section("4c. Status transitions -- failure path")
 
     create_event_record("ev_fail", "pyfinder")
     transition_to_validating("ev_fail")
@@ -242,7 +242,7 @@ def test_status_transitions() -> None:
     _check("attempt failure_reason set",
            r.attempt_history[0].failure_reason == "ShakeMap exit code 1")
 
-    _section("4d. Status transitions — cancellation path")
+    _section("4d. Status transitions -- cancellation path")
 
     create_event_record("ev_cancel", "pyfinder")
     transition_to_validating("ev_cancel")
@@ -382,7 +382,8 @@ def test_no_queue_worker_api() -> None:
 
     # queue.py is expected after Phase 04.
     # _check("No queue.py", not (svc_dir / "queue.py").exists())
-    _check("No worker.py", not (svc_dir / "worker.py").exists())
+    # worker.py is expected after Phase 05.
+    # _check("No worker.py", not (svc_dir / "worker.py").exists())
     # submission.py is expected after Phase 03.
     _check("No bridge.py", not (svc_dir / "bridge.py").exists())
     _check("No provenance.py", not (svc_dir / "provenance.py").exists())
@@ -530,7 +531,7 @@ def test_paths_provenance_file() -> None:
 
 def main() -> int:
     print("=" * 60)
-    print("  Phase 02 Verification — Event Record Foundation")
+    print("  Phase 02 Verification -- Event Record Foundation")
     print("=" * 60)
 
     setup()

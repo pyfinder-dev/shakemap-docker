@@ -83,12 +83,12 @@ def check(label: str, condition: bool, detail: str = ""):
     global passed, failed
     if condition:
         passed += 1
-        print(f"  ✅ {label}")
+        print(f"  [PASS] {label}")
     else:
         failed += 1
-        msg = f"  ❌ {label}"
+        msg = f"  [FAIL] {label}"
         if detail:
-            msg += f" — {detail}"
+            msg += f" -- {detail}"
         print(msg)
 
 
@@ -155,7 +155,7 @@ def _cleanup():
 
 # ==================================================================
 print("=" * 60)
-print("Phase 04 — Durable Queue Foundation Tests")
+print("Phase 04 -- Durable Queue Foundation Tests")
 print("=" * 60)
 print(f"Test SERVICE_ROOT: {_tmpdir}")
 print()
@@ -166,7 +166,7 @@ paths.events_dir().mkdir(parents=True, exist_ok=True)
 # ------------------------------------------------------------------
 # Test 1: discover_queue with multiple QUEUED events — deterministic FIFO
 # ------------------------------------------------------------------
-print("--- Test 1: discover_queue with multiple QUEUED events — deterministic FIFO ---")
+print("--- Test 1: discover_queue with multiple QUEUED events -- deterministic FIFO ---")
 _cleanup()
 
 # Create 4 QUEUED events with different queued_at timestamps (out of order)
@@ -399,7 +399,7 @@ print()
 # ------------------------------------------------------------------
 # Test 9: Restart-style discovery — scan filesystem records
 # ------------------------------------------------------------------
-print("--- Test 9: Restart-style discovery — filesystem scan ---")
+print("--- Test 9: Restart-style discovery -- filesystem scan ---")
 _cleanup()
 
 # Simulate a "previous run" left behind QUEUED events on disk
@@ -447,7 +447,7 @@ print()
 # ------------------------------------------------------------------
 # Test 11: Mixed statuses — only QUEUED is picked
 # ------------------------------------------------------------------
-print("--- Test 11: Mixed statuses — only QUEUED is picked ---")
+print("--- Test 11: Mixed statuses -- only QUEUED is picked ---")
 _cleanup()
 
 all_statuses = [
@@ -541,9 +541,9 @@ check("No '@app.get' in queue.py",
 check("No 'run_id' in queue.py (except docstrings/comments)",
       queue_py.count("run_id") == 0)
 
-# Check no worker.py was created
-check("No worker.py exists",
-      not (PROJECT_DIR / "shakemap_service" / "worker.py").exists())
+# worker.py is expected after Phase 05.
+# check("No worker.py exists",
+#       not (PROJECT_DIR / "shakemap_service" / "worker.py").exists())
 
 # Check no bridge.py was created
 check("No bridge.py exists",
@@ -591,9 +591,9 @@ print("=" * 60)
 total = passed + failed
 print(f"Phase 04 results: {passed} passed, {failed} failed (of {total} total)")
 if failed == 0:
-    print("✅ ALL TESTS PASSED")
+    print("ALL TESTS PASSED")
 else:
-    print("❌ SOME TESTS FAILED")
+    print("SOME TESTS FAILED")
 print("=" * 60)
 
 sys.exit(0 if failed == 0 else 1)

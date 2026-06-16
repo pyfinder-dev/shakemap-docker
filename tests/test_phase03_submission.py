@@ -75,10 +75,10 @@ def _check(description: str, condition: bool) -> None:
     global _pass_count, _fail_count
     if condition:
         _pass_count += 1
-        print(f"  ✅ {description}")
+        print(f"  [PASS] {description}")
     else:
         _fail_count += 1
-        print(f"  ❌ {description}")
+        print(f"  [FAIL] {description}")
 
 
 def _cleanup_event(event_id: str) -> None:
@@ -108,7 +108,7 @@ SAMPLE_RUPTURE = b'{"type": "Feature", "geometry": {}}'
 # ==================================================================
 # Test 1: Valid submission stages files correctly
 # ==================================================================
-print("\n── Test 1: Valid submission stages files correctly ──")
+print("\n--- Test 1: Valid submission stages files correctly ---")
 _cleanup_event("test_valid_001")
 
 result = submit_event(
@@ -132,7 +132,7 @@ _check("No validation errors", result.validation_errors is None)
 # ==================================================================
 # Test 2: incoming/<event_id>/ contains staged files
 # ==================================================================
-print("\n── Test 2: incoming/<event_id>/ contains staged files ──")
+print("\n--- Test 2: incoming/<event_id>/ contains staged files ---")
 incoming = paths.event_incoming_dir("test_valid_001")
 
 _check("incoming/<event_id>/ exists", incoming.is_dir())
@@ -149,7 +149,7 @@ _check("Only expected files in incoming",
 # ==================================================================
 # Test 3: requeststatus.json under events/<event_id>/.shakemap-service/
 # ==================================================================
-print("\n── Test 3: requeststatus.json location ──")
+print("\n--- Test 3: requeststatus.json location ---")
 status_file = paths.event_status_file("test_valid_001")
 _check("Status file exists", status_file.is_file())
 _check("Status file parent is .shakemap-service",
@@ -177,7 +177,7 @@ _check("max_attempts is 3", record.max_attempts == 3)
 # ==================================================================
 # Test 4: Successful validation transitions to QUEUED
 # ==================================================================
-print("\n── Test 4: Successful validation → QUEUED ──")
+print("\n--- Test 4: Successful validation -> QUEUED ---")
 _cleanup_event("test_queued_001")
 
 result = submit_event(
@@ -199,7 +199,7 @@ _check("No validation errors in record", record.validation_errors is None)
 # ==================================================================
 # Test 5: Missing event.xml → VALIDATION_FAILED
 # ==================================================================
-print("\n── Test 5: Missing event.xml → VALIDATION_FAILED ──")
+print("\n--- Test 5: Missing event.xml -> VALIDATION_FAILED ---")
 _cleanup_event("test_no_event_xml")
 
 result = submit_event(
@@ -227,7 +227,7 @@ _check("No incoming dir for failed validation", not incoming_dir.exists())
 # ==================================================================
 # Test 6: Missing station file → VALIDATION_FAILED
 # ==================================================================
-print("\n── Test 6: Missing station file → VALIDATION_FAILED ──")
+print("\n--- Test 6: Missing station file -> VALIDATION_FAILED ---")
 _cleanup_event("test_no_station")
 
 result = submit_event(
@@ -246,7 +246,7 @@ _check("Error mentions station data",
 # ==================================================================
 # Test 7: Duplicate valid submission replaces files atomically
 # ==================================================================
-print("\n── Test 7: Duplicate submission replaces files atomically ──")
+print("\n--- Test 7: Duplicate submission replaces files atomically ---")
 _cleanup_event("test_dup_001")
 
 # First submission
@@ -296,7 +296,7 @@ _check("Only 2 files in incoming",
 # ==================================================================
 # Test 8: No run_id
 # ==================================================================
-print("\n── Test 8: No run_id ──")
+print("\n--- Test 8: No run_id ---")
 
 # Check RequestStatus dataclass
 from shakemap_service.status import RequestStatus
@@ -316,7 +316,7 @@ _check("No run_id key in persisted JSON", "run_id" not in data)
 # ==================================================================
 # Test 9: No worker/queue/execution/product publication
 # ==================================================================
-print("\n── Test 9: No worker/queue/execution/product publication ──")
+print("\n--- Test 9: No worker/queue/execution/product publication ---")
 
 import shakemap_service
 
@@ -325,14 +325,15 @@ py_files = sorted(f.name for f in svc_dir.iterdir() if f.suffix == ".py")
 
 # queue.py is expected after Phase 04.
 # _check("No queue.py", "queue.py" not in py_files)
-_check("No worker.py", "worker.py" not in py_files)
+# worker.py is expected after Phase 05.
+# _check("No worker.py", "worker.py" not in py_files)
 _check("No bridge.py", "bridge.py" not in py_files)
 _check("No provenance.py", "provenance.py" not in py_files)
 _check("No publisher.py", "publisher.py" not in py_files)
 
 expected_files = sorted([
     "__init__.py", "config.py", "main.py", "paths.py",
-    "queue.py", "runner.py", "status.py", "submission.py",
+    "queue.py", "runner.py", "status.py", "submission.py", "worker.py",
 ])
 _check(f"Module listing: {', '.join(py_files)}", py_files == expected_files)
 
@@ -347,7 +348,7 @@ _check("No product publication in main.py", "publish" not in main_text.lower())
 # ==================================================================
 # Test 10: runner.py unchanged (no submission import)
 # ==================================================================
-print("\n── Test 10: runner.py unchanged ──")
+print("\n--- Test 10: runner.py unchanged ---")
 
 runner_text = (svc_dir / "runner.py").read_text()
 _check("runner.py does not import submission", "submission" not in runner_text)
@@ -359,7 +360,7 @@ _check("runner.py has run_shake function", "def run_shake" in runner_text)
 # ==================================================================
 # Test 11: No requeststatus.json under incoming/
 # ==================================================================
-print("\n── Test 11: No requeststatus.json under incoming/ ──")
+print("\n--- Test 11: No requeststatus.json under incoming/ ---")
 
 incoming_root = paths.incoming_dir()
 found_status_in_incoming = False
@@ -379,7 +380,7 @@ _check("No requeststatus.json anywhere under incoming/",
 # ==================================================================
 # Test 12: Atomic staging integrity
 # ==================================================================
-print("\n── Test 12: Atomic staging integrity ──")
+print("\n--- Test 12: Atomic staging integrity ---")
 _cleanup_event("test_atomic_001")
 
 # Submit, then verify no temp/staging dirs remain
@@ -410,7 +411,7 @@ _check("incoming/<event_id> is a real directory", incoming.is_dir() and not inco
 # ==================================================================
 # Test 13: Empty event_id / user_id rejected
 # ==================================================================
-print("\n── Test 13: Empty event_id / user_id rejected ──")
+print("\n--- Test 13: Empty event_id / user_id rejected ---")
 
 try:
     submit_event(event_id="", user_id="tester", files={"event.xml": b"x"})
@@ -434,7 +435,7 @@ except ValueError:
 # ==================================================================
 # Test 14: Accepted station filename variants
 # ==================================================================
-print("\n── Test 14: Accepted station filename variants ──")
+print("\n--- Test 14: Accepted station filename variants ---")
 
 # stationlist.json
 _cleanup_event("test_station_json")
@@ -479,7 +480,7 @@ _check("ACCEPTED_STATION_FILENAMES has exactly 3 entries",
 # ==================================================================
 # Test 15: REST endpoint structure in main.py
 # ==================================================================
-print("\n── Test 15: REST endpoint structure ──")
+print("\n--- Test 15: REST endpoint structure ---")
 
 from shakemap_service.main import app as fastapi_app
 
@@ -497,7 +498,7 @@ _check("No /queue route",
 # ==================================================================
 # Test 16: Duplicate submission on terminal status
 # ==================================================================
-print("\n── Test 16: Duplicate submission on terminal status ──")
+print("\n--- Test 16: Duplicate submission on terminal status ---")
 _cleanup_event("test_terminal_resubmit")
 
 # First submission → QUEUED
@@ -530,7 +531,7 @@ _check("Record has QUEUED status", record2.status == "QUEUED")
 # ==================================================================
 # Test 17: validate_inputs function standalone
 # ==================================================================
-print("\n── Test 17: validate_inputs standalone ──")
+print("\n--- Test 17: validate_inputs standalone ---")
 
 errors = validate_inputs(["event.xml", "stationlist.json"])
 _check("Valid input set → no errors", len(errors) == 0)
@@ -552,7 +553,7 @@ _check("With optional rupture → no errors", len(errors) == 0)
 # ==================================================================
 # Test 18: HTTP 422 for validation failure, 200 for valid submission
 # ==================================================================
-print("\n── Test 18: HTTP status codes via TestClient ──")
+print("\n--- Test 18: HTTP status codes via TestClient ---")
 
 from fastapi.testclient import TestClient
 from shakemap_service.main import app as fastapi_app
@@ -602,7 +603,7 @@ _check("Status record is VALIDATION_FAILED", record_http.status == "VALIDATION_F
 # ==================================================================
 # Cleanup and summary
 # ==================================================================
-print("\n── Cleanup ──")
+print("\n--- Cleanup ---")
 shutil.rmtree(str(_test_root), ignore_errors=True)
 
 print(f"\n{'='*60}")

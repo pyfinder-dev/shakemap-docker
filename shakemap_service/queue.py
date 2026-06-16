@@ -1,14 +1,16 @@
 # -*- coding: utf-8 -*-
-"""Durable queue discovery and queue-state helpers.
+"""Durable queue discovery, claim locking, and queue-state helpers.
 
 Phase 04 — Durable Queue Foundation.
+Phase 05 — Worker Claim Locking.
 
 This module provides:
 
 - ``discover_queue()`` — scan filesystem for events with QUEUED status,
   return a deterministic FIFO-ordered list of queue candidates.
 - ``QueueSnapshot`` — immutable snapshot of discovered queue candidates
-  with a ``claim_next()`` helper for safe QUEUED → RUNNING transition.
+  with ``claim_next()`` and ``claim_event()`` helpers for safe
+  QUEUED → RUNNING transition with multi-process filesystem locking.
 - ``list_queue_candidates()`` — convenience wrapper returning event_ids
   of current queue candidates in FIFO order.
 
@@ -22,24 +24,24 @@ Design constraints:
 - Ordering: deterministic FIFO by ``queued_at``, then ``submitted_at``,
   then ``event_id`` as tiebreaker.
 - Malformed status files are logged/reported but never crash discovery.
-- Claiming an event transitions QUEUED → RUNNING using the existing
-  ``transition_to_running()`` helper from ``status.py``.
+- Claiming an event acquires an exclusive ``fcntl.flock`` on the status
+  file, validates status is still QUEUED, then performs the QUEUED → RUNNING
+  transition while holding the lock.  The lock is released after the atomic
+  write completes.
 - Duplicate claims within the same ``QueueSnapshot`` are prevented —
   once an event is claimed, it is removed from the snapshot's candidate
   list.
-- No multi-process locking is implemented in this phase. Single-process
-  safety is guaranteed by the snapshot-based claim tracking. Multi-process
-  locking (e.g., ``fcntl.flock`` on the status file) is deferred to
-  Phase 05+ when a worker process is introduced.
 - No worker loop, no ShakeMap execution, no retry execution, no product
   publication, no CLI.
 """
 from __future__ import annotations
 
+import fcntl
 import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
+from . import paths
 from . import status as status_mod
 from .status import (
     EventStatus,
@@ -47,6 +49,11 @@ from .status import (
     read_status,
     scan_event_records,
     transition_to_running,
+    write_status_atomic,
+    _dict_to_record,
+    _now_iso,
+    _validate_transition,
+    AttemptRecord,
 )
 
 logger = logging.getLogger(__name__)
@@ -99,11 +106,6 @@ def discover_queue() -> tuple[list[RequestStatus], list[MalformedRecord]]:
           could not be read (logged, never crash).
     """
     malformed: list[MalformedRecord] = []
-
-    # Use scan_event_records() which already handles malformed files
-    # internally (logs warnings). However, to capture malformed records
-    # for our callers, we do our own scan with error capture.
-    from . import paths
 
     events_root = paths.events_dir()
     all_records: list[RequestStatus] = []
@@ -159,6 +161,78 @@ def list_queue_candidates() -> list[str]:
 
 
 # ------------------------------------------------------------------
+# Filesystem claim lock
+# ------------------------------------------------------------------
+
+def _claim_with_lock(event_id: str) -> RequestStatus:
+    """Acquire an exclusive lock on requeststatus.json, validate the
+    event is still QUEUED, and perform the QUEUED → RUNNING transition.
+
+    The lock uses ``fcntl.flock(LOCK_EX | LOCK_NB)`` — a non-blocking
+    exclusive lock on the status file.  This is appropriate for
+    Unix/Linux containers and prevents two workers/processes from
+    claiming the same event simultaneously.
+
+    Locking strategy:
+    1. Open ``requeststatus.json`` for reading.
+    2. Acquire exclusive non-blocking flock.
+    3. Re-read the file contents while holding the lock (the file may
+       have been updated between the snapshot and the lock acquisition).
+    4. Validate the status is still QUEUED.
+    5. Perform the QUEUED → RUNNING transition (increment attempt,
+       append AttemptRecord, update timestamps).
+    6. Write the updated record atomically (temp + rename).
+    7. Release the lock (close the file descriptor).
+
+    Raises:
+        ``BlockingIOError``: if another process holds the lock.
+        ``ValueError``: if the event is no longer QUEUED.
+        ``FileNotFoundError``: if the status file does not exist.
+    """
+    status_file = paths.event_status_file(event_id)
+
+    if not status_file.is_file():
+        raise FileNotFoundError(
+            f"No requeststatus.json found for event '{event_id}'"
+        )
+
+    # Open the file and acquire exclusive non-blocking lock.
+    fd = open(status_file, "r")
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        # Re-read while holding lock — authoritative state.
+        import json
+        text = fd.read()
+        data = json.loads(text)
+        record = _dict_to_record(data)
+
+        # Validate the event is still QUEUED.
+        _validate_transition(record.status, EventStatus.RUNNING)
+
+        # Perform transition.
+        now = _now_iso()
+        record.status = EventStatus.RUNNING.value
+        record.started_at = now
+        record.current_attempt += 1
+
+        attempt = AttemptRecord(
+            attempt_number=record.current_attempt,
+            started_at=now,
+            status="RUNNING",
+        )
+        record.attempt_history.append(attempt)
+
+        # Write atomically while still holding the lock.
+        write_status_atomic(event_id, record)
+
+        return record
+    finally:
+        # Releasing the file descriptor releases the flock.
+        fd.close()
+
+
+# ------------------------------------------------------------------
 # Queue snapshot with claim tracking
 # ------------------------------------------------------------------
 
@@ -179,13 +253,11 @@ class QueueSnapshot:
     Tracks claimed event_ids to prevent duplicate claims within the
     same snapshot.
 
-    Multi-process safety note:
-        This snapshot provides single-process duplicate-claim prevention
-        only.  Multi-process locking (e.g. fcntl.flock on the status
-        file) is deferred to Phase 05+ when a worker process is
-        introduced.  The filesystem-level transition_to_running() call
-        will raise ValueError if the event is no longer QUEUED (e.g.
-        claimed by another process), providing a basic safety net.
+    Multi-process safety:
+        Claim operations use ``fcntl.flock`` on the status file to
+        provide multi-process-safe claim locking.  Two workers cannot
+        both claim the same QUEUED event — the second will receive a
+        failed ``ClaimResult``.
     """
 
     candidates: list[RequestStatus] = field(default_factory=list)
@@ -205,7 +277,8 @@ class QueueSnapshot:
     def claim_next(self) -> Optional[ClaimResult]:
         """Claim the next unclaimed candidate (QUEUED → RUNNING).
 
-        Returns ``None`` if no unclaimed candidates remain.
+        Uses filesystem locking (``fcntl.flock``) to ensure multi-process
+        safety.  Returns ``None`` if no unclaimed candidates remain.
         Returns a ``ClaimResult`` with ``success=True`` and the updated
         record on success, or ``success=False`` with an error message
         if the transition fails (e.g. event was already claimed by
@@ -234,7 +307,7 @@ class QueueSnapshot:
         self._claimed.add(event_id)
 
         try:
-            updated = transition_to_running(event_id)
+            updated = _claim_with_lock(event_id)
             logger.info(
                 "Claimed event '%s': QUEUED → RUNNING (attempt %d)",
                 event_id, updated.current_attempt,
@@ -244,9 +317,9 @@ class QueueSnapshot:
                 event_id=event_id,
                 record=updated,
             )
-        except (ValueError, FileNotFoundError) as exc:
+        except (ValueError, FileNotFoundError, BlockingIOError) as exc:
             # Transition failed — event may have been claimed by another
-            # process, or the status file is gone/changed.
+            # process, the lock is held, or status changed.
             msg = str(exc)
             logger.warning(
                 "Failed to claim event '%s': %s",
@@ -263,6 +336,7 @@ class QueueSnapshot:
 
         Returns a ``ClaimResult``.  If the event_id is not in the
         candidate list or is already claimed, returns a failure result.
+        Uses filesystem locking for multi-process safety.
         """
         # Check if in candidates.
         candidate_ids = {c.event_id for c in self.candidates}
@@ -283,7 +357,7 @@ class QueueSnapshot:
         self._claimed.add(event_id)
 
         try:
-            updated = transition_to_running(event_id)
+            updated = _claim_with_lock(event_id)
             logger.info(
                 "Claimed event '%s': QUEUED → RUNNING (attempt %d)",
                 event_id, updated.current_attempt,
@@ -293,7 +367,7 @@ class QueueSnapshot:
                 event_id=event_id,
                 record=updated,
             )
-        except (ValueError, FileNotFoundError) as exc:
+        except (ValueError, FileNotFoundError, BlockingIOError) as exc:
             msg = str(exc)
             logger.warning(
                 "Failed to claim event '%s': %s",
