@@ -380,7 +380,8 @@ def test_no_queue_worker_api() -> None:
 
     svc_dir = Path(__file__).resolve().parent.parent / "shakemap_service"
 
-    _check("No queue.py", not (svc_dir / "queue.py").exists())
+    # queue.py is expected after Phase 04.
+    # _check("No queue.py", not (svc_dir / "queue.py").exists())
     _check("No worker.py", not (svc_dir / "worker.py").exists())
     # submission.py is expected after Phase 03.
     _check("No bridge.py", not (svc_dir / "bridge.py").exists())

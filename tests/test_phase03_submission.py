@@ -323,7 +323,8 @@ import shakemap_service
 svc_dir = Path(shakemap_service.__file__).parent
 py_files = sorted(f.name for f in svc_dir.iterdir() if f.suffix == ".py")
 
-_check("No queue.py", "queue.py" not in py_files)
+# queue.py is expected after Phase 04.
+# _check("No queue.py", "queue.py" not in py_files)
 _check("No worker.py", "worker.py" not in py_files)
 _check("No bridge.py", "bridge.py" not in py_files)
 _check("No provenance.py", "provenance.py" not in py_files)
@@ -331,7 +332,7 @@ _check("No publisher.py", "publisher.py" not in py_files)
 
 expected_files = sorted([
     "__init__.py", "config.py", "main.py", "paths.py",
-    "runner.py", "status.py", "submission.py",
+    "queue.py", "runner.py", "status.py", "submission.py",
 ])
 _check(f"Module listing: {', '.join(py_files)}", py_files == expected_files)
 
