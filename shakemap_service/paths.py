@@ -111,6 +111,15 @@ def event_archive_dir(event_id: str) -> Path:
     return archive_dir() / event_id
 
 
+def event_provenance_file(event_id: str) -> Path:
+    """Return the provenance.json path for an event.
+
+    Per contract §6.3, provenance MAY be stored in a separate file
+    under the hidden service-internal event folder.
+    """
+    return event_service_dir(event_id) / "provenance.json"
+
+
 # ------------------------------------------------------------------
 # ShakeMap profile path functions (§10.4)
 # ------------------------------------------------------------------
