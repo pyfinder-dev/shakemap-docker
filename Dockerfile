@@ -3,10 +3,12 @@ FROM python:3.12-slim
 # ---------- Environment ----------
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
-    SHAKEMAP_DATA_ROOT=/data/shakemap \
+    RUNTIME_ROOT=/home/sysop/runtime \
+    SERVICE_ROOT=/home/sysop/runtime/shakemap \
     SHAKEMAP_PROFILE=default \
     SHAKEMAP_PORT=9010 \
-    SHAKEMAP_REQUIRE_MOUNT=0
+    SHAKEMAP_REQUIRE_MOUNT=0 \
+    SHAKEMAP_MODULES="select assemble model contour mapping stations gridxml"
 
 # ---------- System packages ----------
 # - git: to clone the official ShakeMap repo
@@ -52,11 +54,11 @@ COPY entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
 # ---------- Create non-root user and fix ownership ----------
-RUN useradd -ms /bin/bash shakemap \
- && mkdir -p "${SHAKEMAP_DATA_ROOT}" \
- && chown -R shakemap:shakemap "${SHAKEMAP_DATA_ROOT}" /app /opt/shakemap
+RUN groupadd -g 1000 sysop && useradd -u 1000 -g 1000 -ms /bin/bash sysop \
+ && mkdir -p "${RUNTIME_ROOT}" \
+ && chown -R sysop:sysop "${RUNTIME_ROOT}" /app /opt/shakemap
 
-USER shakemap
+USER sysop
 
 # ---------- Networking ----------
 EXPOSE 9010
