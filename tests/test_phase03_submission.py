@@ -352,7 +352,8 @@ print("\n--- Test 10: runner.py unchanged ---")
 
 runner_text = (svc_dir / "runner.py").read_text()
 _check("runner.py does not import submission", "submission" not in runner_text)
-_check("runner.py does not import status", "from .status" not in runner_text)
+# After Phase 07, runner.py imports status for execution bridge transitions.
+# _check("runner.py does not import status", "from .status" not in runner_text)
 _check("runner.py has ShakeError class", "class ShakeError" in runner_text)
 _check("runner.py has run_shake function", "def run_shake" in runner_text)
 

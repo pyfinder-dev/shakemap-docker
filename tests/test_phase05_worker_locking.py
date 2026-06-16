@@ -511,12 +511,13 @@ def _has_run_shake_call(source: str) -> bool:
             return True
     return False
 
-check("No 'run_shake' call in worker.py code",
-      not _has_run_shake_call(worker_py))
-check("No 'from .runner' in worker.py",
-      "from .runner" not in worker_py)
-check("No 'import runner' in worker.py",
-      "import runner" not in worker_py)
+# After Phase 07, worker.py has execute_shakemap() which imports runner.
+# check("No 'run_shake' call in worker.py code",
+#       not _has_run_shake_call(worker_py))
+# check("No 'from .runner' in worker.py",
+#       "from .runner" not in worker_py)
+# check("No 'import runner' in worker.py",
+#       "import runner" not in worker_py)
 print()
 
 
@@ -694,8 +695,9 @@ check("runner.py has no queue imports",
       "from .queue" not in runner_text and "import queue" not in runner_text)
 check("runner.py has no worker imports",
       "from .worker" not in runner_text and "import worker" not in runner_text)
-check("runner.py has no status imports",
-      "from .status" not in runner_text)
+# After Phase 07, runner.py imports status for execution bridge transitions.
+# check("runner.py has no status imports",
+#       "from .status" not in runner_text)
 
 # Verify main.py was NOT changed (no worker imports)
 main_path = PROJECT_DIR / "shakemap_service" / "main.py"

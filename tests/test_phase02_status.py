@@ -389,10 +389,11 @@ def test_no_queue_worker_api() -> None:
     _check("No provenance.py", not (svc_dir / "provenance.py").exists())
     _check("No publisher.py", not (svc_dir / "publisher.py").exists())
 
-    # Check runner.py is unchanged (should not import status).
-    runner_text = (svc_dir / "runner.py").read_text(encoding="utf-8")
-    _check("runner.py does not import status", "from .status" not in runner_text)
-    _check("runner.py does not reference RequestStatus", "RequestStatus" not in runner_text)
+    # Check runner.py — after Phase 07, runner.py imports status for
+    # execution bridge transitions (RUNNING -> SUCCESS/FAILED).
+    # runner_text = (svc_dir / "runner.py").read_text(encoding="utf-8")
+    # _check("runner.py does not import status", "from .status" not in runner_text)
+    # _check("runner.py does not reference RequestStatus", "RequestStatus" not in runner_text)
 
     # @app.post for /events/submit is expected after Phase 03.
     # Verify no execution/mutation endpoints beyond submission exist.

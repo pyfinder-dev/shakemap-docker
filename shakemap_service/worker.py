@@ -110,7 +110,29 @@ def execute_placeholder(record: RequestStatus) -> str:
     return PLACEHOLDER_OUTCOME
 
 
-# Type alias for execution functions.  Phase 06 will provide a real one.
+def execute_shakemap(record: RequestStatus) -> str:
+    """Real ShakeMap execution callback -- Phase 07.
+
+    This function:
+    1. Receives the claimed RequestStatus record (already RUNNING).
+    2. Delegates to ``runner.run_shake_for_event()`` which handles:
+       - Data preparation (incoming -> ShakeMap data layout)
+       - ShakeMap CLI invocation with configured modules
+       - Product collection and atomic publication
+       - RUNNING -> SUCCESS/FAILED status transitions
+
+    The worker owns QUEUED -> RUNNING (claim locking).
+    The runner owns RUNNING -> SUCCESS/FAILED (via this callback).
+
+    Returns:
+        ``"success"`` or ``"failed"`` as outcome string.
+    """
+    from .runner import run_shake_for_event
+    return run_shake_for_event(record)
+
+
+# Type alias for execution functions.  Phase 05 placeholder and
+# Phase 07 execute_shakemap both conform to this signature.
 ExecuteFn = Callable[[RequestStatus], str]
 
 

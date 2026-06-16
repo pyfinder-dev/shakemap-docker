@@ -1,0 +1,18 @@
+<?xml version="1.0" ?>
+<stationlist created="2024-01-01T12:02:00" xmlns="ch.ethz.sed.shakemap.usgs.xml">
+  <station code="CH.BALST" name="CH.BALST" insttype="HGZ" lat="47.3359" lon="7.6943" source="CH" commtype="DIG" netid="CH" loc="">
+    <comp name="HGZN">
+      <acc value="0.00234" flag="0"/>
+    </comp>
+  </station>
+  <station code="CH.BNALP" name="CH.BNALP" insttype="HGZ" lat="46.8697" lon="8.4254" source="CH" commtype="DIG" netid="CH" loc="">
+    <comp name="HGZN">
+      <acc value="0.00012" flag="0"/>
+    </comp>
+  </station>
+  <station code="FR.STRE" name="FR.STRE" insttype="HNZ" lat="48.2562" lon="7.7793" source="FR" commtype="DIG" netid="FR" loc="">
+    <comp name="HNZN">
+      <acc value="0.00089" flag="0"/>
+    </comp>
+  </station>
+</stationlist>

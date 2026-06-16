@@ -159,6 +159,19 @@ def profile_logs_dir(profile: Optional[str] = None) -> Path:
     return profile_install_dir(profile) / "logs"
 
 
+def profile_event_data_dir(event_id: str, profile: Optional[str] = None) -> Path:
+    """Return the ShakeMap event data directory inside a profile.
+
+    ShakeMap expects input files at: ``<profile>/data/<event_id>/current/``
+
+    Due to the entrypoint symlink (``profile/data -> SERVICE_ROOT/work``),
+    this resolves to ``work/<event_id>/current/`` at container runtime.
+    This helper bridges the service layout to ShakeMap's internal
+    expectations.
+    """
+    return profile_data_dir(profile) / event_id / "current"
+
+
 # ------------------------------------------------------------------
 # Utility functions (§10.5)
 # ------------------------------------------------------------------
