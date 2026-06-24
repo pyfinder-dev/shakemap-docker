@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Phase 04 — Durable Queue Foundation verification tests.
+"""Durable Queue Foundation -- verification tests.
 
 Run with:
     source /Users/savas/my-codes/eew/pyfinder-dev/.venv/bin/activate
     cd /Users/savas/my-codes/eew/pyfinder-dev/shakemap-docker
-    python tests/test_phase04_queue.py
+    python tests/test_durable_queue.py
 
 Test sections:
     1.  discover_queue with multiple QUEUED events — deterministic FIFO
@@ -155,7 +155,7 @@ def _cleanup():
 
 # ==================================================================
 print("=" * 60)
-print("Phase 04 -- Durable Queue Foundation Tests")
+print("Durable Queue Foundation -- Verification Tests")
 print("=" * 60)
 print(f"Test SERVICE_ROOT: {_tmpdir}")
 print()
@@ -589,7 +589,7 @@ shutil.rmtree(_tmpdir, ignore_errors=True)
 # ==================================================================
 print("=" * 60)
 total = passed + failed
-print(f"Phase 04 results: {passed} passed, {failed} failed (of {total} total)")
+print(f"Durable Queue results: {passed} passed, {failed} failed (of {total} total)")
 if failed == 0:
     print("ALL TESTS PASSED")
 else:

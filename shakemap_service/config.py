@@ -20,5 +20,12 @@ class Settings:
     )
     require_mount: str = os.getenv("SHAKEMAP_REQUIRE_MOUNT", "0")
 
+    # ── Stage 2 configuration controls ────────────────────────────
+    skip_data_download: str = os.getenv("SHAKEMAP_SKIP_DATA_DOWNLOAD", "0")
+    allow_uniform_vs30: str = os.getenv("SHAKEMAP_ALLOW_UNIFORM_VS30", "0")
+    vs30_file: str = os.getenv("SHAKEMAP_VS30_FILE", "")
+    topo_file: str = os.getenv("SHAKEMAP_TOPO_FILE", "")
+
 
 settings = Settings()
+

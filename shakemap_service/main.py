@@ -1,8 +1,14 @@
 # -*- coding: utf-8 -*-
-"""ShakeMap service — FastAPI application.
+"""ShakeMap service -- FastAPI application.
 
-Phase 01: ``GET /healthz`` — comprehensive health and readiness.
-Phase 03: ``POST /events/submit`` — event submission and staging.
+Phase 01: ``GET /healthz`` -- comprehensive health and readiness.
+Phase 03: ``POST /events/submit`` -- event submission and staging.
+
+Two-stage health model:
+  - Stage 1: infrastructure + ShakeMap CLI availability.
+  - Stage 2: ShakeMap profile configured, data present, ready to process.
+  - Status is ``healthy`` only when both stages pass.
+  - Status is ``not_ready`` otherwise (no ``degraded``).
 """
 from __future__ import annotations
 
@@ -10,6 +16,7 @@ import logging
 import os
 import shutil
 import subprocess
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -25,7 +32,193 @@ app = FastAPI(title="ShakeMap Service", version="0.1.0")
 
 
 # ------------------------------------------------------------------
-# POST /events/submit — event submission (Phase 03)
+# Internal helpers
+# ------------------------------------------------------------------
+
+def _read_readiness_sentinel() -> dict:
+    """Read the Stage 2 sentinel file and return status info.
+
+    Returns a dict with ``passed`` (bool) and ``reason`` (str).
+    """
+    sentinel = paths.readiness_sentinel()
+    if not sentinel.is_file():
+        return {
+            "passed": False,
+            "reason": "Stage 2 configuration has not been run",
+        }
+    try:
+        content = sentinel.read_text().strip()
+    except OSError:
+        return {
+            "passed": False,
+            "reason": "Stage 2 sentinel file unreadable",
+        }
+
+    if content.startswith("ready"):
+        return {"passed": True, "reason": ""}
+    else:
+        # Format: not_ready|<reason>
+        parts = content.split("|", 1)
+        reason = parts[1] if len(parts) > 1 else content
+        return {"passed": False, "reason": reason}
+
+
+def _check_stage2_data() -> dict:
+    """Check Stage 2 data readiness (VS30 and topo files)."""
+    # Determine actual VS30 path: custom env var > default grid path
+    vs30_file_path = ""
+    if settings.vs30_file:
+        vs30_file_path = settings.vs30_file
+    else:
+        vs30_file_path = str(paths.vs30_grid_path())
+
+    vs30_exists = Path(vs30_file_path).is_file() if vs30_file_path else False
+    vs30_non_empty = (
+        Path(vs30_file_path).stat().st_size > 0
+        if vs30_exists
+        else False
+    )
+
+    # Determine actual topo path: custom env var > default grid path
+    topo_file_path = ""
+    if settings.topo_file:
+        topo_file_path = settings.topo_file
+    else:
+        topo_file_path = str(paths.topo_grid_path())
+
+    topo_exists = Path(topo_file_path).is_file() if topo_file_path else False
+    topo_non_empty = (
+        Path(topo_file_path).stat().st_size > 0
+        if topo_exists
+        else False
+    )
+
+    # Check model.conf for vs30file reference
+    model_conf_valid = False
+    model_conf_path = paths.profile_config_dir() / "model.conf"
+    if model_conf_path.is_file():
+        try:
+            content = model_conf_path.read_text()
+            # Valid if: vs30file points to existing file, OR
+            # allow_uniform_vs30 is set and vs30file is empty/absent
+            if "CA_vs30.grd" in content:
+                model_conf_valid = False  # stale template reference
+            elif settings.allow_uniform_vs30 == "1":
+                model_conf_valid = True
+            elif vs30_exists and vs30_non_empty:
+                model_conf_valid = True
+        except OSError:
+            model_conf_valid = False
+
+    result = {
+        "vs30_file": vs30_file_path,
+        "vs30_file_exists": vs30_exists,
+        "vs30_file_non_empty": vs30_non_empty,
+        "topo_file": topo_file_path,
+        "topo_file_exists": topo_exists,
+        "topo_file_non_empty": topo_non_empty,
+        "model_conf_valid": model_conf_valid,
+    }
+
+    # Allow uniform VS30 if explicitly acknowledged
+    if settings.allow_uniform_vs30 == "1":
+        result["allow_uniform_vs30"] = True
+
+    return result
+
+
+def _is_stage2_ready() -> bool:
+    """Return True if Stage 2 sentinel says ready."""
+    sentinel_info = _read_readiness_sentinel()
+    return sentinel_info["passed"]
+
+
+def _compute_blocking_reasons(
+    stage1_passed: bool,
+    tier1_ok: bool,
+    tier2_ok: bool,
+    shake_cli_available: bool,
+    shake_cli_responsive: bool,
+    dir_checks: dict,
+    sentinel_info: dict,
+    stage2_data: dict,
+    profiles_conf_readable: bool,
+    profile_exists: bool,
+    profile_config_valid: bool,
+    profile_data_bridge_ok: bool,
+) -> list[str]:
+    """Compute a list of human-readable blocking reasons."""
+    reasons: list[str] = []
+
+    # Stage 1 issues
+    for name, info in dir_checks.items():
+        if not info.get("exists"):
+            reasons.append(f"Directory {name}/ does not exist")
+        elif not info.get("writable"):
+            reasons.append(f"Directory {name}/ is not writable")
+
+    if not shake_cli_available:
+        reasons.append("ShakeMap CLI (shake) not found on PATH")
+    elif not shake_cli_responsive:
+        reasons.append("ShakeMap CLI not responsive (shake --help failed)")
+
+    # Stage 2 issues
+    if not sentinel_info["passed"]:
+        reason = sentinel_info.get("reason", "Stage 2 not run")
+        reasons.append(reason)
+    else:
+        # Stage 2 sentinel says ready but data checks may reveal issues
+        if not stage2_data.get("vs30_file_exists") and not stage2_data.get("allow_uniform_vs30"):
+            reasons.append("VS30 grid missing")
+        if not stage2_data.get("model_conf_valid"):
+            reasons.append("model.conf validation failed")
+        if not profiles_conf_readable:
+            reasons.append("profiles.conf not found or not readable")
+        if not profile_exists:
+            reasons.append("ShakeMap profile directory missing")
+        if not profile_config_valid:
+            reasons.append("Profile config directory missing")
+        if not profile_data_bridge_ok:
+            reasons.append("Profile data symlink not correct")
+
+    return reasons
+
+
+def _compute_next_action(blocking_reasons: list[str], sentinel_info: dict) -> str:
+    """Compute the recommended next action based on blocking reasons."""
+    if not blocking_reasons:
+        return ""
+
+    # If Stage 2 hasn't been run, that's the primary recommendation
+    if not sentinel_info["passed"]:
+        reason = sentinel_info.get("reason", "")
+        if "not been run" in reason:
+            return "Run: docker exec <container> /app/scripts/configure-shakemap.sh"
+        if "sentinel" in reason.lower():
+            return "Run: docker exec <container> /app/scripts/configure-shakemap.sh"
+
+    # Check specific issues
+    for reason in blocking_reasons:
+        if "not writable" in reason.lower():
+            return "Fix host directory permissions: chown -R 1000:1000 <host-runtime-dir>"
+        if "does not exist" in reason.lower() and "directory" in reason.lower():
+            return "Restart the container to recreate service directories"
+        if "shake" in reason.lower() and "path" in reason.lower():
+            return "Rebuild the Docker image -- ShakeMap may not be installed correctly"
+        if "vs30" in reason.lower():
+            return "Provide VS30 grid file or set SHAKEMAP_ALLOW_UNIFORM_VS30=1"
+        if "profile" in reason.lower() or "profiles.conf" in reason.lower():
+            return "Run: docker exec <container> /app/scripts/configure-shakemap.sh"
+        if "model.conf" in reason.lower():
+            return "Run: docker exec <container> /app/scripts/configure-shakemap.sh"
+        if "symlink" in reason.lower():
+            return "Run: docker exec <container> /app/scripts/configure-shakemap.sh"
+
+    return "Run: docker exec <container> /app/scripts/configure-shakemap.sh"
+
+
+# ------------------------------------------------------------------
+# POST /events/submit -- event submission (Phase 03)
 # ------------------------------------------------------------------
 
 @app.post("/events/submit")
@@ -40,9 +233,22 @@ async def submit_event_endpoint(
     input files as multipart file uploads. Delegates all logic to
     ``submission.submit_event()``.
 
+    Returns HTTP 503 if Stage 2 configuration is not complete.
     Returns ``event_id``, ``status``, ``status_path``, and
     ``replaced_previous``.
     """
+    # -- Stage 2 readiness gate --
+    if not _is_stage2_ready():
+        sentinel_info = _read_readiness_sentinel()
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": "Service not ready: Stage 2 configuration is not complete",
+                "reason": sentinel_info.get("reason", "Stage 2 not run"),
+                "status": "not_ready",
+            },
+        )
+
     # Read file payloads into memory
     file_payloads: dict[str, bytes] = {}
     for upload in files:
@@ -80,22 +286,26 @@ async def submit_event_endpoint(
 
 
 # ------------------------------------------------------------------
-# GET /healthz — comprehensive health and readiness
+# GET /healthz -- comprehensive health and readiness
 # ------------------------------------------------------------------
 
 @app.get("/healthz")
 def healthz() -> dict:
     """Comprehensive health and readiness endpoint.
 
-    Tier 1 — Infrastructure: service root + 6 directories exist and are writable.
-    Tier 2 — ShakeMap tool readiness: shake CLI, profiles.conf, profile
-              structure, data bridge.
-    Tier 3 — Configuration reporting: active profile, modules, profiles list.
+    Two-stage health model:
+      - Stage 1: infrastructure dirs + ShakeMap CLI availability.
+      - Stage 2: profile configured, data present, sentinel file ready.
+      - Status is ``healthy`` only when both stages pass.
+      - Status is ``not_ready`` otherwise.
 
-    Returns one of: ``healthy``, ``degraded``, ``not_ready``.
+    Returns ``blocking_reasons`` (list of strings) and ``next_action``
+    (recommended fix) when status is ``not_ready``.
+
+    No ``degraded`` status exists.
     """
 
-    # ── Tier 1: Infrastructure ────────────────────────────────────
+    # -- Tier 1: Infrastructure --
     dir_checks: dict[str, dict[str, bool]] = {}
     tier1_ok = True
 
@@ -111,7 +321,7 @@ def healthz() -> dict:
         "directories": dir_checks,
     }
 
-    # ── Tier 2: ShakeMap tool readiness ───────────────────────────
+    # -- Tier 2: ShakeMap CLI availability --
     shake_cli_available = shutil.which("shake") is not None
 
     # Invoke shake with a lightweight command to verify it actually works.
@@ -127,9 +337,31 @@ def healthz() -> dict:
         except Exception:
             shake_cli_responsive = False
 
-    profiles_conf_readable = paths.profiles_conf().is_file()
+    tier2_ok = shake_cli_available and shake_cli_responsive
 
-    active_profile_name = settings.shakemap_profile
+    shakemap_info = {
+        "shake_cli_available": shake_cli_available,
+        "shake_cli_responsive": shake_cli_responsive,
+    }
+
+    # -- Stage 1 aggregate --
+    stage1_passed = tier1_ok and tier2_ok
+    stage1 = {
+        "passed": stage1_passed,
+        "checks": {
+            "directories_exist": all(v["exists"] for v in dir_checks.values()),
+            "directories_writable": all(v["writable"] for v in dir_checks.values()),
+            "shake_cli_available": shake_cli_available,
+            "shake_cli_responsive": shake_cli_responsive,
+        },
+    }
+
+    # -- Stage 2: Profile + Data readiness --
+    sentinel_info = _read_readiness_sentinel()
+    stage2_data = _check_stage2_data()
+
+    # Profile structure checks
+    profiles_conf_readable = paths.profiles_conf().is_file()
     profile_exists = paths.profile_root().is_dir()
     profile_config_valid = paths.profile_config_dir().is_dir()
 
@@ -140,44 +372,73 @@ def healthz() -> dict:
     )
 
     available_profiles = paths.list_profiles()
+    active_profile_name = settings.shakemap_profile
 
-    tier2_ok = all([
-        shake_cli_available,
-        shake_cli_responsive,
-        profiles_conf_readable,
-        profile_exists,
-        profile_config_valid,
-        profile_data_bridge_ok,
-    ])
+    stage2_passed = sentinel_info["passed"]
 
-    shakemap_info = {
-        "shake_cli_available": shake_cli_available,
-        "shake_cli_responsive": shake_cli_responsive,
-        "profiles_conf_readable": profiles_conf_readable,
+    stage2 = {
+        "passed": stage2_passed,
+        **({} if stage2_passed else {"reason": sentinel_info["reason"]}),
+        "checks": {
+            "vs30_file": stage2_data.get("vs30_file", ""),
+            "vs30_file_exists": stage2_data.get("vs30_file_exists", False),
+            "vs30_file_non_empty": stage2_data.get("vs30_file_non_empty", False),
+            "model_conf_valid": stage2_data.get("model_conf_valid", False),
+            "topo_file": stage2_data.get("topo_file", ""),
+            "topo_file_exists": stage2_data.get("topo_file_exists", False),
+            "topo_file_non_empty": stage2_data.get("topo_file_non_empty", False),
+            "profiles_conf_readable": profiles_conf_readable,
+            "profile_exists": profile_exists,
+            "profile_config_valid": profile_config_valid,
+            "profile_data_bridge_ok": profile_data_bridge_ok,
+        },
         "active_profile": active_profile_name,
-        "profile_exists": profile_exists,
-        "profile_config_valid": profile_config_valid,
-        "profile_data_bridge_ok": profile_data_bridge_ok,
         "available_profiles": available_profiles,
     }
 
-    # ── Tier 3: Configuration reporting ───────────────────────────
+    if stage2_data.get("allow_uniform_vs30"):
+        stage2["checks"]["allow_uniform_vs30"] = True
+
+    # -- Tier 5: Configuration reporting --
     configuration = {
         "modules": settings.shakemap_modules,
         "service_root": settings.service_root,
     }
 
-    # ── Status determination ──────────────────────────────────────
-    if not tier1_ok:
-        status = "not_ready"
-    elif not tier2_ok:
-        status = "degraded"
-    else:
+    # -- Status determination --
+    # healthy only if BOTH stages pass. No degraded.
+    if stage1_passed and stage2_passed:
         status = "healthy"
+    else:
+        status = "not_ready"
 
-    return {
+    # -- Blocking reasons and next action --
+    blocking_reasons = _compute_blocking_reasons(
+        stage1_passed=stage1_passed,
+        tier1_ok=tier1_ok,
+        tier2_ok=tier2_ok,
+        shake_cli_available=shake_cli_available,
+        shake_cli_responsive=shake_cli_responsive,
+        dir_checks=dir_checks,
+        sentinel_info=sentinel_info,
+        stage2_data=stage2_data,
+        profiles_conf_readable=profiles_conf_readable,
+        profile_exists=profile_exists,
+        profile_config_valid=profile_config_valid,
+        profile_data_bridge_ok=profile_data_bridge_ok,
+    )
+
+    next_action = _compute_next_action(blocking_reasons, sentinel_info)
+
+    response = {
         "status": status,
+        "blocking_reasons": blocking_reasons,
+        "next_action": next_action,
+        "stage1": stage1,
+        "stage2": stage2,
         "infrastructure": infrastructure,
         "shakemap": shakemap_info,
         "configuration": configuration,
     }
+
+    return response

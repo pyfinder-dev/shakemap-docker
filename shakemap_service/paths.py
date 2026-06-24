@@ -202,3 +202,38 @@ def list_profiles() -> list[str]:
         )
     except FileNotFoundError:
         return []
+
+
+# ------------------------------------------------------------------
+# Stage 2 data and sentinel path functions
+# ------------------------------------------------------------------
+
+def shakemap_data_dir() -> Path:
+    """Return the shared ShakeMap data directory under SERVICE_ROOT."""
+    return service_root() / "data"
+
+
+def vs30_dir() -> Path:
+    """Return the VS30 grid directory."""
+    return shakemap_data_dir() / "vs30"
+
+
+def topo_dir() -> Path:
+    """Return the topography grid directory."""
+    return shakemap_data_dir() / "topo"
+
+
+def vs30_grid_path() -> Path:
+    """Return the default VS30 grid file path."""
+    return vs30_dir() / "global_vs30.grd"
+
+
+def topo_grid_path() -> Path:
+    """Return the default topography grid file path."""
+    return topo_dir() / "topo_30sec.grd"
+
+
+def readiness_sentinel() -> Path:
+    """Return the path to the ShakeMap readiness status sentinel file."""
+    return shakemap_home_dir() / ".shakemap_readiness_status"
+

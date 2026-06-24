@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Phase 07 -- Real ShakeMap Execution Bridge (Container-Based Test).
+"""Real ShakeMap Execution Bridge -- Container-Based Test.
 
 This test:
 1. Builds the Docker image (if needed).
-2. Starts a container with the NORMAL entrypoint (profile init, symlinks,
-   shake init all happen as in production).
-3. Copies fixture files into the container's incoming/<event_id>/.
-4. Runs the full worker/runner execution bridge inside the container.
-5. Verifies status transitions, product publication, and honest outcomes.
+2. Starts a container with the NORMAL entrypoint (Stage 1: directories,
+   permissions, CLI check, then uvicorn).
+3. Runs configure-shakemap.sh (Stage 2: profile init, symlinks, shake init).
+4. Copies fixture files into the container's incoming/<event_id>/.
+5. Runs the full worker/runner execution bridge inside the container.
+6. Verifies status transitions, product publication, and honest outcomes.
 
 Requirements:
 - Docker must be running.
@@ -16,7 +17,7 @@ Requirements:
 
 Usage:
     cd /path/to/shakemap-docker
-    python tests/test_phase07_execution_bridge.py
+    python tests/test_execution_bridge.py
 """
 from __future__ import annotations
 
@@ -35,9 +36,9 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 FIXTURE_DIR = SCRIPT_DIR / "fixtures" / "shakemap_event_minimal"
-IMAGE_TAG = "shakemap-service:phase07"
+IMAGE_TAG = "shakemap-service:integration-test"
 EVENT_ID = "20240101_120000_fixture"
-CONTAINER_NAME = "shakemap-phase07-test"
+CONTAINER_NAME = "shakemap-bridge-test"
 
 # Paths inside container
 RUNTIME_ROOT = "/home/sysop/runtime"
@@ -78,7 +79,7 @@ def cleanup_container():
 
 
 # ===========================================================================
-# Phase 07 Test Sections
+# Execution Bridge Test Sections
 # ===========================================================================
 
 def test_01_docker_available():
@@ -93,7 +94,7 @@ def test_02_build_image():
     print("\n--- Test 2: Build Docker image ---")
     print(f"  Building {IMAGE_TAG} (this may take several minutes on first build)...")
 
-    build_script = REPO_ROOT / "scripts" / "build-docker.sh"
+    build_script = REPO_ROOT / "scripts" / "build-shakemap-docker.sh"
     if build_script.is_file():
         result = run_cmd(
             ["bash", str(build_script), "--tag", IMAGE_TAG],
@@ -202,14 +203,50 @@ def test_03_container_environment():
     ], timeout=10)
     check("shake CLI available in container", shake_result.returncode == 0)
 
-    # Verify profile data symlink
+
+def test_03b_stage2_configure():
+    """Test 3b: Run Stage 2 configuration inside container."""
+    print("\n--- Test 3b: Stage 2 configuration (configure-shakemap.sh) ---")
+
+    # Run configure-shakemap.sh with skip-download and allow-uniform-vs30
+    config_result = run_cmd([
+        "docker", "exec",
+        "-e", "SHAKEMAP_SKIP_DATA_DOWNLOAD=1",
+        "-e", "SHAKEMAP_ALLOW_UNIFORM_VS30=1",
+        CONTAINER_NAME,
+        "/app/scripts/configure-shakemap.sh",
+    ], timeout=120)
+
+    check("configure-shakemap.sh exits 0", config_result.returncode == 0)
+
+    if config_result.returncode != 0:
+        print(f"  Stderr (last 20 lines):")
+        for line in config_result.stderr.strip().split("\n")[-20:]:
+            print(f"    {line}")
+        return
+
+    # Verify profile data symlink (this is a Stage 2 product)
     symlink_result = run_cmd([
         "docker", "exec", CONTAINER_NAME,
         "readlink", "-f", "/home/sysop/shakemap_profiles/default/data"
     ], timeout=10)
     check(
-        "Profile data dir symlinked to SERVICE_ROOT/work",
+        "Profile data dir symlinked to SERVICE_ROOT/work (after Stage 2)",
         symlink_result.stdout.strip() == f"{SERVICE_ROOT}/work"
+    )
+
+    # Verify healthz now reports healthy
+    health_result = run_cmd([
+        "docker", "exec", CONTAINER_NAME,
+        "python", "-c",
+        "import json, urllib.request; "
+        "resp = urllib.request.urlopen('http://localhost:9010/healthz'); "
+        "data = json.loads(resp.read()); "
+        "print(data.get('status', 'unknown'))"
+    ], timeout=15)
+    check(
+        "/healthz reports healthy after Stage 2",
+        health_result.stdout.strip() == "healthy"
     )
 
 
@@ -614,7 +651,7 @@ def main():
     global passed, failed
 
     print("=" * 70)
-    print("Phase 07 -- Real ShakeMap Execution Bridge (Container Test)")
+    print("Real ShakeMap Execution Bridge (Container Test)")
     print("=" * 70)
 
     try:
@@ -636,6 +673,13 @@ def main():
 
         if failed > 0:
             print("\nContainer environment setup failed. Cannot proceed.")
+            print(f"\nResults: {passed} passed, {failed} failed")
+            return failed
+
+        test_03b_stage2_configure()
+
+        if failed > 0:
+            print("\nStage 2 configuration failed. Cannot proceed.")
             print(f"\nResults: {passed} passed, {failed} failed")
             return failed
 

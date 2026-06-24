@@ -50,8 +50,9 @@ WORKDIR /app
 # ---------- Copy service code ----------
 COPY shakemap_service /app/shakemap_service
 COPY entrypoint.sh /app/entrypoint.sh
+COPY scripts /app/scripts
 
-RUN chmod +x /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh /app/scripts/*.sh
 
 # ---------- Create non-root user and fix ownership ----------
 RUN groupadd -g 1000 sysop && useradd -u 1000 -g 1000 -ms /bin/bash sysop \

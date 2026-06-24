@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Phase 03 — Event Submission and Staging verification tests.
+"""Event Submission and Staging -- verification tests.
 
 Standalone verification script (no pytest dependency).
 Run from shakemap-docker/ with:
 
-    python tests/test_phase03_submission.py
+    python tests/test_event_submission_staging.py
 
 Verification coverage:
     1.  Valid submission stages files correctly.
@@ -46,6 +46,13 @@ os.environ["RUNTIME_ROOT"] = str(_test_root.parent)
 # Create required directories
 for d in ("events", "incoming", "work", "products", "archive", "logs"):
     (_test_root / d).mkdir(parents=True, exist_ok=True)
+
+# Create Stage 2 sentinel so the submit gate in main.py allows submissions
+# (Two-stage refactor gates /events/submit behind Stage 2 readiness)
+_sentinel_dir = Path.home() / ".shakemap"
+_sentinel_dir.mkdir(parents=True, exist_ok=True)
+_sentinel_file = _sentinel_dir / ".shakemap_readiness_status"
+_sentinel_file.write_text("ready\n")
 
 
 # ── Imports (after env override) ─────────────────────────────────
@@ -608,7 +615,7 @@ print("\n--- Cleanup ---")
 shutil.rmtree(str(_test_root), ignore_errors=True)
 
 print(f"\n{'='*60}")
-print(f"Phase 03 Verification: {_pass_count} passed, {_fail_count} failed")
+print(f"Event Submission Staging: {_pass_count} passed, {_fail_count} failed")
 print(f"{'='*60}")
 
 if _fail_count > 0:

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Phase 05 — Worker Claim Locking and Execution Skeleton verification tests.
+"""Worker Claim Locking and Execution Skeleton -- verification tests.
 
 Run with:
     source /Users/savas/my-codes/eew/pyfinder-dev/.venv/bin/activate
     cd /Users/savas/my-codes/eew/pyfinder-dev/shakemap-docker
-    python tests/test_phase05_worker_locking.py
+    python tests/test_worker_claim_locking.py
 
 Test sections:
     1.  Multi-process claim locking: two processes cannot claim the same event
@@ -175,7 +175,7 @@ def _cleanup():
 
 # ==================================================================
 print("=" * 60)
-print("Phase 05 -- Worker Claim Locking and Execution Skeleton Tests")
+print("Worker Claim Locking and Execution Skeleton -- Verification Tests")
 print("=" * 60)
 print(f"Test SERVICE_ROOT: {_tmpdir}")
 print()
@@ -744,7 +744,7 @@ shutil.rmtree(_tmpdir, ignore_errors=True)
 # ==================================================================
 print("=" * 60)
 total = passed + failed
-print(f"Phase 05 results: {passed} passed, {failed} failed (of {total} total)")
+print(f"Worker Claim Locking results: {passed} passed, {failed} failed (of {total} total)")
 if failed == 0:
     print("ALL TESTS PASSED")
 else:

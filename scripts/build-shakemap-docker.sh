@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # -------------------------------------------------------------------
-# build-docker.sh — Build the ShakeMap Docker image locally.
+# build-shakemap-docker.sh -- Build the ShakeMap Docker image locally.
 #
 # Usage:
-#   ./scripts/build-docker.sh [OPTIONS]
+#   ./scripts/build-shakemap-docker.sh [OPTIONS]
 #
 # Options:
 #   --tag TAG           Image name:tag  (default: shakemap-service:latest)
@@ -12,25 +12,24 @@
 #   --help              Show this help message
 #
 # Examples:
-#   ./scripts/build-docker.sh
-#   ./scripts/build-docker.sh --tag shakemap-service:phase01
-#   ./scripts/build-docker.sh --platform linux/amd64
-#   ./scripts/build-docker.sh --tag shakemap-service:test --platform linux/amd64
-#   ./scripts/build-docker.sh --no-cache
+#   ./scripts/build-shakemap-docker.sh
+#   ./scripts/build-shakemap-docker.sh --tag shakemap-service:v1
+#   ./scripts/build-shakemap-docker.sh --platform linux/amd64
+#   ./scripts/build-shakemap-docker.sh --no-cache
 # -------------------------------------------------------------------
 set -euo pipefail
 
-# ── Defaults ──────────────────────────────────────────────────────
+# -- Defaults --
 IMAGE_TAG="shakemap-service:latest"
 PLATFORM=""
 NO_CACHE=""
 
-# ── Parse arguments ───────────────────────────────────────────────
+# -- Parse arguments --
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --tag)
             if [[ -z "${2:-}" ]]; then
-                echo "ERROR: --tag requires a value (e.g. --tag shakemap-service:phase01)" >&2
+                echo "ERROR: --tag requires a value (e.g. --tag shakemap-service:v1)" >&2
                 exit 1
             fi
             IMAGE_TAG="$2"
@@ -60,7 +59,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# ── Locate the build context (repo root = parent of scripts/) ─────
+# [1/4] Locate the build context (repo root = parent of scripts/)
+echo "[1/4] Locating Dockerfile"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_CONTEXT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
@@ -68,14 +68,18 @@ if [[ ! -f "${BUILD_CONTEXT}/Dockerfile" ]]; then
     echo "ERROR: Cannot find Dockerfile at ${BUILD_CONTEXT}/Dockerfile" >&2
     exit 1
 fi
+echo "  Build context: ${BUILD_CONTEXT}"
 
-# ── Verify docker is available ────────────────────────────────────
+# [2/4] Verify docker is available
+echo "[2/4] Checking Docker"
 if ! command -v docker >/dev/null 2>&1; then
     echo "ERROR: docker is not installed or not in PATH." >&2
     exit 1
 fi
+echo "  Docker found: $(command -v docker)"
 
-# ── Assemble the build command ────────────────────────────────────
+# [3/4] Assemble the build command
+echo "[3/4] Assembling build command"
 CMD=(docker buildx build)
 CMD+=(--load)
 CMD+=(-t "${IMAGE_TAG}")
@@ -90,9 +94,14 @@ fi
 
 CMD+=("${BUILD_CONTEXT}")
 
-# ── Print and execute ─────────────────────────────────────────────
-echo ""
-echo "▸ ${CMD[*]}"
+echo "  Tag: ${IMAGE_TAG}"
+if [[ -n "${PLATFORM}" ]]; then
+    echo "  Platform: ${PLATFORM}"
+fi
+
+# [4/4] Build image
+echo "[4/4] Building image"
+echo "  ${CMD[*]}"
 echo ""
 
 exec "${CMD[@]}"

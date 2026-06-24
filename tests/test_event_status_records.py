@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Phase 02 verification script — Event Record Foundation.
+"""Event Record Foundation -- verification tests.
 
 Demonstrates and verifies:
 
@@ -20,7 +20,7 @@ Runs against a temporary directory to avoid polluting the real runtime.
 Usage:
     source /Users/savas/my-codes/eew/pyfinder-dev/.venv/bin/activate
     cd /Users/savas/my-codes/eew/pyfinder-dev/shakemap-docker
-    python tests/test_phase02_status.py
+    python tests/test_event_status_records.py
 """
 from __future__ import annotations
 
@@ -532,7 +532,7 @@ def test_paths_provenance_file() -> None:
 
 def main() -> int:
     print("=" * 60)
-    print("  Phase 02 Verification -- Event Record Foundation")
+    print("  Event Record Foundation -- Verification")
     print("=" * 60)
 
     setup()

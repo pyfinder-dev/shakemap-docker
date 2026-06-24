@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Phase 06 -- ShakeMap Example Fixture Discovery verification tests.
+"""ShakeMap Example Fixture Discovery -- verification tests.
 
 Verifies that the minimal ShakeMap event fixture exists and contains
 structurally valid files matching the expected ShakeMap input formats.
@@ -45,7 +45,7 @@ def check(label: str, condition: bool, detail: str = "") -> None:
 
 # ==================================================================
 print("=" * 60)
-print("Phase 06 -- ShakeMap Example Fixture Discovery Tests")
+print("ShakeMap Fixture Discovery -- Verification Tests")
 print("=" * 60)
 print(f"Fixture directory: {FIXTURE_DIR}")
 print()
@@ -283,7 +283,7 @@ print()
 # ==================================================================
 print("=" * 60)
 total = passed + failed
-print(f"Phase 06 results: {passed} passed, {failed} failed (of {total} total)")
+print(f"Fixture Discovery results: {passed} passed, {failed} failed (of {total} total)")
 if failed == 0:
     print("ALL TESTS PASSED")
 else:

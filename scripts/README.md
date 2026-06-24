@@ -1,67 +1,114 @@
-# ShakeMap Docker — Scripts
+# ShakeMap Docker -- Scripts
 
-Helper scripts for building and managing the ShakeMap Docker image.
+## User Workflow
 
-## build-docker.sh
-
-Build the ShakeMap Docker image locally using `docker buildx build --load`.
-
-### Usage
+The intended deployment workflow is four commands:
 
 ```bash
-./scripts/build-docker.sh [OPTIONS]
+./scripts/build-shakemap-docker.sh                          # 1. Build image
+./scripts/start-shakemap-docker.sh                          # 2. Start container
+docker exec shakemap /app/scripts/configure-shakemap.sh     # 3. Configure ShakeMap
+./scripts/verify-shakemap-deployment.sh shakemap --expect ready  # 4. Verify
 ```
 
-### Options
+Or via Makefile:
+
+```bash
+make build
+make start
+make configure
+make verify
+```
+
+### build-shakemap-docker.sh
+
+Build the Docker image.
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--tag TAG` | Image name and tag to assign to the built image. Must follow Docker naming rules (`name:tag`). | `shakemap-service:latest` |
-| `--platform PLAT` | Target platform for the build (e.g. `linux/amd64`, `linux/arm64`). When omitted, Docker uses the current host platform. | *(current docker default)* |
-| `--no-cache` | Build from scratch without using any cached layers. Useful after Dockerfile or dependency changes that the cache may not detect. | *(caching enabled)* |
-| `--help`, `-h` | Print the embedded usage summary and exit. | — |
+| `--tag TAG` | Image name and tag | `shakemap-service:latest` |
+| `--platform PLAT` | Target platform (e.g. `linux/amd64`) | current host platform |
+| `--no-cache` | Build without layer cache | caching enabled |
+| `--help` | Print usage and exit | -- |
 
-### Examples
+### start-shakemap-docker.sh
 
-**Default build** — uses `shakemap-service:latest` on the current platform:
+Start the service container with sensible defaults.
 
-```bash
-./scripts/build-docker.sh
-```
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--name NAME` | Container name | `shakemap` |
+| `--runtime DIR` | Host runtime directory | `./runtime` |
+| `--port PORT` | Host port | `9010` |
+| `--image IMAGE` | Image name:tag | `shakemap-service:latest` |
+| `--env KEY=VALUE` | Extra env var (repeatable) | -- |
+| `--foreground` | Run in foreground | detached |
+| `--help` | Print usage and exit | -- |
 
-**Custom tag** — tag the image for a specific phase or test:
+### configure-shakemap.sh
 
-```bash
-./scripts/build-docker.sh --tag shakemap-service:phase01
-```
-
-**Cross-platform build** — build for `linux/amd64` on an Apple Silicon Mac:
-
-```bash
-./scripts/build-docker.sh --platform linux/amd64
-```
-
-**Combined** — custom tag and platform:
+Run inside the container after start. Configures the ShakeMap profile,
+sets up data, and writes the readiness sentinel.
 
 ```bash
-./scripts/build-docker.sh --tag shakemap-service:test --platform linux/amd64
+docker exec <container> /app/scripts/configure-shakemap.sh
 ```
 
-**Clean build** — discard all cached layers:
+Idempotent and safe to run multiple times.
+
+#### Environment variables
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `SHAKEMAP_PROFILE` | `default` | Profile name |
+| `SHAKEMAP_SKIP_DATA_DOWNLOAD` | `0` | Set to `1` to skip USGS downloads |
+| `SHAKEMAP_ALLOW_UNIFORM_VS30` | `0` | Set to `1` to allow empty vs30file |
+| `SHAKEMAP_VS30_FILE` | -- | Custom path to VS30 grid |
+| `SHAKEMAP_TOPO_FILE` | -- | Custom path to topography grid |
+
+### verify-shakemap-deployment.sh
+
+Verify a running container. Does NOT rebuild or create containers.
 
 ```bash
-./scripts/build-docker.sh --no-cache
+./scripts/verify-shakemap-deployment.sh <container> --expect not-ready   # after start
+./scripts/verify-shakemap-deployment.sh <container> --expect ready       # after configure
 ```
 
-### Behaviour
+### Health check
 
-- Uses `docker buildx build` with `--load` to make the image available locally.
-- Prints the exact `docker buildx build` command before executing it.
-- Fails fast with a clear error if:
-  - A required argument value is missing.
-  - An unknown flag is passed.
-  - The `Dockerfile` cannot be found relative to the script.
-  - `docker` is not installed or not in `PATH`.
-- Never pushes images to a registry.
-- Does not require Docker Compose.
-- The build context is always the repository root (`shakemap-docker/`), resolved relative to the script location — so the script works from any working directory.
+```
+GET http://localhost:9010/healthz
+```
+
+Returns `status`, `blocking_reasons`, and `next_action`.
+
+---
+
+## Developer / Internal Tooling
+
+### verify-shakemap-build.sh
+
+Validates build/infrastructure guarantees (user identity, directories, CLI, health endpoint). Run inside the container.
+
+```bash
+docker exec <container> /app/scripts/verify-shakemap-build.sh
+```
+
+### verify-shakemap-config.sh
+
+Validates configuration/readiness guarantees (profile, symlink, data, sentinel, idempotency). Run inside the container after configure-shakemap.sh.
+
+```bash
+docker exec <container> /app/scripts/verify-shakemap-config.sh
+```
+
+### run-shakemap-ci-tests.sh
+
+Full automated CI test: builds the image, starts a container, runs build and config verification, checks submit gate behavior, and verifies idempotency. Run from the host.
+
+```bash
+./scripts/run-shakemap-ci-tests.sh
+```
+
+Exit code is non-zero if any check fails.

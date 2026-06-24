@@ -1,23 +1,33 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ----- Read environment with defaults -----
-# Runtime root — top-level runtime directory (contract §2.2)
+# ------------------------------------------------------------------
+# Stage 1 -- Build / Runtime Foundation
+#
+# This entrypoint handles ONLY Stage 1 concerns:
+#   [1/7] Read environment variables with defaults
+#   [2/7] Log environment
+#   [3/7] Ensure runtime root exists
+#   [4/7] Optional mount check (REQUIRE_MOUNT)
+#   [5/7] Create service directories and verify permissions
+#   [6/7] Verify ShakeMap CLI is on PATH (smoke check)
+#   [7/7] Start FastAPI service
+#
+# Stage 2 (ShakeMap profile configuration, data provisioning) is
+# handled separately by /app/scripts/configure-shakemap.sh, run by
+# the operator after the container is up.
+# ------------------------------------------------------------------
+
+# [1/7] Read environment with defaults
 RUNTIME_ROOT="${RUNTIME_ROOT:-/home/sysop/runtime}"
-# Service root — ShakeMap service directory (contract §2.4)
 SERVICE_ROOT="${SERVICE_ROOT:-${RUNTIME_ROOT}/shakemap}"
-# Name of the ShakeMap profile to use/create (must match a profile known to sm_profile)
 PROFILE="${SHAKEMAP_PROFILE:-default}"
-# If set to 1, require that SERVICE_ROOT is a mounted volume; abort startup if it is not.
-# The mount is done at 'docker run' or 'docker compose' stage.
 REQUIRE_MOUNT="${SHAKEMAP_REQUIRE_MOUNT:-0}"
-# Internal port on which the FastAPI/uvicorn service listens inside the container
 PORT="${SHAKEMAP_PORT:-9010}"
-# ShakeMap module set
 MODULES="${SHAKEMAP_MODULES:-select assemble model contour mapping stations gridxml}"
 
-# ----- Log environment -----
-echo "[entrypoint] Starting ShakeMap Docker entrypoint..."
+# [2/7] Log environment
+echo "[entrypoint] Starting ShakeMap Docker entrypoint (Stage 1)..."
 echo "[entrypoint] RUNTIME_ROOT            = ${RUNTIME_ROOT}"
 echo "[entrypoint] SERVICE_ROOT            = ${SERVICE_ROOT}"
 echo "[entrypoint] SHAKEMAP_PROFILE        = ${PROFILE}"
@@ -25,74 +35,81 @@ echo "[entrypoint] SHAKEMAP_PORT           = ${PORT}"
 echo "[entrypoint] SHAKEMAP_REQUIRE_MOUNT  = ${REQUIRE_MOUNT}"
 echo "[entrypoint] SHAKEMAP_MODULES        = ${MODULES}"
 
-# ----- Ensure runtime root exists -----
+# [3/7] Ensure runtime root exists
+echo "[entrypoint] [3/7] Ensuring runtime root exists"
 mkdir -p "${RUNTIME_ROOT}"
 
-# ----- Optional safety: require that SERVICE_ROOT is a mount -----
+# [4/7] Optional safety: require that SERVICE_ROOT is a mount
 if [ "${REQUIRE_MOUNT}" = "1" ]; then
+    echo "[entrypoint] [4/7] Checking mount requirement"
     if ! grep -q " ${SERVICE_ROOT} " /proc/mounts; then
         echo "[entrypoint] ERROR: SHAKEMAP_REQUIRE_MOUNT=1 but ${SERVICE_ROOT} is not a mounted volume." >&2
         echo "[entrypoint] Please mount a host directory or named volume to ${SERVICE_ROOT}." >&2
         exit 1
     fi
-fi
-
-# ----- Create all 6 contract service directories (§2.4) -----
-mkdir -p "${SERVICE_ROOT}/events"
-mkdir -p "${SERVICE_ROOT}/incoming"
-mkdir -p "${SERVICE_ROOT}/work"
-mkdir -p "${SERVICE_ROOT}/products"
-mkdir -p "${SERVICE_ROOT}/archive"
-mkdir -p "${SERVICE_ROOT}/logs"
-
-# ----- Profile locations (for user 'sysop') -----
-# sm_profile docs: profiles.conf lives under $HOME/.shakemap,
-# install/data dirs under $HOME/shakemap_profiles/<profile> by default.
-HOME_DIR="${HOME:-/home/sysop}"
-# NOTE: sm_profile creates profiles under 'shakemap_profiles', not 'shake_profiles'
-PROFILE_ROOT="${HOME_DIR}/shakemap_profiles/${PROFILE}"
-PROFILE_DATA_DIR="${PROFILE_ROOT}/data"
-PROFILE_INSTALL_DIR="${PROFILE_ROOT}/install"
-PROFILES_CONF="${HOME_DIR}/.shakemap/profiles.conf"
-
-echo "[entrypoint] HOME_DIR        = ${HOME_DIR}"
-echo "[entrypoint] PROFILE_ROOT    = ${PROFILE_ROOT}"
-echo "[entrypoint] PROFILE_DATA    = ${PROFILE_DATA_DIR}"
-echo "[entrypoint] PROFILE_INSTALL = ${PROFILE_INSTALL_DIR}"
-
-# ----- Ensure a ShakeMap profile exists -----
-if [ ! -d "${PROFILE_ROOT}" ] || [ ! -f "${PROFILES_CONF}" ]; then
-    echo "[entrypoint] Creating ShakeMap profile '${PROFILE}' via sm_profile..."
-    # -c PROFILE : create and switch
-    # -a         : accept defaults
-    # -n         : skip topo & Vs30 grid downloads (user can handle later)
-    sm_profile -c "${PROFILE}" -a -n
 else
-    echo "[entrypoint] Using existing ShakeMap profile '${PROFILE}'."
+    echo "[entrypoint] [4/7] Mount check skipped (REQUIRE_MOUNT=0)"
 fi
 
-# ----- Point the profile's data dir at SERVICE_ROOT/work -----
-if [ ! -L "${PROFILE_DATA_DIR}" ]; then
-    if [ -e "${PROFILE_DATA_DIR}" ] && [ ! -L "${PROFILE_DATA_DIR}" ]; then
-        echo "[entrypoint] Removing existing data dir at ${PROFILE_DATA_DIR} to replace with symlink."
-        rmdir "${PROFILE_DATA_DIR}" 2>/dev/null || rm -rf "${PROFILE_DATA_DIR}"
+# [5/7] Create all 6 contract service directories and verify permissions
+echo "[entrypoint] [5/7] Creating service directories and verifying permissions"
+for dir in events incoming work products archive logs; do
+    mkdir -p "${SERVICE_ROOT}/${dir}"
+done
+
+# Create shared data directory structure for Stage 2
+mkdir -p "${SERVICE_ROOT}/data/vs30"
+mkdir -p "${SERVICE_ROOT}/data/topo"
+
+# Create .shakemap dir for Stage 2 sentinel
+mkdir -p "${HOME:-/home/sysop}/.shakemap"
+
+# Best-effort chmod -- has NO real effect on bind mounts.
+# On Linux bind mounts, the container user cannot chmod directories
+# owned by a different host UID. On macOS/Windows Docker Desktop,
+# chmod appears to succeed but is cosmetic.  The actual writability
+# is verified by the touch test below -- this chmod is kept only as
+# a no-op safety net for the rare case of container-local dirs.
+for dir in events incoming work products archive logs data data/vs30 data/topo; do
+    chmod 0755 "${SERVICE_ROOT}/${dir}" 2>/dev/null || true
+done
+
+# Verify sysop can write to all required directories.
+# If bind-mount permissions prevent operation, fail with actionable diagnostics.
+for dir in events incoming work products archive logs; do
+    DIRPATH="${SERVICE_ROOT}/${dir}"
+    if ! touch "${DIRPATH}/.writetest_$$" 2>/dev/null; then
+        echo "" >&2
+        echo "[entrypoint] ERROR: ${DIRPATH} is not writable." >&2
+        echo "" >&2
+        echo "  Directory:      ${DIRPATH}" >&2
+        # stat -c is Linux, stat -f is macOS
+        OWNER="$(stat -c '%u:%g' "${DIRPATH}" 2>/dev/null || stat -f '%u:%g' "${DIRPATH}" 2>/dev/null || echo 'unknown')"
+        echo "  Current owner:  ${OWNER}" >&2
+        echo "  Required owner: 1000:1000" >&2
+        echo "" >&2
+        echo "  Suggested fix:" >&2
+        echo "    chown -R 1000:1000 <host-runtime-dir>" >&2
+        echo "" >&2
+        exit 1
     fi
-    echo "[entrypoint] Linking ${PROFILE_DATA_DIR} -> ${SERVICE_ROOT}/work"
-    ln -s "${SERVICE_ROOT}/work" "${PROFILE_DATA_DIR}"
+    rm -f "${DIRPATH}/.writetest_$$"
+done
+echo "[entrypoint] All service directories writable by sysop (UID $(id -u))"
+
+# [6/7] Verify ShakeMap CLI available (smoke check)
+echo "[entrypoint] [6/7] Verifying ShakeMap CLI"
+if command -v shake >/dev/null 2>&1; then
+    echo "[entrypoint] ShakeMap CLI found: $(command -v shake)"
 else
-    echo "[entrypoint] Data dir already symlinked: ${PROFILE_DATA_DIR} -> $(readlink -f "${PROFILE_DATA_DIR}")"
+    echo "[entrypoint] WARNING: 'shake' not found on PATH. ShakeMap may not be installed correctly."
 fi
 
-# ----- Run 'shake init' only if profile not yet initialized -----
-# 'shake init' populates install/config etc. We use presence of config dir as a sentinel.
-if [ ! -d "${PROFILE_INSTALL_DIR}/config" ]; then
-    echo "[entrypoint] Running 'shake init' for profile '${PROFILE}' (this may take a while the first time)..."
-    shake init
-else
-    echo "[entrypoint] ShakeMap profile '${PROFILE}' already initialized; skipping 'shake init'."
-fi
+# Stage 2 is NOT run by default
+echo "[entrypoint] Stage 1 complete. Stage 2 configuration must be run separately:"
+echo "[entrypoint]   docker exec <container> /app/scripts/configure-shakemap.sh"
 
-# ----- Start the FastAPI service -----
+# [7/7] Start the FastAPI service
+echo "[entrypoint] [7/7] Starting shakemap_service on port ${PORT}"
 cd /app
-echo "[entrypoint] Starting shakemap_service on port ${PORT}"
 exec uvicorn shakemap_service.main:app --host 0.0.0.0 --port "${PORT}"
