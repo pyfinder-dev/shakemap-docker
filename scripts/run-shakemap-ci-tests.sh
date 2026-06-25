@@ -38,16 +38,16 @@ log() { echo "[integration-test] $*"; }
 echo "===== Two-Stage Integration Test ====="
 echo ""
 
-# -- [1/9] Build Docker image --
-log "[1/9] Building Docker image"
+# -- [1/11] Build Docker image --
+log "[1/11] Building Docker image"
 "${SCRIPT_DIR}/build-shakemap-docker.sh" --tag "${IMAGE_TAG}"
 echo ""
 
-# -- [2/9] Verify scripts exist inside image --
-log "[2/9] Verifying scripts inside image"
+# -- [2/11] Verify scripts exist inside image --
+log "[2/11] Verifying scripts inside image"
 SCRIPTS_CHECK="$(docker run --rm "${IMAGE_TAG}" ls -1 /app/scripts/ 2>/dev/null)"
 SCRIPTS_OK=0
-for script in configure-shakemap.sh build-shakemap-docker.sh verify-shakemap-build.sh verify-shakemap-config.sh; do
+for script in configure-shakemap.sh build-shakemap-docker.sh verify-shakemap-build.sh verify-shakemap-config.sh inspect-shakemap-config.sh; do
     if ! echo "${SCRIPTS_CHECK}" | grep -q "${script}"; then
         echo "  FAIL: /app/scripts/${script} not found in image"
         SCRIPTS_OK=1
@@ -61,8 +61,8 @@ else
 fi
 echo ""
 
-# -- [3/9] Start container --
-log "[3/9] Starting container"
+# -- [3/11] Start container --
+log "[3/11] Starting container"
 mkdir -p "${REPO_ROOT}/runtime"
 
 docker run -d --name "${CONTAINER_NAME}" \
@@ -77,8 +77,8 @@ echo "  Waiting for service to start..."
 sleep 5
 echo ""
 
-# -- [4/9] Stage 1 verification --
-log "[4/9] Running build verification"
+# -- [4/11] Stage 1 verification --
+log "[4/11] Running build verification"
 if docker exec "${CONTAINER_NAME}" /app/scripts/verify-shakemap-build.sh; then
     echo ""
     echo "  Stage 1: ALL CHECKS PASSED"
@@ -91,8 +91,8 @@ else
 fi
 echo ""
 
-# -- [5/9] Verify /healthz returns detailed diagnostics --
-log "[5/9] Verifying /healthz detailed diagnostics"
+# -- [5/11] Verify /healthz returns detailed diagnostics --
+log "[5/11] Verifying /healthz detailed diagnostics"
 HEALTHZ_CHECK="$(docker exec "${CONTAINER_NAME}" python3 - <<'PYEOF'
 import json, urllib.request
 try:
@@ -131,8 +131,8 @@ else
 fi
 echo ""
 
-# -- [6/9] Verify /events/submit returns 503 before Stage 2 --
-log "[6/9] Verifying submit gate (should be 503)"
+# -- [6/11] Verify /events/submit returns 503 before Stage 2 --
+log "[6/11] Verifying submit gate (should be 503)"
 SUBMIT_PRE="$(docker exec "${CONTAINER_NAME}" python3 - <<'PYEOF'
 import urllib.request, urllib.error
 try:
@@ -165,8 +165,8 @@ else
 fi
 echo ""
 
-# -- [7/9] Run configure-shakemap.sh --
-log "[7/9] Running configure-shakemap.sh (Stage 2)"
+# -- [7/11] Run configure-shakemap.sh --
+log "[7/11] Running configure-shakemap.sh (Stage 2)"
 if docker exec "${CONTAINER_NAME}" /app/scripts/configure-shakemap.sh; then
     echo "  Stage 2 configure: PASS"
 else
@@ -175,8 +175,8 @@ else
 fi
 echo ""
 
-# -- [8/9] Verify /events/submit no longer returns 503 --
-log "[8/9] Verifying submit gate is open (should NOT be 503)"
+# -- [8/11] Verify /events/submit no longer returns 503 --
+log "[8/11] Verifying submit gate is open (should NOT be 503)"
 SUBMIT_POST="$(docker exec "${CONTAINER_NAME}" python3 - <<'PYEOF'
 import urllib.request, urllib.error
 try:
@@ -209,8 +209,8 @@ else
 fi
 echo ""
 
-# -- [9/9] Stage 2 verification (includes idempotency) --
-log "[9/9] Running config verification (includes idempotency check)"
+# -- [9/11] Stage 2 verification (includes idempotency) --
+log "[9/11] Running config verification (includes idempotency check)"
 if docker exec "${CONTAINER_NAME}" /app/scripts/verify-shakemap-config.sh; then
     echo ""
     echo "  Stage 2: ALL CHECKS PASSED"
@@ -223,6 +223,57 @@ else
 fi
 echo ""
 
+# -- [10/11] Verify /config endpoint --
+log "[10/11] Verifying /config endpoint"
+CONFIG_CHECK="$(docker exec "${CONTAINER_NAME}" python3 - <<'PYEOF'
+import json, urllib.request
+try:
+    with urllib.request.urlopen("http://localhost:9010/config", timeout=10) as r:
+        data = json.loads(r.read().decode())
+        checks = []
+        checks.append(("active_profile present", "active_profile" in data))
+        checks.append(("readiness_state present", "readiness_state" in data))
+        checks.append(("overrides present", "overrides" in data))
+        checks.append(("override_warnings present", "override_warnings" in data))
+        checks.append(("shakemap_modules present", "shakemap_modules" in data))
+        checks.append(("vs30_file present", "vs30_file" in data))
+        all_ok = True
+        for label, ok in checks:
+            status = "PASS" if ok else "FAIL"
+            print(f"  {status}: {label}")
+            if not ok:
+                all_ok = False
+        if all_ok:
+            print("RESULT:PASS")
+        else:
+            print("RESULT:FAIL")
+except Exception as e:
+    print(f"  FAIL: /config request failed: {e}")
+    print("RESULT:FAIL")
+PYEOF
+)"
+echo "${CONFIG_CHECK}"
+if echo "${CONFIG_CHECK}" | grep -q "RESULT:PASS"; then
+    echo "  /config endpoint: PASS"
+else
+    echo "  /config endpoint: FAIL"
+    OVERALL_RESULT=1
+fi
+echo ""
+
+# -- [11/11] Verify inspect-shakemap-config.sh --
+log "[11/11] Running inspect-shakemap-config.sh"
+INSPECT_OUTPUT="$(docker exec "${CONTAINER_NAME}" /app/scripts/inspect-shakemap-config.sh 2>&1)"
+INSPECT_RC=$?
+if [ "${INSPECT_RC}" = "0" ] && echo "${INSPECT_OUTPUT}" | grep -q "Active Profile:"; then
+    echo "  inspect-shakemap-config.sh: PASS"
+else
+    echo "  inspect-shakemap-config.sh: FAIL (rc=${INSPECT_RC})"
+    echo "${INSPECT_OUTPUT}" | head -20
+    OVERALL_RESULT=1
+fi
+echo ""
+
 # -- Summary --
 echo "===== Integration Test Summary ====="
 echo "  Stage 1 verification:     ${STAGE1_RESULT}"
@@ -231,6 +282,8 @@ echo "  Scripts in image:         $([ "${SCRIPTS_OK}" = "0" ] && echo PASS || ec
 echo "  Diagnostics:              $(echo "${HEALTHZ_CHECK}" | grep -q "RESULT:PASS" && echo PASS || echo FAIL)"
 echo "  Submit gate pre-Stage2:   $([ "${SUBMIT_PRE}" = "503" ] && echo PASS || echo FAIL)"
 echo "  Submit gate post-Stage2:  $([ "${SUBMIT_POST}" != "503" ] && echo PASS || echo FAIL)"
+echo "  /config endpoint:         $(echo "${CONFIG_CHECK}" | grep -q "RESULT:PASS" && echo PASS || echo FAIL)"
+echo "  inspect-shakemap-config:  $([ "${INSPECT_RC}" = "0" ] && echo PASS || echo FAIL)"
 echo "====================================="
 
 if [ "${OVERALL_RESULT}" != "0" ]; then

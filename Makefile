@@ -18,7 +18,7 @@ CONTAINER ?= shakemap
 EXPECT ?= ready
 SCRIPTS := scripts
 
-.PHONY: build start configure verify ci
+.PHONY: build start configure verify inspect ci
 
 build:
 	$(SCRIPTS)/build-shakemap-docker.sh
@@ -32,5 +32,9 @@ configure:
 verify:
 	$(SCRIPTS)/verify-shakemap-deployment.sh $(CONTAINER) --expect $(EXPECT)
 
+inspect:
+	docker exec $(CONTAINER) /app/scripts/inspect-shakemap-config.sh
+
 ci:
 	$(SCRIPTS)/run-shakemap-ci-tests.sh
+

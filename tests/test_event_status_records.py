@@ -458,6 +458,7 @@ def test_attempt_history() -> None:
     expected_fields = sorted([
         "attempt_number", "started_at", "completed_at",
         "status", "failure_reason", "duration_seconds",
+        "execution_context",
     ])
     _check("AttemptRecord has exactly contract fields",
            attempt_field_names == expected_fields,

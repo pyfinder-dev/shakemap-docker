@@ -75,13 +75,30 @@ Verify a running container. Does NOT rebuild or create containers.
 ./scripts/verify-shakemap-deployment.sh <container> --expect ready       # after configure
 ```
 
-### Health check
+### inspect-shakemap-config.sh
+
+Print the active ShakeMap configuration from within the container.
+
+```bash
+docker exec <container> /app/scripts/inspect-shakemap-config.sh          # filesystem mode
+docker exec <container> /app/scripts/inspect-shakemap-config.sh --rest   # REST API mode
+```
+
+Shows: active profile, paths, VS30/topo status, readiness state, and active overrides.
+
+### Health and Configuration Endpoints
 
 ```
-GET http://localhost:9010/healthz
+GET http://localhost:9010/healthz           # Health and readiness
+GET http://localhost:9010/config            # Active configuration inspection
+GET http://localhost:9010/config/profiles   # List existing profiles
 ```
 
-Returns `status`, `blocking_reasons`, and `next_action`.
+`/healthz` returns `status`, `blocking_reasons`, `next_action`, and `overrides` (active override flags like `uniform_vs30_override`).
+
+`/config` returns active profile, paths, VS30/topo status, readiness state, override flags, and override warnings.
+
+`/config/profiles` returns a list of existing profiles with validation status.
 
 ---
 

@@ -38,13 +38,20 @@ app = FastAPI(title="ShakeMap Service", version="0.1.0")
 def _read_readiness_sentinel() -> dict:
     """Read the Stage 2 sentinel file and return status info.
 
-    Returns a dict with ``passed`` (bool) and ``reason`` (str).
+    Returns a dict with ``passed`` (bool), ``reason`` (str),
+    and ``overrides`` (list of active override flags).
+
+    Sentinel format:
+      - ``ready`` — fully ready, no overrides
+      - ``ready|uniform_vs30_override`` — ready with uniform VS30 override
+      - ``not_ready|<reason>`` — not ready with reason
     """
     sentinel = paths.readiness_sentinel()
     if not sentinel.is_file():
         return {
             "passed": False,
             "reason": "Stage 2 configuration has not been run",
+            "overrides": [],
         }
     try:
         content = sentinel.read_text().strip()
@@ -52,15 +59,21 @@ def _read_readiness_sentinel() -> dict:
         return {
             "passed": False,
             "reason": "Stage 2 sentinel file unreadable",
+            "overrides": [],
         }
 
     if content.startswith("ready"):
-        return {"passed": True, "reason": ""}
+        # Parse override flags: ready|flag1,flag2
+        parts = content.split("|", 1)
+        overrides = []
+        if len(parts) > 1 and parts[1]:
+            overrides = [f.strip() for f in parts[1].split(",") if f.strip()]
+        return {"passed": True, "reason": "", "overrides": overrides}
     else:
         # Format: not_ready|<reason>
         parts = content.split("|", 1)
         reason = parts[1] if len(parts) > 1 else content
-        return {"passed": False, "reason": reason}
+        return {"passed": False, "reason": reason, "overrides": []}
 
 
 def _check_stage2_data() -> dict:
@@ -218,8 +231,108 @@ def _compute_next_action(blocking_reasons: list[str], sentinel_info: dict) -> st
 
 
 # ------------------------------------------------------------------
-# POST /events/submit -- event submission (Phase 03)
+# GET /config -- active ShakeMap configuration inspection
 # ------------------------------------------------------------------
+
+@app.get("/config")
+def get_config() -> dict:
+    """Return the active ShakeMap configuration.
+
+    Read-only inspection of current profile, paths, data status,
+    and readiness state.  Reports override flags (e.g. uniform VS30)
+    explicitly.
+    """
+    sentinel_info = _read_readiness_sentinel()
+    stage2_data = _check_stage2_data()
+
+    # Determine readiness state — differentiate override from fully-provisioned
+    overrides = sentinel_info.get("overrides", [])
+    if sentinel_info["passed"]:
+        if overrides:
+            readiness_state = "ready_with_overrides"
+        else:
+            readiness_state = "ready"
+    else:
+        readiness_state = "not_ready"
+
+    # Build override warnings
+    overrides = sentinel_info.get("overrides", [])
+    override_warnings = []
+    if "uniform_vs30_override" in overrides:
+        override_warnings.append(
+            "UNIFORM_VS30: No VS30 grid file. Using uniform VS30 (760 m/s). "
+            "This is a development/emergency override. "
+            "Production deployments should provide a VS30 grid."
+        )
+    if settings.allow_uniform_vs30 == "1" and not stage2_data.get("vs30_file_exists"):
+        if "uniform_vs30_override" not in overrides:
+            override_warnings.append(
+                "SHAKEMAP_ALLOW_UNIFORM_VS30=1 is set but configure-shakemap.sh "
+                "has not been re-run with this setting."
+            )
+
+    return {
+        "active_profile": settings.shakemap_profile,
+        "available_profiles": paths.list_profiles(),
+        "profiles_conf_path": str(paths.profiles_conf()),
+        "profiles_conf_exists": paths.profiles_conf().is_file(),
+        "model_conf_path": str(paths.profile_config_dir() / "model.conf"),
+        "model_conf_exists": (paths.profile_config_dir() / "model.conf").is_file(),
+        "products_conf_path": str(paths.profile_config_dir() / "products.conf"),
+        "products_conf_exists": (paths.profile_config_dir() / "products.conf").is_file(),
+        "products_conf_required": False,  # products.conf is optional; ShakeMap uses defaults when absent
+        "vs30_file": stage2_data.get("vs30_file", ""),
+        "vs30_file_exists": stage2_data.get("vs30_file_exists", False),
+        "topo_file": stage2_data.get("topo_file", ""),
+        "topo_file_exists": stage2_data.get("topo_file_exists", False),
+        "readiness_state": readiness_state,
+        "readiness_reason": sentinel_info.get("reason", ""),
+        "overrides": overrides,
+        "override_warnings": override_warnings,
+        "service_root": settings.service_root,
+        "shakemap_modules": settings.shakemap_modules,
+    }
+
+
+# ------------------------------------------------------------------
+# GET /config/profiles -- list existing profiles
+# ------------------------------------------------------------------
+
+@app.get("/config/profiles")
+def get_config_profiles() -> dict:
+    """List existing ShakeMap profiles with validation status.
+
+    Returns each profile's directory, config existence, and whether
+    it has the required model.conf.  Read-only — does not create or
+    modify profiles.
+    """
+    available = paths.list_profiles()
+    active = settings.shakemap_profile
+
+    profiles = []
+    for name in available:
+        profile_root = paths.profile_root(name)
+        config_dir = paths.profile_config_dir(name)
+        model_conf = config_dir / "model.conf"
+        data_dir = paths.profile_data_dir(name)
+
+        profiles.append({
+            "name": name,
+            "is_active": name == active,
+            "profile_root": str(profile_root),
+            "config_dir_exists": config_dir.is_dir(),
+            "model_conf_exists": model_conf.is_file(),
+            "data_dir_is_symlink": data_dir.is_symlink(),
+            "valid": config_dir.is_dir() and model_conf.is_file(),
+        })
+
+    return {
+        "active_profile": active,
+        "profile_count": len(profiles),
+        "profiles": profiles,
+    }
+
+
 
 @app.post("/events/submit")
 async def submit_event_endpoint(
@@ -399,6 +512,18 @@ def healthz() -> dict:
     if stage2_data.get("allow_uniform_vs30"):
         stage2["checks"]["allow_uniform_vs30"] = True
 
+    # -- Override reporting --
+    overrides = sentinel_info.get("overrides", [])
+    override_warnings = []
+    if "uniform_vs30_override" in overrides:
+        override_warnings.append(
+            "UNIFORM_VS30: No VS30 grid file. Using uniform VS30 (760 m/s). "
+            "This is a development/emergency override."
+        )
+        stage2["checks"]["uniform_vs30_override_active"] = True
+    if settings.allow_uniform_vs30 == "1":
+        stage2["checks"]["allow_uniform_vs30_env"] = True
+
     # -- Tier 5: Configuration reporting --
     configuration = {
         "modules": settings.shakemap_modules,
@@ -406,9 +531,14 @@ def healthz() -> dict:
     }
 
     # -- Status determination --
-    # healthy only if BOTH stages pass. No degraded.
+    # Differentiate: fully-provisioned vs. running with operator overrides.
+    # A container with uniform VS30 override MUST NOT appear identical
+    # to a fully-provisioned installation.
     if stage1_passed and stage2_passed:
-        status = "healthy"
+        if overrides:
+            status = "healthy_with_overrides"
+        else:
+            status = "healthy"
     else:
         status = "not_ready"
 
@@ -434,6 +564,8 @@ def healthz() -> dict:
         "status": status,
         "blocking_reasons": blocking_reasons,
         "next_action": next_action,
+        "overrides": overrides,
+        "override_warnings": override_warnings,
         "stage1": stage1,
         "stage2": stage2,
         "infrastructure": infrastructure,
@@ -442,3 +574,4 @@ def healthz() -> dict:
     }
 
     return response
+

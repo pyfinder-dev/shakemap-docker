@@ -192,7 +192,11 @@ PYEOF
 IFS='|' read -r S2PASSED STATUS_VAL SUBMIT_CODE <<< "${PYRESULT}"
 
 [ "${S2PASSED}" = "true" ]; check "/healthz stage2.passed == true" ${S2PASSED:+$?}
-[ "${STATUS_VAL}" = "healthy" ]; check "/healthz status == 'healthy'" $?
+if [ "${STATUS_VAL}" = "healthy" ] || [ "${STATUS_VAL}" = "healthy_with_overrides" ]; then
+    check "/healthz status is healthy (got: ${STATUS_VAL})" 0
+else
+    check "/healthz status is healthy (got: ${STATUS_VAL})" 1
+fi
 
 # Submit gate should be open (not 503)
 GATE_OK=1
@@ -233,8 +237,10 @@ except Exception:
     print("")
 PYEOF2
 )"
-[ "${IDEM_STATUS}" = "healthy" ] && IDEM_HEALTH=0
-check "/healthz still 'healthy' after idempotent re-run" ${IDEM_HEALTH}
+if [ "${IDEM_STATUS}" = "healthy" ] || [ "${IDEM_STATUS}" = "healthy_with_overrides" ]; then
+    IDEM_HEALTH=0
+fi
+check "/healthz still healthy after idempotent re-run" ${IDEM_HEALTH}
 
 # -- Summary --
 echo ""

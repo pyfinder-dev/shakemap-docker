@@ -106,6 +106,9 @@ class AttemptRecord:
     status: str = "RUNNING"  # SUCCESS, FAILED, or RUNNING
     failure_reason: Optional[str] = None
     duration_seconds: Optional[float] = None
+    # Execution context: which profile/modules were used for this attempt.
+    # Set by runner.run_shake_for_event() when real execution is performed.
+    execution_context: Optional[dict] = None
 
 
 @dataclass

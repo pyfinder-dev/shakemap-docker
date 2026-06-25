@@ -32,8 +32,10 @@ from . import paths
 from .config import settings
 from .status import (
     RequestStatus,
+    read_status,
     transition_to_failed,
     transition_to_success,
+    write_status_atomic,
 )
 
 logger = logging.getLogger(__name__)
@@ -198,6 +200,30 @@ def run_shake_for_event(record: RequestStatus) -> str:
         ``"success"`` or ``"failed"`` as outcome string for the worker.
     """
     event_id = record.event_id
+    modules = settings.shakemap_modules.split()
+
+    # Step 0: Record execution context on the current attempt.
+    # This is written to disk before execution so provenance is
+    # available even if execution crashes.
+    execution_context = {
+        "profile": settings.shakemap_profile,
+        "modules": modules,
+    }
+    try:
+        current_record = read_status(event_id)
+        if current_record and current_record.attempt_history:
+            current_record.attempt_history[-1].execution_context = execution_context
+            write_status_atomic(event_id, current_record)
+            logger.info(
+                "Event '%s': execution_context recorded (profile=%s, modules=%s)",
+                event_id, settings.shakemap_profile, modules,
+            )
+    except Exception as exc:
+        # Non-fatal: continue execution even if context recording fails
+        logger.warning(
+            "Event '%s': could not record execution_context: %s",
+            event_id, exc,
+        )
 
     # Step 1: Prepare ShakeMap data directory.
     try:
@@ -209,7 +235,6 @@ def run_shake_for_event(record: RequestStatus) -> str:
         return "failed"
 
     # Step 2: Invoke ShakeMap with configured modules.
-    modules = settings.shakemap_modules.split()
     try:
         cmd = run_shake(event_id, modules=modules, force=True)
         logger.info(

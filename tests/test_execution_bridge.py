@@ -245,8 +245,8 @@ def test_03b_stage2_configure():
         "print(data.get('status', 'unknown'))"
     ], timeout=15)
     check(
-        "/healthz reports healthy after Stage 2",
-        health_result.stdout.strip() == "healthy"
+        "/healthz reports ready after Stage 2",
+        health_result.stdout.strip() in ("healthy", "healthy_with_overrides")
     )
 
 
@@ -643,6 +643,86 @@ def test_08_shakemap_modules_configured():
     print(f"  {modules_line}")
 
 
+def test_09_config_endpoint():
+    """Test 9: GET /config endpoint returns active configuration."""
+    print("\n--- Test 9: GET /config endpoint ---")
+
+    config_result = run_cmd([
+        "docker", "exec", CONTAINER_NAME,
+        "python", "-c",
+        "import json, urllib.request; "
+        "resp = urllib.request.urlopen('http://localhost:9010/config'); "
+        "data = json.loads(resp.read()); "
+        "print(json.dumps(data))",
+    ], timeout=15)
+
+    check("/config endpoint responds", config_result.returncode == 0)
+
+    if config_result.returncode != 0:
+        return
+
+    try:
+        data = json.loads(config_result.stdout)
+    except json.JSONDecodeError:
+        check("/config returns valid JSON", False)
+        return
+
+    check("/config returns valid JSON", True)
+    check("active_profile present", "active_profile" in data)
+    check("profiles_conf_path present", "profiles_conf_path" in data)
+    check("model_conf_path present", "model_conf_path" in data)
+    check("vs30_file present", "vs30_file" in data)
+    check("readiness_state present", "readiness_state" in data)
+    check("overrides present", "overrides" in data)
+    check("override_warnings present", "override_warnings" in data)
+    check("shakemap_modules present", "shakemap_modules" in data)
+
+    print(f"  Active profile: {data.get('active_profile')}")
+    print(f"  Readiness: {data.get('readiness_state')}")
+    print(f"  Overrides: {data.get('overrides')}")
+
+
+def test_10_execution_context_recorded():
+    """Test 10: Execution context recorded in attempt record."""
+    print("\n--- Test 10: execution_context in requeststatus.json ---")
+
+    cat_result = run_cmd([
+        "docker", "exec", CONTAINER_NAME,
+        "cat", f"{SERVICE_ROOT}/events/{EVENT_ID}/.shakemap-service/requeststatus.json",
+    ], timeout=10)
+
+    if cat_result.returncode != 0:
+        check("Can read requeststatus.json", False)
+        return
+
+    try:
+        data = json.loads(cat_result.stdout)
+    except json.JSONDecodeError:
+        check("requeststatus.json is valid JSON", False)
+        return
+
+    attempts = data.get("attempt_history", [])
+    check("attempt_history non-empty", len(attempts) > 0)
+
+    if attempts:
+        last = attempts[-1]
+        exec_ctx = last.get("execution_context")
+        check(
+            "execution_context present in attempt record",
+            exec_ctx is not None,
+        )
+        if exec_ctx:
+            check(
+                "execution_context has 'profile'",
+                "profile" in exec_ctx,
+            )
+            check(
+                "execution_context has 'modules'",
+                "modules" in exec_ctx,
+            )
+            print(f"  execution_context: {exec_ctx}")
+
+
 # ===========================================================================
 # Main
 # ===========================================================================
@@ -688,6 +768,8 @@ def main():
         test_06_requeststatus_integrity()
         test_07_container_paths()
         test_08_shakemap_modules_configured()
+        test_09_config_endpoint()
+        test_10_execution_context_recorded()
 
     finally:
         # Cleanup

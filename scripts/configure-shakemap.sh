@@ -309,6 +309,83 @@ print('model.conf: parseable (' + str(len(conf)) + ' sections)')
     else
         fail "model.conf is not parseable"
     fi
+else
+    fail "model.conf not found at ${MODEL_CONF}"
+fi
+
+# Probe 3: profiles.conf exists, parseable, and lists active profile
+if [ -f "${PROFILES_CONF}" ]; then
+    if python3 -c "
+from configobj import ConfigObj
+conf = ConfigObj('${PROFILES_CONF}')
+print('profiles.conf: parseable (' + str(len(conf)) + ' profiles)')
+" 2>/dev/null; then
+        if grep -q "${PROFILE}" "${PROFILES_CONF}" 2>/dev/null; then
+            log "  profiles.conf: OK (parseable, lists profile '${PROFILE}')"
+        else
+            fail "profiles.conf does not list active profile '${PROFILE}'"
+        fi
+    else
+        fail "profiles.conf is not parseable"
+    fi
+else
+    fail "profiles.conf not found at ${PROFILES_CONF}"
+fi
+
+# Probe 4: Profile config directory exists
+if [ -d "${PROFILE_CONFIG_DIR}" ]; then
+    log "  Profile config dir: OK (${PROFILE_CONFIG_DIR})"
+else
+    fail "Profile config directory not found at ${PROFILE_CONFIG_DIR}"
+fi
+
+# Probe 5: Profile data symlink resolves to SERVICE_ROOT/work
+if [ -L "${PROFILE_DATA_DIR}" ]; then
+    ACTUAL_TARGET="$(readlink -f "${PROFILE_DATA_DIR}" 2>/dev/null || readlink "${PROFILE_DATA_DIR}")"
+    EXPECTED_TARGET="$(readlink -f "${SERVICE_ROOT}/work" 2>/dev/null || echo "${SERVICE_ROOT}/work")"
+    if [ "${ACTUAL_TARGET}" = "${EXPECTED_TARGET}" ]; then
+        log "  Profile data symlink: OK (${PROFILE_DATA_DIR} -> ${SERVICE_ROOT}/work)"
+    else
+        fail "Profile data symlink points to ${ACTUAL_TARGET}, expected ${EXPECTED_TARGET}"
+    fi
+elif [ -d "${PROFILE_DATA_DIR}" ]; then
+    fail "Profile data dir is a directory, not a symlink (expected symlink to ${SERVICE_ROOT}/work)"
+else
+    fail "Profile data dir not found at ${PROFILE_DATA_DIR}"
+fi
+
+# Probe 6: vs30file path resolves (after model.conf patching)
+if [ -n "${VS30_FILE}" ]; then
+    if [ -f "${VS30_FILE}" ]; then
+        VS30_SIZE="$(stat -c '%s' "${VS30_FILE}" 2>/dev/null || stat -f '%z' "${VS30_FILE}" 2>/dev/null || echo "0")"
+        if [ "${VS30_SIZE}" -gt 0 ] 2>/dev/null; then
+            log "  VS30 file: OK (${VS30_FILE}, ${VS30_SIZE} bytes)"
+        else
+            fail "VS30 file exists but is empty: ${VS30_FILE}"
+        fi
+    else
+        fail "VS30 file configured but does not exist: ${VS30_FILE}"
+    fi
+elif [ "${ALLOW_UNIFORM_VS30}" = "1" ]; then
+    log "  VS30 file: OVERRIDE ACTIVE -- uniform VS30 (760 m/s) allowed by operator (SHAKEMAP_ALLOW_UNIFORM_VS30=1)"
+    log "  WARNING: This is a development/emergency override. Production deployments should provide a VS30 grid."
+else
+    fail "No VS30 grid file found and uniform VS30 not allowed. Provide VS30 data or set SHAKEMAP_ALLOW_UNIFORM_VS30=1"
+fi
+
+# Probe 7: products.conf parseable (if it exists)
+if [ -f "${PRODUCTS_CONF}" ]; then
+    if python3 -c "
+from configobj import ConfigObj
+conf = ConfigObj('${PRODUCTS_CONF}')
+print('products.conf: parseable (' + str(len(conf)) + ' sections)')
+" 2>/dev/null; then
+        log "  products.conf parse: OK"
+    else
+        fail "products.conf is not parseable"
+    fi
+else
+    log "  products.conf: not present (optional, skipping)"
 fi
 
 # -- [9/9] Write sentinel --
@@ -322,8 +399,15 @@ if [ -n "${ERRORS}" ]; then
     # Exit 0 -- let the service keep running; /healthz will report not_ready
     exit 0
 else
-    echo "ready" > "${SENTINEL}"
-    log "Stage 2 result: READY"
+    # Record override flags in sentinel so /healthz and /config can report them
+    if [ "${ALLOW_UNIFORM_VS30}" = "1" ] && [ -z "${VS30_FILE}" ]; then
+        echo "ready|uniform_vs30_override" > "${SENTINEL}"
+        log "Stage 2 result: READY (with uniform VS30 override)"
+    else
+        echo "ready" > "${SENTINEL}"
+        log "Stage 2 result: READY"
+    fi
     log "Sentinel written to ${SENTINEL}"
     exit 0
 fi
+

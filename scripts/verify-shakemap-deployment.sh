@@ -276,7 +276,15 @@ PYEOF
 
     IFS='|' read -r STATUS S1_PASSED S2_PASSED SUBMIT_CODE SENTINEL_OK <<< "${MODE_RESULT}"
 
-    [ "${STATUS}" = "healthy" ]; check "/healthz status == 'healthy'" $?
+    if [ "${STATUS}" = "healthy" ] || [ "${STATUS}" = "healthy_with_overrides" ]; then
+        check "/healthz status is healthy or healthy_with_overrides (got: ${STATUS})" 0
+        if [ "${STATUS}" = "healthy_with_overrides" ]; then
+            echo "  WARNING: Container is running with active overrides (e.g. uniform VS30)."
+            echo "           This is not a fully-provisioned production installation."
+        fi
+    else
+        check "/healthz status is healthy or healthy_with_overrides (got: ${STATUS})" 1
+    fi
     [ "${S1_PASSED}" = "true" ]; check "/healthz stage1.passed == true" $?
     [ "${S2_PASSED}" = "true" ]; check "/healthz stage2.passed == true" $?
 
