@@ -186,7 +186,7 @@ curl -s -X POST http://localhost:9010/events/submit \
 {
   "event_id": "my_event_001",
   "status": "QUEUED",
-  "status_path": "events/my_event_001/.shakemap-service/requeststatus.json",
+  "status_path": ".service/events/my_event_001/requeststatus.json",
   "replaced_previous": false,
   "validation_errors": null
 }
@@ -198,7 +198,7 @@ curl -s -X POST http://localhost:9010/events/submit \
 {
   "event_id": "my_event_001",
   "status": "VALIDATION_FAILED",
-  "status_path": "events/my_event_001/.shakemap-service/requeststatus.json",
+  "status_path": ".service/events/my_event_001/requeststatus.json",
   "replaced_previous": false,
   "validation_errors": ["Missing required file: event.xml"]
 }
@@ -313,7 +313,7 @@ curl -s http://localhost:9010/events/20240101_120000_fixture | python3 -m json.t
     "has_log": false
   },
   "incoming_files": ["event.xml", "event_dat.xml", "rupture.json"],
-  "status_path": "events/20240101_120000_fixture/.shakemap-service/requeststatus.json"
+  "status_path": ".service/events/20240101_120000_fixture/requeststatus.json"
 }
 ```
 

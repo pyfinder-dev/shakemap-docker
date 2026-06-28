@@ -153,7 +153,7 @@ from shakemap_service import paths
 status_path = paths.event_status_file(event_id)
 
 # Incorrect
-status_path = Path(settings.service_root) / "events" / event_id / ".shakemap-service" / "requeststatus.json"
+status_path = Path(settings.service_root) / ".service" / "events" / event_id / "requeststatus.json"
 ```
 
 ---

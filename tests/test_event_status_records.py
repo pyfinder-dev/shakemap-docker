@@ -119,8 +119,8 @@ def test_create_event_record() -> None:
     _check("failure_reason is None", record.failure_reason is None)
 
     # Verify directory was created.
-    svc_dir = paths.event_service_dir("ev001")
-    _check("Service dir created", svc_dir.is_dir(), str(svc_dir))
+    event_dir = paths.event_events_dir("ev001")
+    _check("Event dir created", event_dir.is_dir(), str(event_dir))
 
     # Verify file exists.
     status_file = paths.event_status_file("ev001")
@@ -310,7 +310,7 @@ def test_malformed_handling() -> None:
     _section("7. Malformed / missing status file handling")
 
     # Create a malformed requeststatus.json.
-    malformed_dir = paths.event_service_dir("ev_malformed")
+    malformed_dir = paths.event_events_dir("ev_malformed")
     malformed_dir.mkdir(parents=True, exist_ok=True)
     malformed_file = malformed_dir / "requeststatus.json"
     malformed_file.write_text("this is not json {{{", encoding="utf-8")
@@ -322,7 +322,7 @@ def test_malformed_handling() -> None:
         _check("Malformed JSON raises ValueError", True, str(e)[:60])
 
     # Create a file missing required fields.
-    incomplete_dir = paths.event_service_dir("ev_incomplete")
+    incomplete_dir = paths.event_events_dir("ev_incomplete")
     incomplete_dir.mkdir(parents=True, exist_ok=True)
     incomplete_file = incomplete_dir / "requeststatus.json"
     incomplete_file.write_text('{"event_id": "ev_incomplete"}', encoding="utf-8")
@@ -334,7 +334,7 @@ def test_malformed_handling() -> None:
         _check("Incomplete record raises ValueError", True, str(e)[:60])
 
     # Non-dict JSON.
-    nondict_dir = paths.event_service_dir("ev_nondict")
+    nondict_dir = paths.event_events_dir("ev_nondict")
     nondict_dir.mkdir(parents=True, exist_ok=True)
     nondict_file = nondict_dir / "requeststatus.json"
     nondict_file.write_text('["not", "a", "dict"]', encoding="utf-8")
@@ -511,7 +511,7 @@ def test_atomic_write_integrity() -> None:
     _check("Updated max_attempts=10", data2["max_attempts"] == 10)
 
     # Verify no temp files left behind.
-    svc_dir = paths.event_service_dir("ev_atomic")
+    svc_dir = paths.event_events_dir("ev_atomic")
     tmp_files = [f for f in svc_dir.iterdir() if f.suffix == ".tmp"]
     _check("No temp files left behind", len(tmp_files) == 0,
            f"found: {tmp_files}" if tmp_files else "clean")
@@ -525,8 +525,8 @@ def test_paths_provenance_file() -> None:
     p = paths.event_provenance_file("ev001")
     _check("Returns Path", isinstance(p, Path))
     _check("Ends with provenance.json", p.name == "provenance.json")
-    _check("Parent is .shakemap-service",
-           p.parent == paths.event_service_dir("ev001"))
+    _check("Parent is event dir under .service/events/",
+           p.parent == paths.event_events_dir("ev001"))
 
 
 # ── Main ──────────────────────────────────────────────────────────

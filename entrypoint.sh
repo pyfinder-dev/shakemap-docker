@@ -51,13 +51,25 @@ else
     echo "[entrypoint] [4/7] Mount check skipped (REQUIRE_MOUNT=0)"
 fi
 
-# [5/7] Create all 6 contract service directories and verify permissions
+# [5/7] Create service directories and verify permissions
+#
+# Layout:
+#   User-facing (top-level):  incoming/ products/ logs/ data/
+#   Internal (.service/):     .service/events/ .service/work/ .service/archive/
+#
 echo "[entrypoint] [5/7] Creating service directories and verifying permissions"
-for dir in events incoming work products archive logs; do
+
+# User-facing directories
+for dir in incoming products logs; do
     mkdir -p "${SERVICE_ROOT}/${dir}"
 done
 
-# Create shared data directory structure for Stage 2
+# Internal service state directories
+for dir in .service/events .service/work .service/archive; do
+    mkdir -p "${SERVICE_ROOT}/${dir}"
+done
+
+# Shared data directory structure for Stage 2
 mkdir -p "${SERVICE_ROOT}/data/vs30"
 mkdir -p "${SERVICE_ROOT}/data/topo"
 
@@ -65,25 +77,18 @@ mkdir -p "${SERVICE_ROOT}/data/topo"
 mkdir -p "${HOME:-/home/sysop}/.shakemap"
 
 # Best-effort chmod -- has NO real effect on bind mounts.
-# On Linux bind mounts, the container user cannot chmod directories
-# owned by a different host UID. On macOS/Windows Docker Desktop,
-# chmod appears to succeed but is cosmetic.  The actual writability
-# is verified by the touch test below -- this chmod is kept only as
-# a no-op safety net for the rare case of container-local dirs.
-for dir in events incoming work products archive logs data data/vs30 data/topo; do
+for dir in incoming products logs data data/vs30 data/topo .service .service/events .service/work .service/archive; do
     chmod 0755 "${SERVICE_ROOT}/${dir}" 2>/dev/null || true
 done
 
 # Verify sysop can write to all required directories.
-# If bind-mount permissions prevent operation, fail with actionable diagnostics.
-for dir in events incoming work products archive logs; do
+for dir in incoming products logs .service/events .service/work .service/archive; do
     DIRPATH="${SERVICE_ROOT}/${dir}"
     if ! touch "${DIRPATH}/.writetest_$$" 2>/dev/null; then
         echo "" >&2
         echo "[entrypoint] ERROR: ${DIRPATH} is not writable." >&2
         echo "" >&2
         echo "  Directory:      ${DIRPATH}" >&2
-        # stat -c is Linux, stat -f is macOS
         OWNER="$(stat -c '%u:%g' "${DIRPATH}" 2>/dev/null || stat -f '%u:%g' "${DIRPATH}" 2>/dev/null || echo 'unknown')"
         echo "  Current owner:  ${OWNER}" >&2
         echo "  Required owner: 1000:1000" >&2

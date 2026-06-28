@@ -28,7 +28,7 @@ REGISTERED → VALIDATING → QUEUED → RUNNING → SUCCESS
 | `CANCELLED` | Event cancelled by operator (manual intervention) |
 | `ARCHIVED` | Event moved to archive (from any terminal state) |
 
-The event status is tracked in `requeststatus.json` under `events/<event_id>/.shakemap-service/`. This file is the authoritative record — there is no separate database.
+The event status is tracked in `requeststatus.json` under `.service/events/<event_id>/`. This file is the authoritative record — there is no separate database.
 
 ---
 

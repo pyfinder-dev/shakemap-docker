@@ -595,6 +595,8 @@ def healthz() -> dict:
         data_dir.is_symlink()
         and data_dir.resolve() == paths.work_dir().resolve()
     )
+    # Note: work_dir() now returns .service/work/ and the symlink
+    # target in configure-shakemap.sh matches.
 
     available_profiles = paths.list_profiles()
     active_profile_name = settings.shakemap_profile
@@ -826,8 +828,8 @@ def get_event(event_id: str) -> dict:
         "products_path": str(products_dir) if has_products else None,
     }
 
-    # Log reference — check if ShakeMap logs exist for this event
-    log_file = paths.profile_logs_dir() / f"{record.event_id}.log"
+    # Log reference — check shared logs directory
+    log_file = paths.event_log_file(record.event_id)
     response["logs"] = {
         "log_file": str(log_file) if log_file.is_file() else None,
         "has_log": log_file.is_file(),
@@ -841,7 +843,7 @@ def get_event(event_id: str) -> dict:
     response["incoming_files"] = incoming_files
 
     # Status file path (for debugging)
-    response["status_path"] = f"events/{record.event_id}/.shakemap-service/requeststatus.json"
+    response["status_path"] = f".service/events/{record.event_id}/requeststatus.json"
 
     return response
 

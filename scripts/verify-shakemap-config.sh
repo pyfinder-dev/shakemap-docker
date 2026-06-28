@@ -63,7 +63,7 @@ check "profiles.conf lists profile '${PROFILE}'" ${PROFCONF_OK}
 SYMLINK_OK=1
 if [ -L "${PROFILE_DATA_DIR}" ]; then
     LINK_TARGET="$(readlink -f "${PROFILE_DATA_DIR}" 2>/dev/null || readlink "${PROFILE_DATA_DIR}")"
-    EXPECTED="$(readlink -f "${SERVICE_ROOT}/work" 2>/dev/null || echo "${SERVICE_ROOT}/work")"
+    EXPECTED="$(readlink -f "${SERVICE_ROOT}/.service/work" 2>/dev/null || echo "${SERVICE_ROOT}/.service/work")"
     if [ "${LINK_TARGET}" = "${EXPECTED}" ]; then
         SYMLINK_OK=0
     else

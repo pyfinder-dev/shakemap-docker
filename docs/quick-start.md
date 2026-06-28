@@ -176,7 +176,7 @@ curl -s -X POST http://localhost:9010/events/submit \
 {
     "event_id": "20240101_120000_fixture",
     "status": "QUEUED",
-    "status_path": "events/20240101_120000_fixture/.shakemap-service/requeststatus.json",
+    "status_path": ".service/events/20240101_120000_fixture/requeststatus.json",
     "replaced_previous": false,
     "validation_errors": null
 }
@@ -188,7 +188,7 @@ After processing:
 
 - **Input files:** `./runtime/shakemap/incoming/20240101_120000_fixture/`
 - **Products:** `./runtime/shakemap/products/20240101_120000_fixture/` (if ShakeMap succeeded)
-- **Status tracking:** `./runtime/shakemap/events/20240101_120000_fixture/.shakemap-service/requeststatus.json`
+- **Status tracking:** `./runtime/shakemap/.service/events/20240101_120000_fixture/requeststatus.json`
 
 > **Important:** ShakeMap execution success depends on having a VS30 grid that covers the target region. The test fixture is a synthetic event in the Basel Region (Switzerland). See the [Execution Workflow](execution-workflow.md) for details on what determines success or failure.
 

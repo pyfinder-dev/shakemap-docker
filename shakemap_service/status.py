@@ -18,7 +18,7 @@ Design constraints:
 - ``event_id`` is the only public identifier — no ``run_id``.
 - Atomic writes use write-to-temp-then-rename (contract §3.5).
 - ``requeststatus.json`` lives under
-  ``events/<event_id>/.shakemap-service/`` only — never under
+  ``.service/events/<event_id>/`` only — never under
   ``incoming/``.
 - No queue, worker, submission, or execution logic.
 """
@@ -277,7 +277,7 @@ def create_event_record(
 ) -> RequestStatus:
     """Create a new event record directory and write initial status.
 
-    Creates ``events/<event_id>/.shakemap-service/`` and writes
+    Creates ``.service/events/<event_id>/`` and writes
     ``requeststatus.json`` with status ``REGISTERED``.
 
     Contract §5.3: "Before acknowledging receipt of a submission, the
@@ -546,7 +546,7 @@ def scan_event_records() -> list[RequestStatus]:
     directory.  Skips malformed or unreadable files with a warning log.
 
     Does NOT scan ``incoming/`` — contract requires status records
-    only under ``events/<event_id>/.shakemap-service/``.
+    only under ``.service/events/<event_id>/``.
     """
     events_root = paths.events_dir()
     records: list[RequestStatus] = []

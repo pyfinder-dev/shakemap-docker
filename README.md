@@ -164,7 +164,8 @@ The response includes the event status and a path to the tracking file. After pr
 
 - **Input files** are staged in `SERVICE_ROOT/incoming/<event_id>/`
 - **Output products** are published to `SERVICE_ROOT/products/<event_id>/`
-- **Event status** is tracked in `SERVICE_ROOT/events/<event_id>/.shakemap-service/requeststatus.json`
+- **Event status** is tracked in `SERVICE_ROOT/.service/events/<event_id>/requeststatus.json`
+- **Execution logs** are captured to `SERVICE_ROOT/logs/<event_id>.log`
 
 > **Important:** ShakeMap execution requires a properly configured profile with valid VS30 data for the target region. The test fixture uses a synthetic event in the Basel Region (Switzerland). Running it against a container configured with `SHAKEMAP_ALLOW_UNIFORM_VS30=1` (no real VS30 grid) will produce a ShakeMap using uniform site conditions. Running against a container with only the default California VS30 data will fail because the data does not cover the Basel region. Full end-to-end execution with downloaded USGS data has not yet been verified in automated testing.
 

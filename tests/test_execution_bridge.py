@@ -310,7 +310,7 @@ try:
 except FileExistsError:
     # Re-run scenario: clean up and recreate
     import shutil
-    sdir = str(paths.event_service_dir(event_id))
+    sdir = str(paths.event_events_dir(event_id))
     shutil.rmtree(sdir, ignore_errors=True)
     record = create_event_record(event_id, user_id="phase07_test")
     print(f"STEP1: Recreated event record, status={{record.status}}")
@@ -519,7 +519,7 @@ def test_06_requeststatus_integrity():
     # Read the status file from the container
     cat_result = run_cmd([
         "docker", "exec", CONTAINER_NAME,
-        "cat", f"{SERVICE_ROOT}/events/{EVENT_ID}/.shakemap-service/requeststatus.json",
+        "cat", f"{SERVICE_ROOT}/.service/events/{EVENT_ID}/requeststatus.json",
     ], timeout=10)
 
     check("Can read requeststatus.json from container", cat_result.returncode == 0)
@@ -688,7 +688,7 @@ def test_10_execution_context_recorded():
 
     cat_result = run_cmd([
         "docker", "exec", CONTAINER_NAME,
-        "cat", f"{SERVICE_ROOT}/events/{EVENT_ID}/.shakemap-service/requeststatus.json",
+        "cat", f"{SERVICE_ROOT}/.service/events/{EVENT_ID}/requeststatus.json",
     ], timeout=10)
 
     if cat_result.returncode != 0:

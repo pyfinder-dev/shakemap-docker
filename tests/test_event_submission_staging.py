@@ -131,7 +131,7 @@ _check("Result is SubmissionResult", isinstance(result, SubmissionResult))
 _check("event_id matches", result.event_id == "test_valid_001")
 _check("Status is QUEUED", result.status == "QUEUED")
 _check("status_path is correct",
-       result.status_path == "events/test_valid_001/.shakemap-service/requeststatus.json")
+       result.status_path == ".service/events/test_valid_001/requeststatus.json")
 _check("replaced_previous is False", result.replaced_previous is False)
 _check("No validation errors", result.validation_errors is None)
 
@@ -154,21 +154,23 @@ _check("Only expected files in incoming",
 
 
 # ==================================================================
-# Test 3: requeststatus.json under events/<event_id>/.shakemap-service/
+# Test 3: requeststatus.json under .service/events/<event_id>/
 # ==================================================================
 print("\n--- Test 3: requeststatus.json location ---")
 status_file = paths.event_status_file("test_valid_001")
 _check("Status file exists", status_file.is_file())
-_check("Status file parent is .shakemap-service",
-       status_file.parent.name == ".shakemap-service")
-_check("Status file grandparent is event_id",
-       status_file.parent.parent.name == "test_valid_001")
-_check("Status file great-grandparent is events/",
-       status_file.parent.parent.parent.name == "events")
+_check("Status file name is requeststatus.json",
+       status_file.name == "requeststatus.json")
+_check("Status file parent is event_id",
+       status_file.parent.name == "test_valid_001")
+_check("Status file grandparent is events/",
+       status_file.parent.parent.name == "events")
+_check("Status file great-grandparent is .service/",
+       status_file.parent.parent.parent.name == ".service")
 
 # Verify NO requeststatus.json under incoming/
-incoming_status = paths.event_incoming_dir("test_valid_001") / ".shakemap-service"
-_check("No .shakemap-service/ under incoming/", not incoming_status.exists())
+incoming_status = paths.event_incoming_dir("test_valid_001") / "requeststatus.json"
+_check("No requeststatus.json under incoming/", not incoming_status.exists())
 
 record = read_status("test_valid_001")
 _check("Record is readable", record is not None)
@@ -375,9 +377,6 @@ found_status_in_incoming = False
 if incoming_root.exists():
     for root, dirs, files in os.walk(incoming_root):
         if "requeststatus.json" in files:
-            found_status_in_incoming = True
-            break
-        if ".shakemap-service" in dirs:
             found_status_in_incoming = True
             break
 

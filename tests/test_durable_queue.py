@@ -226,17 +226,17 @@ _cleanup()
 _make_queued_event("evt_good")
 
 # Create a malformed JSON file
-malformed_dir = paths.event_service_dir("evt_bad_json")
+malformed_dir = paths.event_events_dir("evt_bad_json")
 malformed_dir.mkdir(parents=True, exist_ok=True)
 (malformed_dir / "requeststatus.json").write_text("NOT VALID JSON {{{")
 
 # Create a JSON file missing required fields
-incomplete_dir = paths.event_service_dir("evt_incomplete")
+incomplete_dir = paths.event_events_dir("evt_incomplete")
 incomplete_dir.mkdir(parents=True, exist_ok=True)
 (incomplete_dir / "requeststatus.json").write_text(json.dumps({"event_id": "evt_incomplete"}))
 
 # Create a JSON file that's not an object
-notobj_dir = paths.event_service_dir("evt_notobj")
+notobj_dir = paths.event_events_dir("evt_notobj")
 notobj_dir.mkdir(parents=True, exist_ok=True)
 (notobj_dir / "requeststatus.json").write_text(json.dumps([1, 2, 3]))
 

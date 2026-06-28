@@ -115,7 +115,7 @@ Then re-run `configure-shakemap.sh`.
 ls ./runtime/shakemap/incoming/<event_id>/
 
 # Check the status file for the failure reason
-cat ./runtime/shakemap/events/<event_id>/.shakemap-service/requeststatus.json | python3 -m json.tool
+cat ./runtime/shakemap/.service/events/<event_id>/requeststatus.json | python3 -m json.tool
 ```
 
 ---
@@ -125,7 +125,7 @@ cat ./runtime/shakemap/events/<event_id>/.shakemap-service/requeststatus.json | 
 The `requeststatus.json` file contains the complete event history:
 
 ```bash
-cat ./runtime/shakemap/events/<event_id>/.shakemap-service/requeststatus.json \
+cat ./runtime/shakemap/.service/events/<event_id>/requeststatus.json \
   | python3 -m json.tool
 ```
 

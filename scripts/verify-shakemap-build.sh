@@ -55,19 +55,19 @@ CURRENT_GID="$(id -g 2>/dev/null || echo -1)"
 # V1-5: Service root exists
 [ -d "${SERVICE_ROOT}" ]; check "Service root exists: ${SERVICE_ROOT}" $?
 
-# V1-6: All 6 contract directories exist
+# V1-6: All contract directories exist (user-facing + .service/ internal)
 ALL_DIRS_OK=0
-for dir in events incoming work products archive logs; do
+for dir in incoming products logs data .service .service/events .service/work .service/archive; do
     if [ ! -d "${SERVICE_ROOT}/${dir}" ]; then
         ALL_DIRS_OK=1
         echo "         Missing: ${SERVICE_ROOT}/${dir}"
     fi
 done
-check "All 6 contract directories exist" ${ALL_DIRS_OK}
+check "All contract directories exist" ${ALL_DIRS_OK}
 
-# V1-7: All 6 dirs writable
+# V1-7: All writable directories are writable
 ALL_WRITABLE=0
-for dir in events incoming work products archive logs; do
+for dir in incoming products logs .service/events .service/work .service/archive; do
     TESTFILE="${SERVICE_ROOT}/${dir}/.writetest_$$"
     if touch "${TESTFILE}" 2>/dev/null; then
         rm -f "${TESTFILE}"
@@ -76,7 +76,7 @@ for dir in events incoming work products archive logs; do
         echo "         Not writable: ${SERVICE_ROOT}/${dir}"
     fi
 done
-check "All 6 contract directories writable" ${ALL_WRITABLE}
+check "All writable directories are writable" ${ALL_WRITABLE}
 
 # V1-8: shake on PATH
 command -v shake >/dev/null 2>&1; check "'shake' is on PATH" $?

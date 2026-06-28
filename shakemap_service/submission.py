@@ -15,7 +15,7 @@ Design constraints:
 
 - ``event_id`` is the only public identifier — no ``run_id``.
 - ``requeststatus.json`` lives under
-  ``events/<event_id>/.shakemap-service/`` only — never under ``incoming/``.
+  ``.service/events/<event_id>/`` only — never under ``incoming/``.
 - No queue worker, ShakeMap execution, product publication, or retry logic.
 - Atomic staging: no partial overwrite visible to consumers.
 """
@@ -323,4 +323,4 @@ def submit_event(
 
 def _relative_status_path(event_id: str) -> str:
     """Return the contract-relative path to requeststatus.json for an event."""
-    return f"events/{event_id}/.shakemap-service/requeststatus.json"
+    return f".service/events/{event_id}/requeststatus.json"

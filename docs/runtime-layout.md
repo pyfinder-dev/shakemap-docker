@@ -8,48 +8,55 @@ For the top-level overview, see the [Runtime Directory Layout](../README.md#runt
 
 ## Service Directory Tree
 
-The service root at `SERVICE_ROOT` (default: `/home/sysop/runtime/shakemap/`) contains six core directories plus a shared data directory:
+The service root at `SERVICE_ROOT` (default: `/home/sysop/runtime/shakemap/`) contains four user-facing directories plus a hidden internal service state directory:
 
 ```
 /home/sysop/runtime/shakemap/         (SERVICE_ROOT)
-├── events/                           Event tracking
-│   └── <event_id>/
-│       └── .shakemap-service/
-│           └── requeststatus.json    Authoritative event status
 ├── incoming/                         Staged input files
 │   └── <event_id>/
 │       ├── event.xml
 │       ├── event_dat.xml
 │       └── rupture.json
-├── work/                             ShakeMap processing (private)
-│   └── <event_id>/
-│       └── current/
-│           ├── event.xml             Copied from incoming/
-│           ├── event_dat.xml
-│           └── products/             ShakeMap output (before publication)
 ├── products/                         Published outputs
 │   └── <event_id>/
-│       └── ...                       Atomically published ShakeMap products
-├── archive/                          Completed-run archive
-├── logs/                             Service logs
-└── data/                             Shared data files
-    ├── vs30/
-    │   └── global_vs30.grd           VS30 grid (downloaded or mounted)
-    └── topo/
-        └── topo_30sec.grd            Topography grid
+│       ├── grid.xml                  ShakeMap output
+│       ├── intensity.jpg
+│       ├── ...
+│       ├── products-manifest.json    Product inventory + validation
+│       └── service-record/           Audit copy
+│           ├── requeststatus.json    Status snapshot at publication
+│           └── provenance.json       Input hashes, versions, modules
+├── logs/                             Operator troubleshooting
+│   └── <event_id>.log               ShakeMap stdout/stderr capture
+├── data/                             Shared data files
+│   ├── vs30/
+│   │   └── global_vs30.grd          VS30 grid (downloaded or mounted)
+│   └── topo/
+│       └── topo_30sec.grd           Topography grid
+└── .service/                         Internal service state (hidden)
+    ├── events/                       Event tracking
+    │   └── <event_id>/
+    │       ├── requeststatus.json    Authoritative event status
+    │       └── provenance.json       Execution provenance record
+    ├── work/                         ShakeMap processing (private)
+    │   └── <event_id>/
+    │       └── current/
+    │           ├── event.xml         Copied from incoming/
+    │           └── products/         ShakeMap output (before publication)
+    └── archive/                      Completed-run archive (future)
 ```
 
 ### Directory Purposes
 
-| Directory | Contents | Created By |
+| Directory | Contents | Visibility |
 |-----------|----------|------------|
-| `events/` | Per-event tracking directories. Each event has a hidden `.shakemap-service/` subdirectory containing `requeststatus.json`, which is the authoritative record of the event's lifecycle. | Submission endpoint |
-| `incoming/` | Staged input files for each submitted event. Files are written atomically (temp dir → rename) so consumers never see partial data. | Submission endpoint |
-| `work/` | ShakeMap's private processing directory. Input files are copied here from `incoming/` before execution. This directory is also the target of the ShakeMap profile's `data` symlink. | Execution bridge |
-| `products/` | Published ShakeMap outputs. After successful processing, products are atomically copied here from `work/<event_id>/current/products/`. | Execution bridge |
-| `archive/` | Archive storage for completed runs. Reserved for future use. | Not yet implemented |
-| `logs/` | Service log files. | Entrypoint |
-| `data/` | Shared data files (VS30 grids, topography grids) downloaded or mounted during Stage 2 configuration. | Configure script |
+| `incoming/` | Staged input files for each submitted event. Files are written atomically (temp dir → rename) so consumers never see partial data. | **User-facing** |
+| `products/` | Published ShakeMap outputs. Products are atomically copied from the work area after validation. Includes `products-manifest.json` and `service-record/` audit copy. | **User-facing** |
+| `logs/` | Per-event execution logs (`<event_id>.log`). Contains ShakeMap CLI stdout/stderr capture for each processed event. | **User-facing** |
+| `data/` | Shared data files (VS30 grids, topography grids) downloaded or mounted during Stage 2 configuration. | **User-facing** |
+| `.service/events/` | Per-event tracking directories. Each event has `requeststatus.json` (authoritative lifecycle record) and `provenance.json` (execution provenance). | **Internal** |
+| `.service/work/` | ShakeMap's private processing directory. Input files are copied here from `incoming/` before execution. Also the target of the ShakeMap profile `data` symlink. | **Internal** |
+| `.service/archive/` | Archive storage for completed runs. Reserved for future use. | **Internal** |
 
 ---
 
@@ -59,19 +66,26 @@ When an event is submitted and processed, files move through the directory struc
 
 ```
 1. Submit    →  incoming/<event_id>/event.xml, event_dat.xml, ...
-                events/<event_id>/.shakemap-service/requeststatus.json
+                .service/events/<event_id>/requeststatus.json
 
-2. Execute   →  work/<event_id>/current/event.xml, event_dat.xml, ...
+2. Execute   →  .service/work/<event_id>/current/event.xml, ...
                 (copied from incoming/)
 
-3. ShakeMap  →  work/<event_id>/current/products/
+3. ShakeMap  →  .service/work/<event_id>/current/products/
                 (ShakeMap writes output here)
 
-4. Publish   →  products/<event_id>/
+4. Validate  →  Check required core products (grid.xml or shake_result.hdf)
+
+5. Publish   →  products/<event_id>/
                 (atomically copied from work/)
+                products/<event_id>/products-manifest.json
+                products/<event_id>/service-record/
+
+6. Log       →  logs/<event_id>.log
+                (ShakeMap stdout/stderr captured during execution)
 ```
 
-The original files in `incoming/` are preserved — they are copied (not moved) to `work/`.
+The original files in `incoming/` are preserved — they are copied (not moved) to `.service/work/`.
 
 ---
 
@@ -96,10 +110,10 @@ ShakeMap uses a profile-based configuration system located in the container user
         │   ├── data/
         │   │   └── layers/           Region boundary polygons (.wkt)
         │   └── logs/                 ShakeMap processing logs
-        └── data → SERVICE_ROOT/work  Symlink (created by configure-shakemap.sh)
+        └── data → SERVICE_ROOT/.service/work  Symlink (created by configure-shakemap.sh)
 ```
 
-The `data` symlink is key to the integration. ShakeMap expects input files at `<profile>/data/<event_id>/current/`. Because `data` points to `SERVICE_ROOT/work`, when the service copies files to `work/<event_id>/current/`, ShakeMap finds them in the expected location.
+The `data` symlink is key to the integration. ShakeMap expects input files at `<profile>/data/<event_id>/current/`. Because `data` points to `SERVICE_ROOT/.service/work`, when the service copies files to `.service/work/<event_id>/current/`, ShakeMap finds them in the expected location.
 
 ---
 
@@ -119,13 +133,14 @@ Or use the start script:
 ./scripts/start-shakemap-docker.sh --runtime ./runtime
 ```
 
-This single mount covers all six service directories plus shared data.
+This single mount covers all service directories plus shared data.
 
 ### What Survives Container Restart
 
 | Item | Location | Survives Restart? |
 |------|----------|-------------------|
 | Event data (incoming, products, status) | Under `SERVICE_ROOT/` | **Yes** — on mounted volume |
+| Event execution logs | `SERVICE_ROOT/logs/` | **Yes** — on mounted volume |
 | VS30 and topo grids | `SERVICE_ROOT/data/` | **Yes** — on mounted volume |
 | ShakeMap profile configuration | `~/shakemap_profiles/` | **No** — inside container filesystem |
 | Readiness sentinel | `~/.shakemap/` | **No** — inside container filesystem |
@@ -135,7 +150,7 @@ Because the ShakeMap profile and readiness sentinel are inside the container fil
 
 ### What NOT to Mount
 
-Do not mount individual subdirectories (e.g., only `events/` or only `products/`). The service expects all six directories to share the same parent filesystem for atomic rename operations.
+Do not mount individual subdirectories (e.g., only `.service/events/` or only `products/`). The service expects all directories to share the same parent filesystem for atomic rename operations.
 
 ---
 

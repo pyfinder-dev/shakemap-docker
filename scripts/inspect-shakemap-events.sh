@@ -136,7 +136,7 @@ fi
 
 RUNTIME_ROOT="${RUNTIME_ROOT:-/home/sysop/runtime}"
 SERVICE_ROOT="${SERVICE_ROOT:-${RUNTIME_ROOT}/shakemap}"
-EVENTS_DIR="${SERVICE_ROOT}/events"
+EVENTS_DIR="${SERVICE_ROOT}/.service/events"
 PRODUCTS_DIR="${SERVICE_ROOT}/products"
 
 # -- Show products for a single event --
@@ -162,7 +162,7 @@ fi
 
 # -- Show a single event --
 if [ -n "${SINGLE_EVENT}" ]; then
-    STATUS_FILE="${EVENTS_DIR}/${SINGLE_EVENT}/.shakemap-service/requeststatus.json"
+    STATUS_FILE="${EVENTS_DIR}/${SINGLE_EVENT}/requeststatus.json"
     echo "===== Event: ${SINGLE_EVENT} ====="
     if [ -f "${STATUS_FILE}" ]; then
         python3 -c "
@@ -196,7 +196,7 @@ if [ -n "${SHOW_QUEUE}" ]; then
     if [ -d "${EVENTS_DIR}" ]; then
         for event_dir in "${EVENTS_DIR}"/*/; do
             [ -d "${event_dir}" ] || continue
-            STATUS_FILE="${event_dir}.shakemap-service/requeststatus.json"
+            STATUS_FILE="${event_dir}requeststatus.json"
             [ -f "${STATUS_FILE}" ] || continue
             STATUS=$(python3 -c "import json; print(json.load(open('${STATUS_FILE}')).get('status',''))" 2>/dev/null || echo "")
             if [ "${STATUS}" = "QUEUED" ]; then
@@ -235,7 +235,7 @@ SHOWN_COUNT=0
 for event_dir in "${EVENTS_DIR}"/*/; do
     [ -d "${event_dir}" ] || continue
     EVENT_ID=$(basename "${event_dir}")
-    STATUS_FILE="${event_dir}.shakemap-service/requeststatus.json"
+    STATUS_FILE="${event_dir}requeststatus.json"
 
     if [ ! -f "${STATUS_FILE}" ]; then
         printf "%-35s %-20s %-25s %-8s %s\n" "${EVENT_ID}" "NO_STATUS_FILE" "-" "-" "-"

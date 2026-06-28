@@ -75,22 +75,22 @@ fi
 log "[2/9] Setting up data symlink"
 if [ -L "${PROFILE_DATA_DIR}" ]; then
     CURRENT_TARGET="$(readlink -f "${PROFILE_DATA_DIR}" 2>/dev/null || readlink "${PROFILE_DATA_DIR}")"
-    EXPECTED_TARGET="$(readlink -f "${SERVICE_ROOT}/work" 2>/dev/null || echo "${SERVICE_ROOT}/work")"
+    EXPECTED_TARGET="$(readlink -f "${SERVICE_ROOT}/.service/work" 2>/dev/null || echo "${SERVICE_ROOT}/.service/work")"
     if [ "${CURRENT_TARGET}" = "${EXPECTED_TARGET}" ]; then
-        log "  Data symlink already correct: ${PROFILE_DATA_DIR} -> ${SERVICE_ROOT}/work"
+        log "  Data symlink already correct: ${PROFILE_DATA_DIR} -> ${SERVICE_ROOT}/.service/work"
     else
-        log "  Updating data symlink: ${PROFILE_DATA_DIR} -> ${SERVICE_ROOT}/work"
+        log "  Updating data symlink: ${PROFILE_DATA_DIR} -> ${SERVICE_ROOT}/.service/work"
         rm -f "${PROFILE_DATA_DIR}"
-        ln -s "${SERVICE_ROOT}/work" "${PROFILE_DATA_DIR}"
+        ln -s "${SERVICE_ROOT}/.service/work" "${PROFILE_DATA_DIR}"
     fi
 elif [ -e "${PROFILE_DATA_DIR}" ]; then
     log "  Removing existing data dir to replace with symlink."
     rmdir "${PROFILE_DATA_DIR}" 2>/dev/null || rm -rf "${PROFILE_DATA_DIR}"
-    ln -s "${SERVICE_ROOT}/work" "${PROFILE_DATA_DIR}"
-    log "  Linked ${PROFILE_DATA_DIR} -> ${SERVICE_ROOT}/work"
+    ln -s "${SERVICE_ROOT}/.service/work" "${PROFILE_DATA_DIR}"
+    log "  Linked ${PROFILE_DATA_DIR} -> ${SERVICE_ROOT}/.service/work"
 else
-    ln -s "${SERVICE_ROOT}/work" "${PROFILE_DATA_DIR}"
-    log "  Linked ${PROFILE_DATA_DIR} -> ${SERVICE_ROOT}/work"
+    ln -s "${SERVICE_ROOT}/.service/work" "${PROFILE_DATA_DIR}"
+    log "  Linked ${PROFILE_DATA_DIR} -> ${SERVICE_ROOT}/.service/work"
 fi
 
 # -- [3/9] Run shake init if needed --
@@ -342,14 +342,14 @@ fi
 # Probe 5: Profile data symlink resolves to SERVICE_ROOT/work
 if [ -L "${PROFILE_DATA_DIR}" ]; then
     ACTUAL_TARGET="$(readlink -f "${PROFILE_DATA_DIR}" 2>/dev/null || readlink "${PROFILE_DATA_DIR}")"
-    EXPECTED_TARGET="$(readlink -f "${SERVICE_ROOT}/work" 2>/dev/null || echo "${SERVICE_ROOT}/work")"
+    EXPECTED_TARGET="$(readlink -f "${SERVICE_ROOT}/.service/work" 2>/dev/null || echo "${SERVICE_ROOT}/.service/work")"
     if [ "${ACTUAL_TARGET}" = "${EXPECTED_TARGET}" ]; then
-        log "  Profile data symlink: OK (${PROFILE_DATA_DIR} -> ${SERVICE_ROOT}/work)"
+        log "  Profile data symlink: OK (${PROFILE_DATA_DIR} -> ${SERVICE_ROOT}/.service/work)"
     else
         fail "Profile data symlink points to ${ACTUAL_TARGET}, expected ${EXPECTED_TARGET}"
     fi
 elif [ -d "${PROFILE_DATA_DIR}" ]; then
-    fail "Profile data dir is a directory, not a symlink (expected symlink to ${SERVICE_ROOT}/work)"
+    fail "Profile data dir is a directory, not a symlink (expected symlink to ${SERVICE_ROOT}/.service/work)"
 else
     fail "Profile data dir not found at ${PROFILE_DATA_DIR}"
 fi
