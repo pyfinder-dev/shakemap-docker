@@ -1,8 +1,20 @@
 # -*- coding: utf-8 -*-
 """ShakeMap service -- FastAPI application.
 
-Phase 01: ``GET /healthz`` -- comprehensive health and readiness.
-Phase 03: ``POST /events/submit`` -- event submission and staging.
+Provides:
+  - ``GET /healthz`` -- comprehensive health and readiness.
+  - ``GET /config`` -- active configuration inspection.
+  - ``GET /config/profiles`` -- ShakeMap profiles listing.
+  - ``POST /events/submit`` -- event submission and staging.
+  - ``GET /events`` -- event discovery with filtering.
+  - ``GET /events/{event_id}`` -- single event detail.
+  - ``GET /events/{event_id}/products`` -- event products listing.
+  - ``GET /queue`` -- current queue state.
+
+Background worker:
+  - Starts on application startup via ``lifespan``.
+  - Recovers interrupted RUNNING events from previous crashes.
+  - Continuously processes QUEUED events using ``execute_shakemap``.
 
 Two-stage health model:
   - Stage 1: infrastructure + ShakeMap CLI availability.
@@ -16,19 +28,119 @@ import logging
 import os
 import shutil
 import subprocess
+import threading
+import time
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import JSONResponse
 
 from .config import settings
 from . import paths
 from .submission import submit_event, SubmissionResult
+from .worker import recover_interrupted_events, run_worker_cycle, execute_shakemap
+from .queue import discover_queue
+from .status import read_status, scan_event_records, EventStatus
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="ShakeMap Service", version="0.1.0")
+
+# ------------------------------------------------------------------
+# Background worker thread
+# ------------------------------------------------------------------
+
+_worker_stop = threading.Event()
+
+# Backoff configuration for the worker loop.
+_WORKER_IDLE_SLEEP = 5.0       # seconds to sleep when queue is empty
+_WORKER_BUSY_SLEEP = 0.5       # seconds between processing events
+_WORKER_ERROR_SLEEP = 10.0     # seconds to sleep after an error
+_WORKER_NOT_READY_SLEEP = 30.0 # seconds to wait when Stage 2 not ready
+
+
+def _worker_loop() -> None:
+    """Background worker loop — processes QUEUED events continuously.
+
+    This loop:
+    1. Checks Stage 2 readiness before processing.
+    2. Calls ``run_worker_cycle(execute_fn=execute_shakemap)`` to
+       claim and execute the next QUEUED event.
+    3. Uses adaptive backoff: fast when busy, slow when idle.
+    4. Stops when ``_worker_stop`` is set.
+
+    Runs as a daemon thread started by the lifespan handler.
+    """
+    logger.info("Worker thread started")
+    while not _worker_stop.is_set():
+        try:
+            # Gate: only process if Stage 2 is ready
+            if not _is_stage2_ready():
+                logger.debug("Worker: Stage 2 not ready, sleeping %.0fs", _WORKER_NOT_READY_SLEEP)
+                _worker_stop.wait(_WORKER_NOT_READY_SLEEP)
+                continue
+
+            result = run_worker_cycle(execute_fn=execute_shakemap)
+
+            if result.claimed:
+                logger.info(
+                    "Worker processed event '%s': outcome=%s, final_status=%s",
+                    result.event_id, result.outcome, result.final_status,
+                )
+                # Short sleep before checking for more work
+                _worker_stop.wait(_WORKER_BUSY_SLEEP)
+            else:
+                # No candidates — idle backoff
+                _worker_stop.wait(_WORKER_IDLE_SLEEP)
+
+        except Exception:
+            logger.exception("Worker cycle error — sleeping %.0fs", _WORKER_ERROR_SLEEP)
+            _worker_stop.wait(_WORKER_ERROR_SLEEP)
+
+    logger.info("Worker thread stopped")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan handler — startup recovery and worker thread."""
+    # -- Startup --
+    logger.info("ShakeMap service starting up")
+
+    # Recover any events stuck in RUNNING from a previous crash
+    try:
+        recovered = recover_interrupted_events()
+        if recovered:
+            logger.info("Startup recovery: recovered %d interrupted events: %s",
+                        len(recovered), recovered)
+        else:
+            logger.info("Startup recovery: no interrupted events found")
+    except Exception:
+        logger.exception("Startup recovery failed — continuing anyway")
+
+    # Start background worker thread
+    _worker_stop.clear()
+    worker_thread = threading.Thread(
+        target=_worker_loop,
+        name="shakemap-worker",
+        daemon=True,
+    )
+    worker_thread.start()
+    logger.info("Background worker thread started")
+
+    yield
+
+    # -- Shutdown --
+    logger.info("ShakeMap service shutting down — stopping worker")
+    _worker_stop.set()
+    worker_thread.join(timeout=30)
+    if worker_thread.is_alive():
+        logger.warning("Worker thread did not stop within 30s timeout")
+    else:
+        logger.info("Worker thread stopped cleanly")
+
+
+app = FastAPI(title="ShakeMap Service", version="0.1.0", lifespan=lifespan)
 
 
 # ------------------------------------------------------------------
@@ -575,3 +687,242 @@ def healthz() -> dict:
 
     return response
 
+
+# ------------------------------------------------------------------
+# GET /events -- event discovery with filtering
+# ------------------------------------------------------------------
+
+@app.get("/events")
+def list_events(
+    status: Optional[str] = Query(None, description="Filter by event status (e.g. QUEUED, RUNNING, SUCCESS, FAILED)"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of events to return"),
+    offset: int = Query(0, ge=0, description="Number of events to skip"),
+) -> dict:
+    """List all events with status, timestamps, and product references.
+
+    Supports filtering by status, pagination via limit/offset,
+    and returns total and filtered counts.
+
+    Query parameters:
+        - ``status``: filter to events with this status (case-insensitive)
+        - ``limit``: max events to return (default 100, max 1000)
+        - ``offset``: skip this many events (default 0)
+    """
+    all_records = scan_event_records()
+
+    # Sort by submitted_at descending (newest first)
+    all_records.sort(key=lambda r: r.submitted_at or "", reverse=True)
+
+    total_count = len(all_records)
+
+    # Filter by status if requested
+    if status:
+        status_upper = status.upper()
+        filtered = [r for r in all_records if r.status == status_upper]
+    else:
+        filtered = all_records
+
+    filtered_count = len(filtered)
+
+    # Apply pagination
+    page = filtered[offset:offset + limit]
+
+    events = []
+    for record in page:
+        event_entry = {
+            "event_id": record.event_id,
+            "user_id": record.user_id,
+            "status": record.status,
+            "submitted_at": record.submitted_at,
+            "queued_at": record.queued_at,
+            "started_at": record.started_at,
+            "completed_at": record.completed_at,
+            "current_attempt": record.current_attempt,
+            "max_attempts": record.max_attempts,
+            "failure_reason": record.failure_reason,
+        }
+        # Include products path if available
+        if record.published_products_directory:
+            event_entry["products_path"] = record.published_products_directory
+        # Include whether products directory exists on disk
+        products_dir = paths.event_products_dir(record.event_id)
+        event_entry["has_products"] = products_dir.is_dir()
+
+        events.append(event_entry)
+
+    return {
+        "total_count": total_count,
+        "filtered_count": filtered_count,
+        "limit": limit,
+        "offset": offset,
+        "status_filter": status.upper() if status else None,
+        "events": events,
+    }
+
+
+# ------------------------------------------------------------------
+# GET /events/{event_id} -- single event detail
+# ------------------------------------------------------------------
+
+@app.get("/events/{event_id}")
+def get_event(event_id: str) -> dict:
+    """Return detailed status for a single event.
+
+    Includes full status record, execution context from the latest
+    attempt, products reference, and log reference.
+
+    Users should not need to browse runtime folders to discover
+    event state.
+
+    Returns HTTP 404 if the event does not exist.
+    """
+    record = read_status(event_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Event '{event_id}' not found")
+
+    # Build the response with full detail
+    response: dict = {
+        "event_id": record.event_id,
+        "user_id": record.user_id,
+        "status": record.status,
+        "submitted_at": record.submitted_at,
+        "validated_at": record.validated_at,
+        "queued_at": record.queued_at,
+        "started_at": record.started_at,
+        "completed_at": record.completed_at,
+        "current_attempt": record.current_attempt,
+        "max_attempts": record.max_attempts,
+        "failure_reason": record.failure_reason,
+        "validation_errors": record.validation_errors,
+    }
+
+    # Execution context from the latest attempt
+    execution_context = None
+    if record.attempt_history:
+        latest = record.attempt_history[-1]
+        execution_context = latest.execution_context
+    response["execution_context"] = execution_context
+
+    # Full attempt history
+    response["attempt_history"] = [
+        {
+            "attempt_number": a.attempt_number,
+            "started_at": a.started_at,
+            "completed_at": a.completed_at,
+            "status": a.status,
+            "failure_reason": a.failure_reason,
+            "duration_seconds": a.duration_seconds,
+            "execution_context": a.execution_context,
+        }
+        for a in record.attempt_history
+    ]
+
+    # Products reference
+    products_dir = paths.event_products_dir(record.event_id)
+    has_products = products_dir.is_dir()
+    response["products"] = {
+        "published_products_directory": record.published_products_directory,
+        "has_products": has_products,
+        "products_path": str(products_dir) if has_products else None,
+    }
+
+    # Log reference — check if ShakeMap logs exist for this event
+    log_file = paths.profile_logs_dir() / f"{record.event_id}.log"
+    response["logs"] = {
+        "log_file": str(log_file) if log_file.is_file() else None,
+        "has_log": log_file.is_file(),
+    }
+
+    # Incoming files reference
+    incoming = paths.event_incoming_dir(record.event_id)
+    incoming_files: list[str] = []
+    if incoming.is_dir():
+        incoming_files = sorted(f.name for f in incoming.iterdir() if f.is_file())
+    response["incoming_files"] = incoming_files
+
+    # Status file path (for debugging)
+    response["status_path"] = f"events/{record.event_id}/.shakemap-service/requeststatus.json"
+
+    return response
+
+
+# ------------------------------------------------------------------
+# GET /events/{event_id}/products -- event product files listing
+# ------------------------------------------------------------------
+
+@app.get("/events/{event_id}/products")
+def get_event_products(event_id: str) -> dict:
+    """List product files for a completed event.
+
+    Returns the list of files in the products directory for the
+    given event.  Returns HTTP 404 if the event does not exist.
+    Returns an empty file list if no products have been published.
+    """
+    record = read_status(event_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Event '{event_id}' not found")
+
+    products_dir = paths.event_products_dir(event_id)
+    files: list[dict] = []
+
+    if products_dir.is_dir():
+        for item in sorted(products_dir.iterdir()):
+            if item.name.startswith("."):
+                continue  # skip hidden files
+            entry: dict = {
+                "name": item.name,
+                "is_dir": item.is_dir(),
+            }
+            if item.is_file():
+                try:
+                    entry["size_bytes"] = item.stat().st_size
+                except OSError:
+                    entry["size_bytes"] = None
+            files.append(entry)
+
+    return {
+        "event_id": event_id,
+        "status": record.status,
+        "products_directory": str(products_dir) if products_dir.is_dir() else None,
+        "published_products_directory": record.published_products_directory,
+        "file_count": len(files),
+        "files": files,
+    }
+
+
+# ------------------------------------------------------------------
+# GET /queue -- current queue state
+# ------------------------------------------------------------------
+
+@app.get("/queue")
+def get_queue() -> dict:
+    """Return the current queue state.
+
+    Shows pending QUEUED events in FIFO order, any malformed records
+    encountered during discovery, and the queue size.
+    """
+    candidates, malformed = discover_queue()
+
+    events = [
+        {
+            "event_id": r.event_id,
+            "user_id": r.user_id,
+            "queued_at": r.queued_at,
+            "submitted_at": r.submitted_at,
+            "current_attempt": r.current_attempt,
+            "max_attempts": r.max_attempts,
+        }
+        for r in candidates
+    ]
+
+    malformed_entries = [
+        {"event_id": m.event_id, "error": m.error}
+        for m in malformed
+    ]
+
+    return {
+        "pending_count": len(candidates),
+        "events": events,
+        "malformed_count": len(malformed),
+        "malformed": malformed_entries,
+    }

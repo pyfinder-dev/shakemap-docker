@@ -217,6 +217,182 @@ curl -s -X POST http://localhost:9010/events/submit \
 
 ---
 
+### GET /events
+
+List all events with status, timestamps, and product references. Supports filtering and pagination.
+
+**Request:**
+
+```bash
+# List all events
+curl -s http://localhost:9010/events | python3 -m json.tool
+
+# Filter by status
+curl -s "http://localhost:9010/events?status=SUCCESS" | python3 -m json.tool
+
+# Paginate
+curl -s "http://localhost:9010/events?limit=10&offset=20" | python3 -m json.tool
+```
+
+**Query parameters:**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `status` | _(none)_ | Filter by event status (case-insensitive): `QUEUED`, `RUNNING`, `SUCCESS`, `FAILED`, etc. |
+| `limit` | `100` | Maximum number of events to return (1–1000) |
+| `offset` | `0` | Number of events to skip for pagination |
+
+**Response:**
+
+```json
+{
+  "total_count": 5,
+  "filtered_count": 2,
+  "limit": 100,
+  "offset": 0,
+  "status_filter": "SUCCESS",
+  "events": [
+    {
+      "event_id": "20240101_120000_fixture",
+      "user_id": "operator",
+      "status": "SUCCESS",
+      "submitted_at": "2026-06-28T10:00:00+00:00",
+      "queued_at": "2026-06-28T10:00:01+00:00",
+      "started_at": "2026-06-28T10:00:02+00:00",
+      "completed_at": "2026-06-28T10:00:15+00:00",
+      "current_attempt": 1,
+      "max_attempts": 3,
+      "failure_reason": null,
+      "products_path": "products/20240101_120000_fixture",
+      "has_products": true
+    }
+  ]
+}
+```
+
+---
+
+### GET /events/{event_id}
+
+Return detailed status for a single event. Includes execution context, attempt history, products reference, log reference, and incoming files.
+
+**Request:**
+
+```bash
+curl -s http://localhost:9010/events/20240101_120000_fixture | python3 -m json.tool
+```
+
+**Response:**
+
+```json
+{
+  "event_id": "20240101_120000_fixture",
+  "user_id": "operator",
+  "status": "SUCCESS",
+  "submitted_at": "2026-06-28T10:00:00+00:00",
+  "validated_at": "2026-06-28T10:00:00+00:00",
+  "queued_at": "2026-06-28T10:00:01+00:00",
+  "started_at": "2026-06-28T10:00:02+00:00",
+  "completed_at": "2026-06-28T10:00:15+00:00",
+  "current_attempt": 1,
+  "max_attempts": 3,
+  "failure_reason": null,
+  "validation_errors": null,
+  "execution_context": {
+    "profile": "default",
+    "modules": ["select", "assemble", "model", "contour", "mapping", "stations", "gridxml"]
+  },
+  "attempt_history": [ ... ],
+  "products": {
+    "published_products_directory": "products/20240101_120000_fixture",
+    "has_products": true,
+    "products_path": "/home/sysop/runtime/shakemap/products/20240101_120000_fixture"
+  },
+  "logs": {
+    "log_file": null,
+    "has_log": false
+  },
+  "incoming_files": ["event.xml", "event_dat.xml", "rupture.json"],
+  "status_path": "events/20240101_120000_fixture/.shakemap-service/requeststatus.json"
+}
+```
+
+**Status codes:**
+
+| Code | Condition |
+|------|-----------|
+| 200 | Event found |
+| 404 | Event not found |
+
+---
+
+### GET /events/{event_id}/products
+
+List product files for a completed event.
+
+**Request:**
+
+```bash
+curl -s http://localhost:9010/events/20240101_120000_fixture/products | python3 -m json.tool
+```
+
+**Response:**
+
+```json
+{
+  "event_id": "20240101_120000_fixture",
+  "status": "SUCCESS",
+  "products_directory": "/home/sysop/runtime/shakemap/products/20240101_120000_fixture",
+  "published_products_directory": "products/20240101_120000_fixture",
+  "file_count": 5,
+  "files": [
+    { "name": "grid.xml", "is_dir": false, "size_bytes": 12345 },
+    { "name": "intensity.jpg", "is_dir": false, "size_bytes": 67890 }
+  ]
+}
+```
+
+**Status codes:**
+
+| Code | Condition |
+|------|-----------|
+| 200 | Event found (file list may be empty if no products) |
+| 404 | Event not found |
+
+---
+
+### GET /queue
+
+Return the current queue state. Shows pending QUEUED events in FIFO order.
+
+**Request:**
+
+```bash
+curl -s http://localhost:9010/queue | python3 -m json.tool
+```
+
+**Response:**
+
+```json
+{
+  "pending_count": 2,
+  "events": [
+    {
+      "event_id": "event_001",
+      "user_id": "operator",
+      "queued_at": "2026-06-28T10:00:00+00:00",
+      "submitted_at": "2026-06-28T10:00:00+00:00",
+      "current_attempt": 0,
+      "max_attempts": 3
+    }
+  ],
+  "malformed_count": 0,
+  "malformed": []
+}
+```
+
+---
+
 ### Auto-Generated Documentation
 
 FastAPI automatically provides interactive documentation:

@@ -12,11 +12,13 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 # ---------- System packages ----------
 # - git: to clone the official ShakeMap repo
+# - curl: required by configure-shakemap.sh for data downloads
 # - nano: simple text editor inside container
 # - build / numeric libs: likely needed by ShakeMap deps
 # - gdal-bin, libgdal-dev: required by Fiona (and thus shakemap-modules)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
+    curl \
     nano \
     gcc \
     g++ \

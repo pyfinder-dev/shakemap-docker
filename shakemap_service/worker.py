@@ -1,39 +1,25 @@
 # -*- coding: utf-8 -*-
-"""Worker skeleton for claim-and-execute loop.
-
-Phase 05 — Worker Claim Locking and Execution Skeleton.
+"""Worker claim-and-execute loop for ShakeMap event processing.
 
 This module provides:
 
 - ``WorkerResult`` — outcome dataclass for a single worker cycle.
 - ``process_next_event()`` — claim the next QUEUED event from a snapshot
-  and execute a placeholder function (no real ShakeMap execution).
-- ``execute_placeholder()`` — placeholder execution function that records
-  "not implemented" and leaves the event in a deterministic safe state.
+  and execute it via the ShakeMap CLI.
+- ``execute_shakemap()`` — production execution function that delegates
+  to ``runner.run_shake_for_event()``.
+- ``execute_placeholder()`` — development/debug-only function that does
+  NOT run ShakeMap and returns events to QUEUED.  Must be passed
+  explicitly; never used in production startup.
 - ``run_worker_cycle()`` — take a queue snapshot, claim and process the
   next event, return the outcome.
 - ``recover_interrupted_events()`` — find RUNNING events on disk and
   re-queue or fail them as appropriate (restart recovery).
 
-Design constraints:
-
-- This is a skeleton — real ShakeMap execution is NOT performed.
-- No subprocess calls to ``shake``.
-- No product publication, no provenance generation.
-- No REST endpoints, no CLI, no profile management.
-- ``runner.py`` is NOT imported or modified.
-- Placeholder execution leaves events in ``QUEUED`` status (not fake
-  SUCCESS) — this ensures no downstream consumer mistakes an unprocessed
-  event for a completed one.
-
-Phase 06 handoff:
-    To plug in real execution, replace the ``execute_fn`` parameter
-    in ``process_next_event()`` with a function that:
-    1. Receives the claimed ``RequestStatus`` record.
-    2. Calls ``runner.run_shake(event_id, ...)``.
-    3. On success: calls ``status.transition_to_success(event_id, ...)``.
-    4. On failure: calls ``status.transition_to_failed(event_id, reason)``.
-    The claim locking and snapshot mechanics do not need to change.
+Execution model:
+    - Worker owns QUEUED → RUNNING (claim locking).
+    - Runner owns RUNNING → SUCCESS/FAILED (via execute_shakemap callback).
+    - Placeholder returns events to QUEUED — development/debug only.
 """
 from __future__ import annotations
 
@@ -83,16 +69,21 @@ class WorkerResult:
 # ------------------------------------------------------------------
 
 # Placeholder sentinel outcome — not SUCCESS, not FAILED.  The event
-# is returned to QUEUED so it remains discoverable and processable
-# once real execution is implemented.
+# is returned to QUEUED so it remains discoverable and processable.
+# This is a DEVELOPMENT/DEBUG-ONLY code path.
 PLACEHOLDER_OUTCOME = "placeholder_no_execution"
 
 
 def execute_placeholder(record: RequestStatus) -> str:
-    """Placeholder execution function — does NOT run ShakeMap.
+    """Development/debug-only execution function — does NOT run ShakeMap.
+
+    .. warning::
+       This function is for development and debugging ONLY.  It must
+       be passed explicitly to ``process_next_event()`` or
+       ``run_worker_cycle()``; it is never used in production startup.
 
     This function:
-    1. Logs that real execution is not yet implemented.
+    1. Logs that placeholder execution is active.
     2. Returns a safe outcome string ("placeholder_no_execution").
     3. Does NOT transition the event to SUCCESS or FAILED.
 
@@ -103,26 +94,29 @@ def execute_placeholder(record: RequestStatus) -> str:
         ``"placeholder_no_execution"`` — always.
     """
     logger.info(
-        "Placeholder execution for event '%s' -- ShakeMap not yet implemented. "
-        "Event will be returned to QUEUED.",
+        "PLACEHOLDER execution for event '%s' -- ShakeMap NOT executed. "
+        "Event will be returned to QUEUED. "
+        "This is a development/debug code path.",
         record.event_id,
     )
     return PLACEHOLDER_OUTCOME
 
 
 def execute_shakemap(record: RequestStatus) -> str:
-    """Real ShakeMap execution callback -- Phase 07.
+    """Production execution callback — runs ShakeMap for the claimed event.
 
     This function:
     1. Receives the claimed RequestStatus record (already RUNNING).
     2. Delegates to ``runner.run_shake_for_event()`` which handles:
-       - Data preparation (incoming -> ShakeMap data layout)
+       - Data preparation (incoming → ShakeMap data layout)
        - ShakeMap CLI invocation with configured modules
        - Product collection and atomic publication
-       - RUNNING -> SUCCESS/FAILED status transitions
+       - RUNNING → SUCCESS/FAILED status transitions
 
-    The worker owns QUEUED -> RUNNING (claim locking).
-    The runner owns RUNNING -> SUCCESS/FAILED (via this callback).
+    The worker owns QUEUED → RUNNING (claim locking).
+    The runner owns RUNNING → SUCCESS/FAILED (via this callback).
+
+    This is the default execution function for production use.
 
     Returns:
         ``"success"`` or ``"failed"`` as outcome string.
@@ -142,7 +136,7 @@ ExecuteFn = Callable[[RequestStatus], str]
 
 def process_next_event(
     snapshot: QueueSnapshot,
-    execute_fn: ExecuteFn = execute_placeholder,
+    execute_fn: ExecuteFn = execute_shakemap,
 ) -> WorkerResult:
     """Claim the next QUEUED event and execute it.
 
@@ -293,17 +287,17 @@ def _return_to_queued(event_id: str) -> None:
 # ------------------------------------------------------------------
 
 def run_worker_cycle(
-    execute_fn: ExecuteFn = execute_placeholder,
+    execute_fn: ExecuteFn = execute_shakemap,
 ) -> WorkerResult:
     """Take a queue snapshot, claim and process the next event.
 
     This is the top-level entry point for a single worker iteration.
-    A real worker loop would call this repeatedly (with appropriate
-    sleep between cycles).
+    The background worker loop calls this repeatedly with backoff.
 
     Args:
         execute_fn: The execution function to call.  Defaults to
-            the placeholder.
+            ``execute_shakemap`` for production use.  Pass
+            ``execute_placeholder`` explicitly for development/debug.
 
     Returns:
         A ``WorkerResult`` describing what happened.

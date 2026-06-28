@@ -136,6 +136,10 @@ For the full health response schema, override model, and Kubernetes probe config
 | `GET` | `/config` | Active configuration inspection |
 | `GET` | `/config/profiles` | List ShakeMap profiles with validation status |
 | `POST` | `/events/submit` | Submit an earthquake event for processing |
+| `GET` | `/events` | List events with status filtering and pagination |
+| `GET` | `/events/{event_id}` | Detailed status for a single event |
+| `GET` | `/events/{event_id}/products` | List product files for a completed event |
+| `GET` | `/queue` | Current queue state (pending events) |
 | `GET` | `/docs` | Interactive API documentation (Swagger UI) |
 | `GET` | `/redoc` | Alternative API documentation |
 | `GET` | `/openapi.json` | OpenAPI schema |
@@ -194,6 +198,7 @@ For platform-specific behavior on macOS Docker Desktop and Windows, see the [Per
 | `configure-shakemap.sh` | Container | Configure ShakeMap profile and data (Stage 2) |
 | `verify-shakemap-deployment.sh` | Host | Verify a running deployment |
 | `inspect-shakemap-config.sh` | Container | Print the active ShakeMap configuration |
+| `inspect-shakemap-events.sh` | Container | Inspect events, queue state, and products |
 | `verify-shakemap-build.sh` | Container | _(Dev)_ Verify build infrastructure |
 | `verify-shakemap-config.sh` | Container | _(Dev)_ Verify configuration state |
 | `run-shakemap-ci-tests.sh` | Host | _(Dev)_ Full CI test suite |
