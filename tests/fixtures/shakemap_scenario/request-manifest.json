@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "fixture_id": "SCENARIO",
+  "classification": "SCENARIO",
+  "purpose": "Fixed client request for release-matched native ShakeMap integration verification",
+  "compatible_shakemap": {
+    "release_tag": "v4.4.9",
+    "source_commit": "8923f1ff6e82fc866d928a33d1e19e45f276db52"
+  },
+  "source": {
+    "repository": "https://code.usgs.gov/ghsc/esi/shakemap.git",
+    "license": "USGS public domain in the United States and CC0-1.0 as stated by the upstream repository",
+    "license_url": "https://code.usgs.gov/ghsc/esi/shakemap/-/blob/8923f1ff6e82fc866d928a33d1e19e45f276db52/LICENSE.md",
+    "original_event_id": "nc72282711",
+    "description": "USGS ShakeMap v4.4.9 South Napa test event and instrumental station list"
+  },
+  "files": [
+    {
+      "installed_name": "event.xml",
+      "source_name": "tests/data/eventdata/nc72282711/current/data/event.xml",
+      "source_url": "https://code.usgs.gov/ghsc/esi/shakemap/-/raw/8923f1ff6e82fc866d928a33d1e19e45f276db52/tests/data/eventdata/nc72282711/current/data/event.xml",
+      "source_size": 187,
+      "source_sha256": "28d54fc64c835fbbd03309847de6504d7876d9766824826d61507a32aaf60764",
+      "installed_size": 207,
+      "installed_sha256": "2877da340be53de959821883357759ac403d950248cc94270e282ddfca753931",
+      "transformation": "Changed id from nc72282711 to SCENARIO and added event_type=SCENARIO; origin values are unchanged"
+    },
+    {
+      "installed_name": "event_dat.xml",
+      "source_name": "tests/data/eventdata/nc72282711/current/data/stationlist.xml",
+      "source_url": "https://code.usgs.gov/ghsc/esi/shakemap/-/raw/8923f1ff6e82fc866d928a33d1e19e45f276db52/tests/data/eventdata/nc72282711/current/data/stationlist.xml",
+      "source_size": 274693,
+      "source_sha256": "80e0e8704ed6083cf9de1f77c5b0e2b016e862be50f9715f9ed45629f7508e64",
+      "installed_size": 274693,
+      "installed_sha256": "672979a942a676fecee2a7225c0acecfcde5f5abd97bec1f252673a617c98054",
+      "transformation": "Renamed stationlist.xml to event_dat.xml and changed the embedded earthquake id from 72282711 to SCENARIO; observations are unchanged"
+    }
+  ],
+  "observations": {
+    "kind": "instrumental ground-motion observations",
+    "station_count": 334,
+    "component_count": 999,
+    "networks": ["BG", "BK", "CE", "NC", "NP", "WR"],
+    "measures": ["PGA", "PGV", "PSA(0.3s)", "PSA(1.0s)", "PSA(3.0s)"],
+    "provenance": "Unmodified observation values from the official USGS ShakeMap v4.4.9 South Napa test station list"
+  },
+  "limitations": [
+    "This is a verification scenario, not a current real-event feed.",
+    "Including observations does not make station data mandatory for all calculations.",
+    "No finite rupture is included; ShakeMap uses its point-source behavior.",
+    "Generic XML or JSON parsing does not prove native ShakeMap acceptance.",
+    "A native pass proves only compatibility with the paired verification package and exact image identity."
+  ]
+}

@@ -30,7 +30,7 @@ IMAGE_DIGEST = "registry.example/shakemap@sha256:" + "2" * 64
 
 def identity_manifest() -> dict:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "immutable_image": {
             "available": True,
             "upstream": {
@@ -49,9 +49,60 @@ def identity_manifest() -> dict:
                 "source_commit": SERVICE_COMMIT,
                 "worktree_dirty_at_build": True,
             },
+            "support": {
+                "natural_earth": {
+                    "tag": "v5.1.2",
+                    "commit": "e" * 40,
+                    "manifest_path": "/opt/shakemap-support/natural-earth-v5.1.2.json",
+                    "manifest_sha256": "f" * 64,
+                    "cartopy_data_dir": "/opt/shakemap-support/cartopy",
+                    "file_count": 20,
+                    "layers": ["cultural/admin_0_countries"],
+                },
+                "strec": {
+                    "distribution_version": "2.3.14",
+                    "database_path": "/site-packages/strec/data/moment_tensors.db",
+                    "database_link": "/opt/shakemap-support/strec/moment_tensors.db",
+                    "database_size": 10,
+                    "database_sha256": "a" * 64,
+                    "database_is_installed_distribution_file": True,
+                },
+            },
             "built_at_utc": "2026-07-22T12:00:00Z",
         },
     }
+
+
+def make_support(root: Path) -> tuple[Path, Path, Path, Path]:
+    cartopy = root / "cartopy"
+    records = []
+    for index in range(20):
+        relative = f"shapefiles/natural_earth/test/file-{index}.bin"
+        path = cartopy / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = f"natural-earth-{index}\n".encode()
+        path.write_bytes(data)
+        import hashlib
+        records.append({
+            "source_path": f"source-{index}",
+            "target_path": relative,
+            "size": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+        })
+    manifest = root / "natural-earth.json"
+    manifest.write_text(json.dumps({
+        "schema_version": 1,
+        "tag": "v5.1.2",
+        "commit": "e" * 40,
+        "layers": ["cultural/admin_0_countries"],
+        "files": records,
+    }), encoding="utf-8")
+    database = root / "strec/data/moment_tensors.db"
+    database.parent.mkdir(parents=True, exist_ok=True)
+    database.write_bytes(b"strec database\n")
+    link = root / "strec-link.db"
+    link.symlink_to(database)
+    return manifest, cartopy, database, link
 
 
 class BuildIdentityTests(unittest.TestCase):
@@ -136,7 +187,12 @@ class BuildIdentityTests(unittest.TestCase):
         self.assertEqual(unavailable["source"], "unavailable")
 
     def test_config_health_and_provenance_use_shared_loader(self) -> None:
-        not_ready = {"passed": False, "reason": "test data unavailable", "overrides": []}
+        not_ready = {
+            "passed": False,
+            "reason": "test data unavailable",
+            "overrides": [],
+            "preparation": {"available": False, "ready": False},
+        }
         with patch.object(main, "_read_readiness_sentinel", return_value=not_ready):
             config_response = main.get_config()
             health_response = main.healthz()
@@ -170,11 +226,17 @@ class BuildIdentityTests(unittest.TestCase):
         dependencies = self.root / "dependencies.txt"
         dependencies.write_text("example==1.0\n", encoding="utf-8")
         output = self.root / "written.json"
+        natural_manifest, cartopy, strec_database, strec_link = make_support(self.root / "support-api")
+        class FakeStrec:
+            version = "2.3.14"
+            files = [Path("strec/data/moment_tensors.db")]
+            def locate_file(self, item):
+                return strec_database
         with patch.object(
             build_identity,
             "_distribution_version",
             side_effect=lambda name: "4.4.10" if name == "shakemap" else "1.2.3",
-        ):
+        ), patch.object(build_identity.importlib.metadata, "distribution", return_value=FakeStrec()):
             manifest = build_identity.write_build_identity(
                 output=output,
                 dependencies=dependencies,
@@ -185,6 +247,9 @@ class BuildIdentityTests(unittest.TestCase):
                 service_commit=SERVICE_COMMIT,
                 service_worktree_dirty="false",
                 build_timestamp_utc="2026-07-22T12:00:00Z",
+                natural_earth_manifest=natural_manifest,
+                cartopy_data_dir=cartopy,
+                strec_database_link=strec_link,
             )
         self.assertEqual(json.loads(output.read_text(encoding="utf-8")), manifest)
         self.assertFalse(manifest["immutable_image"]["service"]["worktree_dirty_at_build"])
@@ -195,6 +260,7 @@ class BuildIdentityTests(unittest.TestCase):
         for directory, name, version in (
             ("shakemap-4.4.10.dist-info", "shakemap", "4.4.10"),
             ("shakemap_modules-1.2.3.dist-info", "shakemap-modules", "1.2.3"),
+            ("usgs_strec-2.3.14.dist-info", "usgs-strec", "2.3.14"),
         ):
             dist_info = metadata_root / directory
             dist_info.mkdir()
@@ -202,6 +268,9 @@ class BuildIdentityTests(unittest.TestCase):
                 f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n",
                 encoding="utf-8",
             )
+        natural_manifest, cartopy, strec_database, strec_link = make_support(metadata_root)
+        strec_record = metadata_root / "usgs_strec-2.3.14.dist-info" / "RECORD"
+        strec_record.write_text("strec/data/moment_tensors.db,,\n", encoding="utf-8")
         dependencies = self.root / "cli-dependencies.txt"
         dependencies.write_text("example==1.0\n", encoding="utf-8")
         output = self.root / "cli-identity.json"
@@ -222,6 +291,9 @@ class BuildIdentityTests(unittest.TestCase):
                 "--service-commit", SERVICE_COMMIT,
                 "--service-worktree-dirty", "unknown",
                 "--build-timestamp-utc", "2026-07-22T12:00:00Z",
+                "--natural-earth-manifest", str(natural_manifest),
+                "--cartopy-data-dir", str(cartopy),
+                "--strec-database-link", str(strec_link),
             ],
             cwd=PROJECT_DIR,
             env=environment,

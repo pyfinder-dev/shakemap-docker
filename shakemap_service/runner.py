@@ -255,7 +255,7 @@ def _write_provenance(
     provenance: dict = {
         "event_id": event_id,
         "user_id": record.user_id,
-        "profile": settings.shakemap_profile,
+        "profile": "legacy-shared-profile-execution-disabled",
         "modules": modules,
         "model_conf_path": str(model_conf) if model_conf.is_file() else None,
         "products_conf_path": str(products_conf) if products_conf.is_file() else None,
@@ -446,7 +446,7 @@ def run_shake_for_event(record: RequestStatus) -> str:
 
     # Step 0: Record execution context on the current attempt.
     execution_context = {
-        "profile": settings.shakemap_profile,
+        "profile": "legacy-shared-profile-execution-disabled",
         "modules": modules,
     }
     try:
@@ -456,7 +456,7 @@ def run_shake_for_event(record: RequestStatus) -> str:
             write_status_atomic(event_id, current_record)
             logger.info(
                 "Event '%s': execution_context recorded (profile=%s, modules=%s)",
-                event_id, settings.shakemap_profile, modules,
+                event_id, "legacy-shared-profile-execution-disabled", modules,
             )
     except Exception as exc:
         # Non-fatal: continue execution even if context recording fails

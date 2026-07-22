@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "dataset": "Natural Earth vector",
+  "tag": "v5.1.2",
+  "commit": "f1890d9f152c896d250a77557a5751a93d494776",
+  "repository": "https://github.com/nvkelso/natural-earth-vector.git",
+  "url_prefix": "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/f1890d9f152c896d250a77557a5751a93d494776/",
+  "license": {
+    "summary": "Natural Earth vector data are public domain",
+    "url": "https://www.naturalearthdata.com/about/terms-of-use/"
+  },
+  "purpose": "Exact Natural Earth 10 m layers used by the default ShakeMap mapping module when products.conf does not override them",
+  "layers": [
+    "cultural/admin_0_countries",
+    "cultural/admin_1_states_provinces_lines",
+    "physical/lakes",
+    "physical/ocean"
+  ],
+  "files": [
+    {"source_path":"10m_cultural/ne_10m_admin_0_countries.cpg","target_path":"shapefiles/natural_earth/cultural/ne_10m_admin_0_countries.cpg","size":5,"sha256":"3ad3031f5503a4404af825262ee8232cc04d4ea6683d42c5dd0a2f2a27ac9824"},
+    {"source_path":"10m_cultural/ne_10m_admin_0_countries.dbf","target_path":"shapefiles/natural_earth/cultural/ne_10m_admin_0_countries.dbf","size":878482,"sha256":"c5dbd3dd5fd7e2ef49051fc88562c03819e8ea63a382642df6eadd1243bf4b49"},
+    {"source_path":"10m_cultural/ne_10m_admin_0_countries.prj","target_path":"shapefiles/natural_earth/cultural/ne_10m_admin_0_countries.prj","size":145,"sha256":"a02a27b1d1982c8516d83398e85a3c8b1aef1713c13ef4d84d7bde17430c07c4"},
+    {"source_path":"10m_cultural/ne_10m_admin_0_countries.shp","target_path":"shapefiles/natural_earth/cultural/ne_10m_admin_0_countries.shp","size":8806224,"sha256":"7ce119ef6342e43cff7c0c3004e0911ab7ec1988a14734372031d2012180e7bc"},
+    {"source_path":"10m_cultural/ne_10m_admin_0_countries.shx","target_path":"shapefiles/natural_earth/cultural/ne_10m_admin_0_countries.shx","size":2164,"sha256":"ca19ec112d054c77bc8f7ac00e3b110d5dff32cc9bcf4cd1b8b66bdd0f611d32"},
+    {"source_path":"10m_cultural/ne_10m_admin_1_states_provinces_lines.cpg","target_path":"shapefiles/natural_earth/cultural/ne_10m_admin_1_states_provinces_lines.cpg","size":5,"sha256":"3ad3031f5503a4404af825262ee8232cc04d4ea6683d42c5dd0a2f2a27ac9824"},
+    {"source_path":"10m_cultural/ne_10m_admin_1_states_provinces_lines.dbf","target_path":"shapefiles/natural_earth/cultural/ne_10m_admin_1_states_provinces_lines.dbf","size":28095898,"sha256":"b524fd1baf59386cd4bca0d6df642ddb02be9cdc4d69f1f1d109885acf21d9ed"},
+    {"source_path":"10m_cultural/ne_10m_admin_1_states_provinces_lines.prj","target_path":"shapefiles/natural_earth/cultural/ne_10m_admin_1_states_provinces_lines.prj","size":145,"sha256":"a02a27b1d1982c8516d83398e85a3c8b1aef1713c13ef4d84d7bde17430c07c4"},
+    {"source_path":"10m_cultural/ne_10m_admin_1_states_provinces_lines.shp","target_path":"shapefiles/natural_earth/cultural/ne_10m_admin_1_states_provinces_lines.shp","size":7363120,"sha256":"c89b8545fdb03a764df9de2efeadf0d6735169d94b48a315b5e233780e073ab5"},
+    {"source_path":"10m_cultural/ne_10m_admin_1_states_provinces_lines.shx","target_path":"shapefiles/natural_earth/cultural/ne_10m_admin_1_states_provinces_lines.shx","size":81532,"sha256":"ba65a7072e06b5454bca8c0a527978333571f3ce45094f006a60f18f8509db10"},
+    {"source_path":"10m_physical/ne_10m_lakes.cpg","target_path":"shapefiles/natural_earth/physical/ne_10m_lakes.cpg","size":5,"sha256":"3ad3031f5503a4404af825262ee8232cc04d4ea6683d42c5dd0a2f2a27ac9824"},
+    {"source_path":"10m_physical/ne_10m_lakes.dbf","target_path":"shapefiles/natural_earth/physical/ne_10m_lakes.dbf","size":9993116,"sha256":"0edaa87f76c2221c986f0796ce0b54b1c418e9032afba46f8e302edc41193495"},
+    {"source_path":"10m_physical/ne_10m_lakes.prj","target_path":"shapefiles/natural_earth/physical/ne_10m_lakes.prj","size":145,"sha256":"a02a27b1d1982c8516d83398e85a3c8b1aef1713c13ef4d84d7bde17430c07c4"},
+    {"source_path":"10m_physical/ne_10m_lakes.shp","target_path":"shapefiles/natural_earth/physical/ne_10m_lakes.shp","size":2682580,"sha256":"11064fa55ed91b56a0d86733643c1a5bfcc137fdf044e83f471978a5b86617e1"},
+    {"source_path":"10m_physical/ne_10m_lakes.shx","target_path":"shapefiles/natural_earth/physical/ne_10m_lakes.shx","size":10940,"sha256":"a11ffb02e862b6c4ec8c015e6e0c70502f21bc71dcd79312b8dbc676f7e4c557"},
+    {"source_path":"10m_physical/ne_10m_ocean.cpg","target_path":"shapefiles/natural_earth/physical/ne_10m_ocean.cpg","size":5,"sha256":"3ad3031f5503a4404af825262ee8232cc04d4ea6683d42c5dd0a2f2a27ac9824"},
+    {"source_path":"10m_physical/ne_10m_ocean.dbf","target_path":"shapefiles/natural_earth/physical/ne_10m_ocean.dbf","size":138,"sha256":"4b2f302a84bcbb0fe5d744a9b40df173f562e07eb57532935fb6bc664d21fa33"},
+    {"source_path":"10m_physical/ne_10m_ocean.prj","target_path":"shapefiles/natural_earth/physical/ne_10m_ocean.prj","size":145,"sha256":"a02a27b1d1982c8516d83398e85a3c8b1aef1713c13ef4d84d7bde17430c07c4"},
+    {"source_path":"10m_physical/ne_10m_ocean.shp","target_path":"shapefiles/natural_earth/physical/ne_10m_ocean.shp","size":7176064,"sha256":"bb5ae1e0922b02e61e14f6d562fc2299db4bef5ca36c1008b1a8e7ddf9da6410"},
+    {"source_path":"10m_physical/ne_10m_ocean.shx","target_path":"shapefiles/natural_earth/physical/ne_10m_ocean.shx","size":108,"sha256":"90ada34d9c3ff5f1f53064e01968b178b72d6eb8d3f1cbc1287b501e2805880b"}
+  ]
+}

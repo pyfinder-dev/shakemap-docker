@@ -249,7 +249,7 @@ def list_profiles() -> list[str]:
 
 
 # ------------------------------------------------------------------
-# Stage 2 data and sentinel path functions
+# Prepared scientific-data and durable base-snapshot paths
 # ------------------------------------------------------------------
 
 def shakemap_data_dir() -> Path:
@@ -278,5 +278,15 @@ def topo_grid_path() -> Path:
 
 
 def readiness_sentinel() -> Path:
-    """Return the path to the ShakeMap readiness status sentinel file."""
-    return shakemap_home_dir() / ".shakemap_readiness_status"
+    """Return the durable mounted runtime preparation manifest path."""
+    return service_dir() / "preparation" / "manifest.json"
+
+
+def preparation_dir() -> Path:
+    """Return the durable preparation state root."""
+    return service_dir() / "preparation"
+
+
+def global_base_dir() -> Path:
+    """Return the validated global base snapshot."""
+    return preparation_dir() / "base" / "global"

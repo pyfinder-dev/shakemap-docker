@@ -2,9 +2,9 @@
 set -euo pipefail
 
 # ------------------------------------------------------------------
-# Stage 1 -- Build / Runtime Foundation
+# Runtime foundation and API startup
 #
-# This entrypoint handles ONLY Stage 1 concerns:
+# This entrypoint handles runtime/API concerns only:
 #   [1/7] Read environment variables with defaults
 #   [2/7] Log environment
 #   [3/7] Ensure runtime root exists
@@ -13,24 +13,21 @@ set -euo pipefail
 #   [6/7] Verify ShakeMap CLI is on PATH (smoke check)
 #   [7/7] Start FastAPI service
 #
-# Stage 2 (ShakeMap profile configuration, data provisioning) is
-# handled separately by /app/scripts/configure-shakemap.sh, run by
-# the operator after the container is up.
+# Runtime preparation is a host-side pre-start operation. This entrypoint never
+# downloads scientific data or creates a shared mutable ShakeMap profile.
 # ------------------------------------------------------------------
 
 # [1/7] Read environment with defaults
 RUNTIME_ROOT="${RUNTIME_ROOT:-/home/sysop/runtime}"
 SERVICE_ROOT="${SERVICE_ROOT:-${RUNTIME_ROOT}/shakemap}"
-PROFILE="${SHAKEMAP_PROFILE:-default}"
 REQUIRE_MOUNT="${SHAKEMAP_REQUIRE_MOUNT:-0}"
 PORT="${SHAKEMAP_PORT:-9010}"
 MODULES="${SHAKEMAP_MODULES:-select assemble model contour mapping stations gridxml}"
 
 # [2/7] Log environment
-echo "[entrypoint] Starting ShakeMap Docker entrypoint (Stage 1)..."
+echo "[entrypoint] Starting ShakeMap Docker service..."
 echo "[entrypoint] RUNTIME_ROOT            = ${RUNTIME_ROOT}"
 echo "[entrypoint] SERVICE_ROOT            = ${SERVICE_ROOT}"
-echo "[entrypoint] SHAKEMAP_PROFILE        = ${PROFILE}"
 echo "[entrypoint] SHAKEMAP_PORT           = ${PORT}"
 echo "[entrypoint] SHAKEMAP_REQUIRE_MOUNT  = ${REQUIRE_MOUNT}"
 echo "[entrypoint] SHAKEMAP_MODULES        = ${MODULES}"
@@ -69,12 +66,9 @@ for dir in .service/events .service/work .service/archive; do
     mkdir -p "${SERVICE_ROOT}/${dir}"
 done
 
-# Shared data directory structure for Stage 2
+# Stable external data directories (normally already prepared on the host)
 mkdir -p "${SERVICE_ROOT}/data/vs30"
 mkdir -p "${SERVICE_ROOT}/data/topo"
-
-# Create .shakemap dir for Stage 2 sentinel
-mkdir -p "${HOME:-/home/sysop}/.shakemap"
 
 # Best-effort chmod -- has NO real effect on bind mounts.
 for dir in incoming products logs data data/vs30 data/topo .service .service/events .service/work .service/archive; do
@@ -110,9 +104,13 @@ else
     echo "[entrypoint] WARNING: 'shake' not found on PATH. ShakeMap may not be installed correctly."
 fi
 
-# Stage 2 is NOT run by default
-echo "[entrypoint] Stage 1 complete. Stage 2 configuration must be run separately:"
-echo "[entrypoint]   docker exec <container> /app/scripts/configure-shakemap.sh"
+# Report but do not invent a hard startup refusal for missing preparation.
+if python -m shakemap_service.preparation validate-record --service-root "${SERVICE_ROOT}" >/dev/null 2>&1; then
+    echo "[entrypoint] Durable runtime preparation record is valid."
+else
+    echo "[entrypoint] WARNING: durable runtime preparation is missing or invalid; API will report not_ready."
+    echo "[entrypoint] Run ./scripts/configure-shakemap.sh on the host before recreating the container."
+fi
 
 # [7/7] Start the FastAPI service
 echo "[entrypoint] [7/7] Starting shakemap_service on port ${PORT}"

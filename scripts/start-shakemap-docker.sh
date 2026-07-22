@@ -24,7 +24,7 @@ set -euo pipefail
 #   ./scripts/start-shakemap-docker.sh
 #   ./scripts/start-shakemap-docker.sh --name shakemap-docker-test --port 8080
 #   ./scripts/start-shakemap-docker.sh --runtime /data/shakemap --image shakemap-docker:test
-#   ./scripts/start-shakemap-docker.sh --env SHAKEMAP_SKIP_DATA_DOWNLOAD=1
+#   ./scripts/start-shakemap-docker.sh --runtime /data/shakemap
 # ------------------------------------------------------------------
 
 # -- Defaults --
@@ -126,6 +126,13 @@ echo "[start] [2/4] Ensuring runtime directory exists"
 RUNTIME_ABS="$(cd "$(dirname "${RUNTIME_DIR}")" 2>/dev/null && pwd)/$(basename "${RUNTIME_DIR}")" || RUNTIME_ABS="${RUNTIME_DIR}"
 mkdir -p "${RUNTIME_DIR}"
 echo "  Runtime dir: ${RUNTIME_ABS}"
+mkdir -p "${RUNTIME_DIR}/shakemap/data"
+if python -m shakemap_service.preparation validate-record --service-root "${RUNTIME_ABS}/shakemap" >/dev/null 2>&1; then
+    echo "  Preparation: valid"
+else
+    echo "  WARNING: preparation record is missing or invalid; service will start in not_ready state." >&2
+    echo "  Run ./scripts/configure-shakemap.sh before recreating this container." >&2
+fi
 
 # [3/4] Check for existing container
 echo "[start] [3/4] Checking for existing container"
@@ -155,6 +162,7 @@ fi
 CMD+=(--name "${CONTAINER_NAME}")
 CMD+=(-p "${HOST_PORT}:9010")
 CMD+=(-v "${RUNTIME_ABS}:/home/sysop/runtime")
+CMD+=(-v "${RUNTIME_ABS}/shakemap/data:/home/sysop/runtime/shakemap/data:ro")
 
 if [[ -n "${DEPLOYMENT_IMAGE_ID}" ]]; then
     CMD+=(-e "SHAKEMAP_IMAGE_ID=${DEPLOYMENT_IMAGE_ID}")

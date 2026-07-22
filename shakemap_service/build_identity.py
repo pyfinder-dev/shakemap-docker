@@ -47,7 +47,7 @@ def _require_string(value: Any, field: str) -> str:
 def validate_build_identity(data: Any) -> dict:
     """Validate a manifest and return it unchanged as a plain mapping."""
     root = _require_mapping(data, "manifest")
-    if root.get("schema_version") != 1:
+    if root.get("schema_version") != 2:
         raise BuildIdentityError("Unsupported build identity schema_version")
     image = _require_mapping(root.get("immutable_image"), "immutable_image")
     if image.get("available") is not True:
@@ -55,6 +55,7 @@ def validate_build_identity(data: Any) -> dict:
     upstream = _require_mapping(image.get("upstream"), "immutable_image.upstream")
     installed = _require_mapping(image.get("installed"), "immutable_image.installed")
     service = _require_mapping(image.get("service"), "immutable_image.service")
+    support = _require_mapping(image.get("support"), "immutable_image.support")
 
     repository_url = _require_string(upstream.get("repository_url"), "repository_url")
     if repository_url != OFFICIAL_REPOSITORY_URL:
@@ -81,6 +82,26 @@ def validate_build_identity(data: Any) -> dict:
         raise BuildIdentityError("dependency_inventory_sha256 is not a SHA-256 digest")
     installed["dependency_inventory_sha256"] = inventory_digest
 
+    natural_earth = _require_mapping(support.get("natural_earth"), "support.natural_earth")
+    strec = _require_mapping(support.get("strec"), "support.strec")
+    if natural_earth.get("tag") != "v5.1.2":
+        raise BuildIdentityError("unsupported Natural Earth tag")
+    if _FULL_COMMIT_RE.fullmatch(_require_string(natural_earth.get("commit"), "natural_earth.commit")) is None:
+        raise BuildIdentityError("natural_earth.commit is not a full commit")
+    if natural_earth.get("file_count") != 20:
+        raise BuildIdentityError("Natural Earth image support must contain 20 files")
+    for field in ("manifest_path", "manifest_sha256", "cartopy_data_dir"):
+        value = _require_string(natural_earth.get(field), f"natural_earth.{field}")
+        if field.endswith("sha256") and _SHA256_RE.fullmatch(value) is None:
+            raise BuildIdentityError(f"{field} is not a SHA-256 digest")
+    _require_string(strec.get("distribution_version"), "strec.distribution_version")
+    for field in ("database_path", "database_link", "database_sha256"):
+        value = _require_string(strec.get(field), f"strec.{field}")
+        if field.endswith("sha256") and _SHA256_RE.fullmatch(value) is None:
+            raise BuildIdentityError(f"{field} is not a SHA-256 digest")
+    if not isinstance(strec.get("database_size"), int) or strec["database_size"] <= 0:
+        raise BuildIdentityError("strec.database_size must be positive")
+
     service_commit = service.get("source_commit")
     if service_commit is not None:
         service_commit = _require_string(service_commit, "service.source_commit").lower()
@@ -101,7 +122,7 @@ def _load_path(path_text: str) -> dict:
         return validate_build_identity(data)
     except (OSError, json.JSONDecodeError, BuildIdentityError) as exc:
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "immutable_image": {
                 "available": False,
                 "reason": f"Recorded build identity unavailable: {exc}",
@@ -190,6 +211,9 @@ def write_build_identity(
     service_commit: str,
     service_worktree_dirty: str,
     build_timestamp_utc: str,
+    natural_earth_manifest: Path,
+    cartopy_data_dir: Path,
+    strec_database_link: Path = Path("/opt/shakemap-support/strec/moment_tensors.db"),
 ) -> dict:
     """Validate and write the build-time identity manifest."""
     shakemap_version = _distribution_version("shakemap")
@@ -202,8 +226,29 @@ def write_build_identity(
     if not dependencies.is_file() or dependencies.stat().st_size == 0:
         raise BuildIdentityError("Dependency inventory is missing or empty")
 
+    try:
+        natural_earth = json.loads(natural_earth_manifest.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise BuildIdentityError(f"Natural Earth manifest is unreadable: {exc}") from exc
+    if natural_earth.get("schema_version") != 1 or len(natural_earth.get("files", [])) != 20:
+        raise BuildIdentityError("Natural Earth manifest is invalid")
+    for record in natural_earth["files"]:
+        path = cartopy_data_dir / record["target_path"]
+        if not path.is_file() or path.stat().st_size != record["size"] or _sha256(path) != record["sha256"]:
+            raise BuildIdentityError(f"Natural Earth support file failed verification: {path}")
+
+    strec_dist = importlib.metadata.distribution("usgs-strec")
+    strec_database = next(
+        (strec_dist.locate_file(item) for item in strec_dist.files or [] if str(item).endswith("strec/data/moment_tensors.db")),
+        None,
+    )
+    strec_link = strec_database_link
+    if strec_database is None or not Path(strec_database).is_file() or not strec_link.is_symlink():
+        raise BuildIdentityError("Installed STREC moment_tensors.db or image support link is missing")
+    strec_database = Path(strec_database)
+
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "immutable_image": {
             "available": True,
             "upstream": {
@@ -225,6 +270,25 @@ def write_build_identity(
                     "false": False,
                     "unknown": None,
                 }[service_worktree_dirty],
+            },
+            "support": {
+                "natural_earth": {
+                    "tag": natural_earth["tag"],
+                    "commit": natural_earth["commit"],
+                    "manifest_path": str(natural_earth_manifest),
+                    "manifest_sha256": _sha256(natural_earth_manifest),
+                    "cartopy_data_dir": str(cartopy_data_dir),
+                    "file_count": len(natural_earth["files"]),
+                    "layers": natural_earth["layers"],
+                },
+                "strec": {
+                    "distribution_version": strec_dist.version,
+                    "database_path": str(strec_database),
+                    "database_link": str(strec_link),
+                    "database_size": strec_database.stat().st_size,
+                    "database_sha256": _sha256(strec_database),
+                    "database_is_installed_distribution_file": True,
+                },
             },
             "built_at_utc": build_timestamp_utc,
         },
@@ -252,6 +316,13 @@ def _parser() -> argparse.ArgumentParser:
         required=True,
     )
     writer.add_argument("--build-timestamp-utc", required=True)
+    writer.add_argument("--natural-earth-manifest", type=Path, required=True)
+    writer.add_argument("--cartopy-data-dir", type=Path, required=True)
+    writer.add_argument(
+        "--strec-database-link",
+        type=Path,
+        default=Path("/opt/shakemap-support/strec/moment_tensors.db"),
+    )
     return parser
 
 
@@ -268,6 +339,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             service_commit=args.service_commit,
             service_worktree_dirty=args.service_worktree_dirty,
             build_timestamp_utc=args.build_timestamp_utc,
+            natural_earth_manifest=args.natural_earth_manifest,
+            cartopy_data_dir=args.cartopy_data_dir,
+            strec_database_link=args.strec_database_link,
         )
     except (BuildIdentityError, KeyError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

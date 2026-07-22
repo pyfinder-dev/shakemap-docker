@@ -1,0 +1,68 @@
+{
+  "schema_version": 2,
+  "package_id": "shakemap-california-verification-v4.4.9",
+  "description": "Release-matched scenario-specific California data for the fixed SCENARIO request; generic STREC and Natural Earth support are supplied by the image",
+  "compatibility": {
+    "shakemap_release_tag": "v4.4.9",
+    "shakemap_version": "4.4.9",
+    "shakemap_source_commit": "8923f1ff6e82fc866d928a33d1e19e45f276db52",
+    "shakemap_modules_version": "1.1.18",
+    "usgs_strec_version": "2.3.14"
+  },
+  "module_plan": ["select", "assemble", "model", "contour", "mapping", "stations", "gridxml"],
+  "default_destination": "runtime/shakemap/data/test/v4.4.9",
+  "coverage": {
+    "scenario": "SCENARIO derived from nc72282711 (South Napa, California)",
+    "event_longitude": -122.3123,
+    "event_latitude": 38.2152,
+    "vs30_bounds": [-125.00416666666666, 31.995833333333337, -113.99583333333334, 42.00416666666667],
+    "topography_bounds": [-128.00416666666666, 28.995833333333337, -113.99583333333334, 50.00416666666667],
+    "selection_layer": "California polygon from the release-matched ShakeMap test profile",
+    "statement": "The fixed event is inside the Vs30 and topography grids and the California selection layer."
+  },
+  "licenses": {
+    "shakemap": {
+      "summary": "USGS public domain in the United States and CC0-1.0 dedication unless otherwise noted",
+      "url": "https://code.usgs.gov/ghsc/esi/shakemap/-/blob/8923f1ff6e82fc866d928a33d1e19e45f276db52/LICENSE.md"
+    }
+  },
+  "image_dependencies": {
+    "natural_earth": "Pinned Natural Earth 10 m mapping layers under /opt/shakemap-support/cartopy",
+    "strec": "Installed usgs-strec 2.3.14 moment_tensors.db exposed by the image without duplication"
+  },
+  "sources": [
+    {
+      "id": "shakemap",
+      "kind": "raw-files",
+      "repository": "https://code.usgs.gov/ghsc/esi/shakemap.git",
+      "tag": "v4.4.9",
+      "commit": "8923f1ff6e82fc866d928a33d1e19e45f276db52",
+      "url_prefix": "https://code.usgs.gov/ghsc/esi/shakemap/-/raw/8923f1ff6e82fc866d928a33d1e19e45f276db52/",
+      "license_id": "shakemap",
+      "files": [
+        {"source_path":"tests/data/install/config/extent.conf","target_path":"config/extent.conf","size":1970,"sha256":"9f0e126fd216923f5f780409060fb505b9608bb0070bb00c884ed0c914908c84","transformation":"copied unchanged"},
+        {"source_path":"tests/data/install/config/gmpe_sets.conf","target_path":"config/gmpe_sets.conf","size":15955,"sha256":"8ab6d4fa7a41bf6737f5e4366c29879e8d2f8175fe59b38e4362ad690d4d09fc","transformation":"copied unchanged"},
+        {"source_path":"tests/data/install/config/logging.conf","target_path":"config/logging.conf","size":1184,"sha256":"59eeb524f4645ed9c648f39d79552f7f44c7014e85b21a873a6f0b928ea9a0ed","transformation":"copied unchanged"},
+        {"source_path":"tests/data/install/config/model.conf","target_path":"config/model.conf","size":7731,"sha256":"20c7903e50365c32c9cc7c93b00f957fa0c82c88f7d212e2cdb24b6432ee599d","transformation":"copied unchanged"},
+        {"source_path":"tests/data/install/config/modules.conf","target_path":"config/modules.conf","size":8032,"sha256":"4840fbf909522daabdad675de8215e05329ce9370d2fbc303b6a8b6287a0b26b","transformation":"copied unchanged"},
+        {"source_path":"tests/data/install/config/products.conf","target_path":"config/products.conf","size":6504,"sha256":"9d9c580e61d058fb08e94826a143991ad20af968ddbb381bf5d92896af7f6db6","transformation":"copied unchanged"},
+        {"source_path":"tests/data/install/config/select.conf","target_path":"config/select.conf","size":11412,"sha256":"8bab11e046844a15a4c132868bea2375331dc1d7f590c72dc3c95fc6098fa224","transformation":"copied unchanged"},
+        {"source_path":"tests/data/install/config/shake.conf","target_path":"config/shake.conf","size":1187,"sha256":"87340c3a3b2e8be1b7124f947c48cf175050d9e627cf4cd11e5958fc78b6efce","transformation":"copied unchanged"},
+        {"source_path":"tests/data/install/data/vs30/CA_vs30.grd","target_path":"data/vs30/CA_vs30.grd","size":6366936,"sha256":"1527f7b9ed9ee71b8c74d8317e55364fa30008bcd93c80b1c7f8d6dbd1defbf7","transformation":"copied unchanged"},
+        {"source_path":"tests/data/install/data/mapping/CA_topo.grd","target_path":"data/mapping/CA_topo.grd","size":5935438,"sha256":"cf0711203abdacca7dc8a88a6529975954ec406a275af3dbbdfd15ac806879a3","transformation":"copied unchanged"},
+        {"source_path":"tests/data/install/data/layers/california.wkt","target_path":"data/layers/california.wkt","size":351,"sha256":"f1dd3773200975a23a839b22ded209206106b87b3b89f952006bbe050d3f5f0e","transformation":"copied unchanged"}
+      ]
+    }
+  ],
+  "generated_files": [
+    {"target_path":"README.md","purpose":"Human preparation, validation, execution, provenance, and limitation guide"},
+    {"target_path":"package-manifest.json","purpose":"Installed package provenance and integrity manifest"}
+  ],
+  "limitations": [
+    "The package covers only the fixed California verification scenario.",
+    "Natural Earth mapping layers and the installed STREC database are image dependencies and are intentionally absent.",
+    "The package is not a global dataset or a named-region package.",
+    "The package does not establish queue, REST, authoritative SUCCESS, final product validation, or production readiness.",
+    "Uniform VS30 is not used."
+  ]
+}
