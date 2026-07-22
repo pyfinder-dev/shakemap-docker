@@ -1,212 +1,148 @@
 # Developer Guide
 
-This guide covers the codebase structure, testing strategy, code conventions, and how to extend the service.
-
-For the quick test commands, see the [Development](../README.md#development) section in the README.
-
----
-
-## Codebase Structure
-
-```
-shakemap-docker/
-├── Dockerfile                    Container image definition
-├── entrypoint.sh                 Container entrypoint (Stage 1)
-├── Makefile                      Convenience targets
-├── README.md                     Project documentation
-├── docs/                         Detailed documentation
-├── scripts/
-│   ├── build-shakemap-docker.sh  Build the Docker image
-│   ├── start-shakemap-docker.sh  Start the container
-│   ├── configure-shakemap.sh     Stage 2 configuration
-│   ├── verify-shakemap-deployment.sh  Deployment verification
-│   ├── inspect-shakemap-config.sh     Configuration inspection
-│   ├── verify-shakemap-build.sh       (Dev) Build checks
-│   ├── verify-shakemap-config.sh      (Dev) Config checks
-│   └── run-shakemap-ci-tests.sh       (Dev) CI test suite
-├── shakemap_service/
-│   ├── __init__.py
-│   ├── config.py                 Settings (env vars → typed fields)
-│   ├── paths.py                  Pure path computation
-│   ├── status.py                 Event lifecycle model
-│   ├── submission.py             Event submission and staging
-│   ├── queue.py                  Filesystem-based queue
-│   ├── worker.py                 Worker claim loop
-│   ├── runner.py                 ShakeMap execution bridge
-│   └── main.py                   FastAPI application
-└── tests/
-    ├── fixtures/
-    │   └── shakemap_event_minimal/
-    │       ├── event.xml
-    │       ├── event_dat.xml
-    │       ├── rupture.json
-    │       └── README.md
-    ├── test_event_status_records.py       Status model tests
-    ├── test_event_submission_staging.py   Submission tests
-    ├── test_durable_queue.py             Queue tests
-    ├── test_worker_claim_locking.py      Worker tests
-    ├── test_shakemap_fixtures.py         Fixture validation
-    └── test_execution_bridge.py          Integration tests
-```
-
----
-
-## Module Descriptions
-
-| Module | Lines | Test File | Description |
-|--------|-------|-----------|-------------|
-| `config.py` | ~30 | — | Reads environment variables into a `Settings` dataclass. Single module-level `settings` instance. All defaults are defined here. |
-| `paths.py` | ~240 | — | Pure path computation using `pathlib.Path`. No filesystem side effects (except `list_profiles()` which reads directory entries). All path logic is centralized here. |
-| `status.py` | ~680 | `test_event_status_records.py` | Event lifecycle model. `EventStatus` enum with 9 frozen values, `AttemptRecord` and `RequestStatus` dataclasses, atomic JSON read/write, status transition validation with allowed-transition matrix. |
-| `submission.py` | ~330 | `test_event_submission_staging.py` | Submission handling. Input file validation (filename-based), atomic staging to `incoming/`, duplicate submission handling, status flow REGISTERED → VALIDATING → QUEUED (or VALIDATION_FAILED). |
-| `queue.py` | ~400 | `test_durable_queue.py` | Filesystem queue. Scans `events/*/requeststatus.json` for QUEUED events, returns deterministic FIFO-ordered `QueueSnapshot`. Claim locking via `fcntl.flock`. |
-| `worker.py` | ~350 | `test_worker_claim_locking.py` | Worker skeleton. Claims next queued event, invokes execution function, handles retry (max 3 attempts), recovers interrupted events on restart. |
-| `runner.py` | ~280 | `test_execution_bridge.py` | ShakeMap CLI bridge. Copies files from `incoming/` to `work/<event>/current/`, invokes `shake --force`, publishes products atomically, records execution context. |
-| `main.py` | ~400 | `test_execution_bridge.py` | FastAPI app. `/healthz`, `/config`, `/config/profiles`, `/events/submit`. Two-stage health model, submit gate (503 when not ready), override reporting. |
-
----
-
-## Testing
-
-### Unit Tests (Host-Side)
-
-Unit tests run on the host machine without Docker. They use temporary directories to simulate the service's filesystem layout.
+Run commands from the `shakemap-docker` repository root. Activate the existing
+project environment first:
 
 ```bash
-# Run individual test files
-python tests/test_event_status_records.py
-python tests/test_event_submission_staging.py
-python tests/test_durable_queue.py
-python tests/test_worker_claim_locking.py
-python tests/test_shakemap_fixtures.py
-
-# Run all at once
-python -m pytest tests/ -v
+source ../.venv/bin/activate
 ```
 
-Each test file creates its own temporary directory, populates it with the expected directory structure, and cleans up after itself.
+Do not create another virtual environment and do not use system Python for
+project tests.
 
-### Integration Tests (Docker-Based)
+## Verification layers
 
-Integration tests build and run a Docker container, then verify behavior:
+Keep host tests, container-internal checks, and running-service checks separate.
+Passing one layer does not imply that the next layer passes, and none of these
+checks alone proves a real ShakeMap calculation.
+
+### 1. Host-side tests
 
 ```bash
-# Full CI suite (build → start → stage 1 verify → configure → stage 2 verify → cleanup)
-./scripts/run-shakemap-ci-tests.sh
-
-# Execution bridge tests (build, start, test API, run ShakeMap)
-python tests/test_execution_bridge.py
+python -m py_compile \
+  shakemap_service/release.py \
+  shakemap_service/build_identity.py \
+  tests/test_release_resolution.py \
+  tests/test_build_identity.py \
+  tests/test_container_startup.py
+bash -n scripts/build-shakemap-docker.sh
+bash -n scripts/start-shakemap-docker.sh
+bash -n scripts/verify-shakemap-image.sh
+python tests/test_release_resolution.py
+python tests/test_build_identity.py
+python tests/test_container_startup.py
+git diff --check
 ```
 
-The `test_execution_bridge.py` tests require Docker and build a fresh image for testing.
+These tests cover stable release resolution, immutable/deployment identity,
+stable operator defaults, reserved variables, normal environment propagation,
+and preservation of existing running or stopped containers.
 
-### Test Conventions
+### 2. Container-internal checks
 
-- Each test file is self-contained (imports the module under test, creates fixtures, cleans up)
-- Test files use `unittest.TestCase` with the standard `setUp`/`tearDown` pattern
-- Temporary directories are created via `tempfile.mkdtemp()` and removed in `tearDown`
-- Tests that modify `settings` restore the original values in `tearDown`
-- All assertions include descriptive error messages
+Use isolated QA names so a developer check cannot modify the stable operator
+container or runtime:
 
----
+```bash
+export QA_IMAGE="shakemap-docker:integration-test"
+export QA_CONTAINER="shakemap-docker-qa"
+export QA_RUNTIME="/private/tmp/shakemap-docker-qa-runtime"
+export QA_PORT="19010"
 
-## Code Conventions
-
-### Atomic Writes
-
-All state mutations use the write-to-temp-then-rename pattern:
-
-```python
-# Write status atomically
-with tempfile.NamedTemporaryFile(
-    mode='w', dir=target_dir, suffix='.tmp', delete=False
-) as f:
-    json.dump(data, f, indent=2)
-    tmpname = f.name
-os.rename(tmpname, target_path)
+./scripts/build-shakemap-docker.sh --tag "$QA_IMAGE"
+./scripts/start-shakemap-docker.sh \
+  --name "$QA_CONTAINER" \
+  --runtime "$QA_RUNTIME" \
+  --port "$QA_PORT" \
+  --image "$QA_IMAGE"
+docker exec "$QA_CONTAINER" /app/scripts/verify-shakemap-image.sh
 ```
 
-Never write directly to `requeststatus.json`. Always use the helpers in `status.py`.
+The internal verifier checks the fixed manifest, checkout, installed versions,
+native ShakeMap version, dependency inventory, service imports, routes, runtime
+layout, and permissions. It does not execute the release-matched real
+calculation workflow.
 
-### Status Transitions
+Using `docker exec` is acceptable for developer verification. Routine users
+should not need it after the planned `shake-docker` host CLI is implemented.
+That public CLI does not exist yet; current operator inspection uses REST.
 
-Status transitions are validated against an allowed-transition matrix:
+### 3. Running-service checks
 
-```python
-_ALLOWED_TRANSITIONS = {
-    EventStatus.VALIDATING: frozenset({EventStatus.REGISTERED}),
-    EventStatus.QUEUED: frozenset({EventStatus.VALIDATING}),
-    EventStatus.RUNNING: frozenset({EventStatus.QUEUED}),
-    # ...
-}
+```bash
+curl -fsS "http://localhost:${QA_PORT}/config" | python -m json.tool
+curl -fsS "http://localhost:${QA_PORT}/healthz" | python -m json.tool
+python -c 'import json, os, urllib.request as u; p=os.environ["QA_PORT"]; c=json.load(u.urlopen(f"http://localhost:{p}/config")); h=json.load(u.urlopen(f"http://localhost:{p}/healthz")); assert c["identity"] == h["identity"]'
 ```
 
-Invalid transitions raise `ValueError`. Never set `record.status` directly — use the transition helpers (`transition_to_queued()`, `transition_to_failed()`, etc.).
+Check that immutable identity matches the manifest/labels, deployment identity
+matches Docker inspection, and scientific readiness is reported separately.
+`not_ready` is a valid result when external data or configuration is absent.
 
-### Path Functions
+The current project has not completed release-matched real-calculation
+verification. Do not use uniform VS30, the minimal synthetic fixture, imports,
+or existing product files as proof of deployment readiness. Successful work
+requires validated core products, provenance, a product manifest, and logs.
 
-All filesystem paths are computed by `paths.py`. Never construct paths manually:
+### Clean up isolated QA resources
 
-```python
-# Correct
-from shakemap_service import paths
-status_path = paths.event_status_file(event_id)
+Confirm the variables still name only the QA resources before cleanup:
 
-# Incorrect
-status_path = Path(settings.service_root) / ".service" / "events" / event_id / "requeststatus.json"
+```bash
+test "$QA_CONTAINER" = "shakemap-docker-qa"
+test "$QA_RUNTIME" = "/private/tmp/shakemap-docker-qa-runtime"
+docker inspect "$QA_CONTAINER" --format '{{.Name}} {{.Config.Image}} {{range .Mounts}}{{.Source}}{{end}}'
+docker rm -f "$QA_CONTAINER"
+rm -rf -- "$QA_RUNTIME"
 ```
 
----
+Removing the QA image is optional. Never delete or replace
+`shakemap-docker:latest`, `shakemap-docker`, or `./runtime` as part of QA.
 
-## Extending the Service
+## Resource naming
 
-### Adding a New Environment Variable
+- Stable operator image: `shakemap-docker:latest`
+- Stable operator container: `shakemap-docker`
+- Future host CLI: `shake-docker`
+- Isolated QA names: explicit `*-qa` or `*:integration-test` resources
 
-1. Add the field to `Settings` in `config.py` with an `os.getenv()` default
-2. Use `settings.<field_name>` in the module that needs it
-3. Document in `docs/configuration.md` and the README configuration table
+QA names prevent collisions; they are not user-facing defaults.
 
-### Adding a New REST Endpoint
+## Code map
 
-1. Define the route in `main.py` with the appropriate HTTP method decorator
-2. Add request/response schemas if needed
-3. Update `docs/rest-api.md` with the full schema
-4. Add the endpoint to the README API table
+| Path | Responsibility |
+|---|---|
+| `Dockerfile` | Immutable image construction and build manifest |
+| `entrypoint.sh` | Runtime layout checks and service startup |
+| `shakemap_service/release.py` | Stable official release resolution |
+| `shakemap_service/build_identity.py` | Build manifest writing/loading and deployment identity |
+| `shakemap_service/main.py` | FastAPI application and inspection endpoints |
+| `shakemap_service/paths.py` | Runtime path definitions |
+| `shakemap_service/status.py` | Current durable status model |
+| `shakemap_service/submission.py` | Current submission/staging behavior |
+| `shakemap_service/queue.py` | Current filesystem queue behavior |
+| `shakemap_service/worker.py` | Current worker behavior |
+| `shakemap_service/runner.py` | Current native ShakeMap bridge and publication checks |
 
-### Adding a New Event Status
+Some queue, retry, region, fixture, calculation, concurrency, recalculation,
+and CLI behavior remains scheduled for later work. Do not infer completion from
+the presence of current modules or legacy tests.
 
-Event statuses are **frozen** — the 9 values in `EventStatus` are part of the contract and should not change without a major version bump. If you need a new status:
+## Editing rules
 
-1. Add the value to the `EventStatus` enum in `status.py`
-2. Update `TERMINAL_STATUSES` if the new status is terminal
-3. Add allowed transitions to `_ALLOWED_TRANSITIONS`
-4. Create a transition helper function
-5. Update `docs/execution-workflow.md`
+- Keep runtime path construction in `shakemap_service/paths.py`.
+- Preserve the user-facing `incoming/`, `products/`, `logs/`, and `data/`
+  top-level layout and internal `.service/events/`, `.service/work/`, and
+  `.service/archive/` state.
+- Use atomic writes for durable status and metadata.
+- Keep REST and the future host CLI on the same validated capability model.
+- Require validated core products, provenance, product manifest, and logs
+  before reporting calculation success.
 
-### Adding a New Service Directory
+## Related documentation
 
-1. Add a path function in `paths.py`
-2. Add the directory to `all_service_dirs()` in `paths.py`
-3. The entrypoint will automatically create it (it iterates `events incoming work products archive logs`)
-4. Update `docs/runtime-layout.md`
-
----
-
-## Dependencies
-
-The service depends on:
-
-- **Python 3.10+** (installed in the Docker image)
-- **FastAPI** — REST API framework
-- **uvicorn** — ASGI server
-- **ShakeMap 4** — USGS earthquake ground motion software (installed from source during Docker build)
-
-Python dependencies are installed via `pip` during the Docker build. There is no `requirements.txt` for the service itself — dependencies are specified directly in the Dockerfile.
-
----
-
-## Related Documentation
-
-- [Architecture Guide](architecture.md) — module dependencies and data flow
-- [Execution Workflow](execution-workflow.md) — event processing internals
-- [REST API Reference](rest-api.md) — endpoint documentation
+- [Operator Quick Start](quick-start.md)
+- [Script Reference](../scripts/README.md)
+- [Runtime Layout](runtime-layout.md)
+- [REST API](rest-api.md)
+- [Troubleshooting](troubleshooting.md)

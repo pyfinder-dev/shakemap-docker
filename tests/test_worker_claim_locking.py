@@ -3,8 +3,8 @@
 """Worker Claim Locking and Execution Skeleton -- verification tests.
 
 Run with:
-    source /Users/savas/my-codes/eew/pyfinder-dev/.venv/bin/activate
-    cd /Users/savas/my-codes/eew/pyfinder-dev/shakemap-docker
+    cd shakemap-docker
+    source ../.venv/bin/activate
     python tests/test_worker_claim_locking.py
 
 Test sections:

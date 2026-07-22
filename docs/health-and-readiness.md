@@ -13,7 +13,7 @@ The `/healthz` endpoint returns one of three statuses:
 | Status | Meaning | Event Submissions |
 |--------|---------|-------------------|
 | `healthy` | Both Stage 1 and Stage 2 passed. ShakeMap is fully configured with proper VS30 data. | Accepted |
-| `healthy_with_overrides` | Both stages passed, but operator overrides are active (e.g., uniform VS30). The service is functional but not fully provisioned for production accuracy. | Accepted |
+| `healthy_with_overrides` | Current code accepted an explicit development/emergency override. This does not establish production or deployment readiness. | Accepted by current code |
 | `not_ready` | One or both stages have not passed. The response includes `blocking_reasons` and `next_action`. | Rejected with HTTP 503 |
 
 There is no `degraded` status. The service is either ready to process events or it is not.
@@ -131,7 +131,8 @@ When `SHAKEMAP_ALLOW_UNIFORM_VS30=1` is set and no VS30 grid file is present:
 - The `overrides` field contains `["uniform_vs30_override"]`
 - The `override_warnings` field contains a warning explaining the implications
 
-This ensures operators can always distinguish a fully provisioned installation from one running with reduced accuracy.
+This exposes the override, but it does not make that deployment production-ready
+or replace real calculation verification.
 
 ---
 
@@ -177,7 +178,7 @@ Common blocking reasons:
 | `Stage 2 configuration has not been run` | Run `configure-shakemap.sh` |
 | `Directory <name>/ is not writable` | `chown -R 1000:1000 <host-runtime-dir>` |
 | `ShakeMap CLI (shake) not found on PATH` | Rebuild the Docker image |
-| `VS30 grid missing` | Provide a VS30 grid or set `SHAKEMAP_ALLOW_UNIFORM_VS30=1` |
+| `VS30 grid missing` | Provide a compatible VS30 grid. Uniform VS30 is development/emergency only. |
 | `model.conf validation failed` | Re-run `configure-shakemap.sh` |
 | `Profile data symlink not correct` | Re-run `configure-shakemap.sh` |
 
@@ -214,7 +215,10 @@ livenessProbe:
   failureThreshold: 3
 ```
 
-**Note:** The readiness probe considers `healthy` and `healthy_with_overrides` as ready (both accept event submissions). Only `not_ready` should cause the pod to be removed from service endpoints. To implement this distinction, your readiness probe logic should check the `status` field in the response body rather than relying solely on the HTTP status code (which is always 200).
+**Current-code note:** both `healthy` and `healthy_with_overrides` accept event
+submissions. Do not route production traffic solely from that behavior:
+`healthy_with_overrides` does not establish production/deployment readiness,
+and the current HTTP 200 response alone is insufficient for that decision.
 
 ---
 

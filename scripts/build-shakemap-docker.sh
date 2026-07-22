@@ -6,7 +6,7 @@
 #   ./scripts/build-shakemap-docker.sh [OPTIONS]
 #
 # Options:
-#   --tag TAG           Image name:tag  (default: shakemap-service:latest)
+#   --tag TAG           Image name:tag  (default: shakemap-docker:latest)
 #   --platform PLAT     Target platform (default: current docker default)
 #   --no-cache          Build without layer cache
 #   --release-tag TAG   Final stable upstream tag override (requires --release-commit)
@@ -15,14 +15,14 @@
 #
 # Examples:
 #   ./scripts/build-shakemap-docker.sh
-#   ./scripts/build-shakemap-docker.sh --tag shakemap-service:v1
+#   ./scripts/build-shakemap-docker.sh --tag shakemap-docker:test
 #   ./scripts/build-shakemap-docker.sh --platform linux/amd64
 #   ./scripts/build-shakemap-docker.sh --no-cache
 # -------------------------------------------------------------------
 set -euo pipefail
 
 # -- Defaults --
-IMAGE_TAG="shakemap-service:latest"
+IMAGE_TAG="shakemap-docker:latest"
 PLATFORM=""
 NO_CACHE=""
 RELEASE_TAG_OVERRIDE=""
@@ -33,7 +33,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --tag)
             if [[ -z "${2:-}" ]]; then
-                echo "ERROR: --tag requires a value (e.g. --tag shakemap-service:v1)" >&2
+                echo "ERROR: --tag requires a value (e.g. --tag shakemap-docker:test)" >&2
                 exit 1
             fi
             IMAGE_TAG="$2"

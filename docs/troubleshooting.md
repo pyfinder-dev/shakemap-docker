@@ -50,11 +50,9 @@ If the build fails, check network connectivity to `code.usgs.gov` (ShakeMap sour
 
 **This is expected.** Stage 2 configuration has not been run yet.
 
-**Fix:**
-
-```bash
-docker exec <container> /app/scripts/configure-shakemap.sh
-```
+Check `/config` and `/healthz`, then provide compatible scientific data and
+configuration under the mounted runtime. The internal configuration helper may
+assist with legacy profiles, but it does not guarantee readiness.
 
 ### `configure-shakemap.sh` fails
 
@@ -62,13 +60,14 @@ Check the script output for the specific step that failed. Common causes:
 
 - **Network error during data download:** The script downloads VS30 and topo grids from USGS servers. If the download fails, re-run the script (it uses download-once logic and skips existing files).
 - **Profile creation fails:** Check that the ShakeMap CLI is functional: `docker exec <container> shake --help`
-- **VS30 missing and no override:** Either provide VS30 data or set `SHAKEMAP_ALLOW_UNIFORM_VS30=1`
+- **VS30 missing:** Provide a compatible VS30 grid under the mounted runtime.
 
 The script is idempotent — re-running it is always safe.
 
 ### `/healthz` returns `healthy_with_overrides`
 
-**This is not an error**, but it means the service is running with operator overrides that reduce accuracy. The most common override is `uniform_vs30_override`, which means:
+This is a development/emergency state, not production or deployment readiness.
+The most common override is `uniform_vs30_override`, which means:
 
 - No VS30 grid file is present
 - `SHAKEMAP_ALLOW_UNIFORM_VS30=1` was set
@@ -90,7 +89,8 @@ Then re-run `configure-shakemap.sh`.
 
 **Cause:** The ShakeMap `model.conf` references a California VS30 grid (`CA_vs30.grd`) that does not exist. This is a stale template reference from the default ShakeMap profile.
 
-**Fix:** Run `configure-shakemap.sh`, which patches `model.conf` to reference the actual VS30 grid location. If no VS30 grid is available, set `SHAKEMAP_ALLOW_UNIFORM_VS30=1`.
+**Fix:** Provide a compatible VS30 grid and configure `model.conf` to reference
+it. Do not use uniform VS30 to establish readiness.
 
 ### "The 'vs30file' key in the section 'data' failed validation"
 
@@ -115,7 +115,7 @@ Then re-run `configure-shakemap.sh`.
 ls ./runtime/shakemap/incoming/<event_id>/
 
 # Check the status file for the failure reason
-cat ./runtime/shakemap/.service/events/<event_id>/requeststatus.json | python3 -m json.tool
+cat ./runtime/shakemap/.service/events/<event_id>/requeststatus.json | python -m json.tool
 ```
 
 ---
@@ -126,7 +126,7 @@ The `requeststatus.json` file contains the complete event history:
 
 ```bash
 cat ./runtime/shakemap/.service/events/<event_id>/requeststatus.json \
-  | python3 -m json.tool
+  | python -m json.tool
 ```
 
 Key fields to check:

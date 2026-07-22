@@ -1,219 +1,158 @@
-# Quick Start Guide
+# Operator Quick Start
 
-This guide walks through deploying the ShakeMap Docker service from scratch, with expected output at each step and common variations.
+Run every command from the `shakemap-docker` repository root. This guide keeps
+the stable image, container, runtime, and port throughout normal operation:
 
-For the minimal 4-command version, see the [Quick Start](../README.md#quick-start) section in the README.
+- image: `shakemap-docker:latest`
+- container: `shakemap-docker`
+- runtime: `./runtime`
+- API: `http://localhost:9010`
 
----
+## 1. Check prerequisites
 
-## Step 1 — Build the Docker Image
+```bash
+source ../.venv/bin/activate
+docker info
+```
+
+The build needs network access to the official USGS GitLab service and Python
+package indexes. Use the existing parent project environment; do not create a
+new one.
+
+## 2. Build and retain the image
 
 ```bash
 ./scripts/build-shakemap-docker.sh
 ```
 
-This clones the USGS ShakeMap repository, installs all Python dependencies, and bundles the service code into a Docker image tagged `shakemap-service:latest`.
+The result is `shakemap-docker:latest`, built from the latest final stable
+release of the upstream USGS ShakeMap software and its verified full Git
+commit. Most users should not provide release options; the build helper
+selects and prints both values automatically.
 
-**Expected output (last lines):**
+For a reproducible rebuild of an already resolved ShakeMap release,
+`--release-tag` is the upstream USGS ShakeMap Git tag and
+`--release-commit` is the full 40-character USGS ShakeMap commit referenced by
+that tag. They do not identify this Docker project or a Docker image.
 
-```
-[4/4] Build complete
-Image: shakemap-service:latest
-```
-
-**Variations:**
+Recover the pair from the original build output, from
+`identity.immutable_image.upstream` in a running service's `/config` response,
+or from an existing local image:
 
 ```bash
-# Custom tag
-./scripts/build-shakemap-docker.sh --tag shakemap-service:v1.0
-
-# Cross-platform build (e.g., for deployment on linux/amd64)
-./scripts/build-shakemap-docker.sh --platform linux/amd64
-
-# Clean build without Docker layer cache
-./scripts/build-shakemap-docker.sh --no-cache
+docker image inspect shakemap-docker:latest \
+  --format '{{ index .Config.Labels "org.usgs.shakemap.release" }} {{ index .Config.Labels "org.usgs.shakemap.commit" }}'
 ```
 
-Build time is typically 5–10 minutes depending on network speed (ShakeMap dependencies are large).
+Then pass both recorded values:
 
----
+```bash
+./scripts/build-shakemap-docker.sh \
+  --release-tag vX.Y.Z \
+  --release-commit 0123456789abcdef0123456789abcdef01234567
+```
 
-## Step 2 — Start the Container
+Both values are required together and are checked against the official USGS
+tag. Branches, prereleases, short commits, and mismatched pairs are rejected.
+
+## 3. Prepare persistent runtime data
+
+```bash
+mkdir -p ./runtime/shakemap/data
+```
+
+Provide release-compatible scientific datasets and configuration beneath
+`./runtime/shakemap/data/`. These large files are intentionally outside the
+image. The current data locations are described in
+[Configuration](configuration.md) and [Runtime Layout](runtime-layout.md).
+
+Do not use uniform VS30 as a normal setup path. It is only a development or
+emergency override and cannot demonstrate production or deployment readiness.
+
+## 4. Start the stable container
 
 ```bash
 ./scripts/start-shakemap-docker.sh
 ```
 
-This starts the container with sensible defaults: container name `shakemap`, port 9010, runtime directory at `./runtime`.
+The helper starts `shakemap-docker` in the background, mounts `./runtime` at
+`/home/sysop/runtime`, and publishes port 9010.
 
-**Expected output:**
+If `shakemap-docker` already exists, the helper exits without modifying it:
 
-```
-Container 'shakemap' started (detached)
-  Port:    9010
-  Runtime: ./runtime
-  Image:   shakemap-service:latest
-```
+- running container: leave it running or stop it explicitly;
+- stopped container: resume it with `docker start shakemap-docker`;
+- replacement: remove it explicitly with `docker rm shakemap-docker`, then run
+  the start helper again.
 
-**Variations:**
-
-```bash
-# Custom port and runtime directory
-./scripts/start-shakemap-docker.sh --port 8080 --runtime /data/shakemap
-
-# Custom container name
-./scripts/start-shakemap-docker.sh --name my-shakemap
-
-# Pass environment variables (e.g., skip data download for testing)
-./scripts/start-shakemap-docker.sh \
-  --env SHAKEMAP_SKIP_DATA_DOWNLOAD=1 \
-  --env SHAKEMAP_ALLOW_UNIFORM_VS30=1
-
-# Run in foreground (useful for debugging)
-./scripts/start-shakemap-docker.sh --foreground
-```
-
-**Verify Stage 1 is up:**
+## 5. Check configuration and readiness
 
 ```bash
-curl -s http://localhost:9010/healthz | python3 -m json.tool
+curl -fsS http://localhost:9010/config | python -m json.tool
+curl -fsS http://localhost:9010/healthz | python -m json.tool
 ```
 
-You should see `"status": "not_ready"` with a blocking reason indicating that Stage 2 configuration has not been run. This is expected.
+These checks are non-destructive. `/config` shows paths, configuration, and
+image/deployment identity. `/healthz` may correctly report `not_ready` while
+scientific data or configuration is absent or incompatible.
 
----
+Do not infer calculation readiness from a successful image build, imports,
+image verification, `/config`, or `/healthz`. The project has not yet completed
+its release-matched real-calculation verification workflow. The repository's
+minimal synthetic fixture does not prove real ShakeMap execution.
 
-## Step 3 — Configure ShakeMap
+## 6. Stop and resume
+
+Stop without deleting the container or runtime:
 
 ```bash
-docker exec shakemap /app/scripts/configure-shakemap.sh
+docker stop shakemap-docker
 ```
 
-This runs inside the container and:
-
-1. Creates the ShakeMap profile (default name: `default`)
-2. Sets up the data directory symlink (`profile/data` → `SERVICE_ROOT/work`)
-3. Detects or downloads VS30 and topography grid files
-4. Patches `model.conf` and `products.conf` to reference actual data paths
-5. Runs readiness probes (profile structure, config validity, data availability)
-6. Writes the readiness sentinel file
-
-**Expected output (last lines):**
-
-```
-[9/9] Writing readiness sentinel
-READY
-```
-
-The script is idempotent — running it again is safe and will re-validate everything.
-
-### Configuration without data downloads
-
-For testing or air-gapped environments:
+Resume the same container:
 
 ```bash
-# Start with download skip + uniform VS30
-./scripts/start-shakemap-docker.sh \
-  --env SHAKEMAP_SKIP_DATA_DOWNLOAD=1 \
-  --env SHAKEMAP_ALLOW_UNIFORM_VS30=1
-
-# Then configure
-docker exec shakemap /app/scripts/configure-shakemap.sh
+docker start shakemap-docker
 ```
 
-This skips the ~1 GB USGS grid downloads and uses a uniform VS30 value (760 m/s). The service will report `healthy_with_overrides` instead of `healthy`, indicating that it is operational but not fully provisioned for production accuracy.
+## 7. Rebuild or update
 
-For details on VS30 provisioning strategies, see the [Configuration Guide](configuration.md).
-
----
-
-## Step 4 — Verify the Deployment
+An existing container continues to use the image from which it was created.
+Rebuilding the tag alone does not update that container.
 
 ```bash
-./scripts/verify-shakemap-deployment.sh shakemap --expect ready
+source ../.venv/bin/activate
+./scripts/build-shakemap-docker.sh
+docker stop shakemap-docker
+docker rm shakemap-docker
+./scripts/start-shakemap-docker.sh
 ```
 
-This runs automated checks against the running container:
+This removes only the old container. The bind-mounted `./runtime` directory
+and its data remain. Removing `shakemap-docker:latest` is optional and is not a
+normal update step.
 
-- Container is running
-- User identity is correct (sysop, UID 1000)
-- Runtime directories exist and are writable
-- ShakeMap CLI is available
-- `/healthz` returns the expected status
-- Readiness sentinel is present
-
-**Expected output:**
-
-```
-All checks passed
-```
-
-**Pre-configure verification** (to validate Stage 1 before running configure):
+## 8. Inspect a failure
 
 ```bash
-./scripts/verify-shakemap-deployment.sh shakemap --expect not-ready
+docker ps -a --filter name=shakemap-docker
+docker logs shakemap-docker
+curl -fsS http://localhost:9010/config | python -m json.tool
+curl -fsS http://localhost:9010/healthz | python -m json.tool
 ```
 
----
+Use the reported blocking reasons and active paths to correct data,
+configuration, permissions, or port conflicts. See
+[Troubleshooting](troubleshooting.md) for more diagnostics.
 
-## Step 5 — Submit a Test Event
-
-The repository includes a minimal test fixture with synthetic earthquake data:
+## Makefile equivalents
 
 ```bash
-curl -s -X POST http://localhost:9010/events/submit \
-  -F "event_id=20240101_120000_fixture" \
-  -F "user_id=test" \
-  -F "files=@tests/fixtures/shakemap_event_minimal/event.xml" \
-  -F "files=@tests/fixtures/shakemap_event_minimal/event_dat.xml" \
-  -F "files=@tests/fixtures/shakemap_event_minimal/rupture.json" \
-  | python3 -m json.tool
+make build
+make start
+make verify
 ```
 
-**Expected response:**
-
-```json
-{
-    "event_id": "20240101_120000_fixture",
-    "status": "QUEUED",
-    "status_path": ".service/events/20240101_120000_fixture/requeststatus.json",
-    "replaced_previous": false,
-    "validation_errors": null
-}
-```
-
-### Where to find outputs
-
-After processing:
-
-- **Input files:** `./runtime/shakemap/incoming/20240101_120000_fixture/`
-- **Products:** `./runtime/shakemap/products/20240101_120000_fixture/` (if ShakeMap succeeded)
-- **Status tracking:** `./runtime/shakemap/.service/events/20240101_120000_fixture/requeststatus.json`
-
-> **Important:** ShakeMap execution success depends on having a VS30 grid that covers the target region. The test fixture is a synthetic event in the Basel Region (Switzerland). See the [Execution Workflow](execution-workflow.md) for details on what determines success or failure.
-
----
-
-## Makefile Shortcuts
-
-All commands are also available via the Makefile:
-
-```bash
-make build        # Build the Docker image
-make start        # Start the container
-make configure    # Configure ShakeMap
-make verify       # Verify the deployment
-make inspect      # Print active configuration
-make ci           # Run full CI test suite
-```
-
-Override the container name: `make configure CONTAINER=my-shakemap`
-
----
-
-## Next Steps
-
-- [Configuration Guide](configuration.md) — environment variables, VS30 strategies, profiles
-- [Runtime Layout](runtime-layout.md) — where files live, what to mount
-- [Health and Readiness](health-and-readiness.md) — understanding health statuses
-- [Troubleshooting](troubleshooting.md) — common problems and fixes
+The defaults are the same stable resources. `make verify` expects the honest
+fresh-container state `not-ready`; override `EXPECT` only when the deployment
+has compatible scientific data and configuration.

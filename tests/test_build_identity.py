@@ -266,7 +266,7 @@ class StartupHelperTests(unittest.TestCase):
                 "  else echo 'registry.example/shakemap@sha256:" + "2" * 64 + "'; fi\n"
                 "  exit 0\n"
                 "fi\n"
-                "if [[ \"$1\" == \"inspect\" ]]; then exit 1; fi\n"
+                "if [[ \"$1 $2\" == \"container inspect\" ]]; then exit 1; fi\n"
                 "if [[ \"$1\" == \"run\" ]]; then printf '%s\\n' \"$@\" > \"$TRACE_PATH\"; echo fake-id; exit 0; fi\n"
                 "exit 0\n",
                 encoding="utf-8",
@@ -278,9 +278,9 @@ class StartupHelperTests(unittest.TestCase):
             result = subprocess.run(
                 [
                     "bash", str(PROJECT_DIR / "scripts" / "start-shakemap-docker.sh"),
-                    "--name", "identity-helper-test",
+                    "--name", "shakemap-docker-identity-qa",
                     "--runtime", str(root / "runtime"),
-                    "--image", "shakemap-service:test",
+                    "--image", "shakemap-docker:test",
                     "--env", "IDENTITY_CHECK_MARKER=present",
                 ],
                 cwd=PROJECT_DIR,

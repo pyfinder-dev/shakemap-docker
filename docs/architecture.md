@@ -51,7 +51,8 @@ The ShakeMap Docker service wraps USGS ShakeMap 4 in a managed container that pr
 │    Run 7 readiness probes                   │
 │    Write readiness sentinel                 │
 │                                             │
-│  Status: healthy (or healthy_with_overrides)│
+│  Status: healthy; override states are not   │
+│          production-readiness proof         │
 │  Events: accepted                           │
 └─────────────────────────────────────────────┘
 ```

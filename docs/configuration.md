@@ -2,7 +2,7 @@
 
 This guide covers all environment variables, VS30 data provisioning strategies, and ShakeMap profile management.
 
-For the quick reference table, see the [Configuration](../README.md#configuration) section in the README.
+For the normal operator sequence, see the [Quick Start](quick-start.md).
 
 ---
 
@@ -21,14 +21,15 @@ All configuration is done through environment variables. Set them via `docker ru
 | `SHAKEMAP_MODULES` | `select assemble model contour mapping stations gridxml` | Space-separated list of ShakeMap processing modules to run for each event. These are the stages of ShakeMap's processing pipeline. |
 | `SHAKEMAP_REQUIRE_MOUNT` | `0` | When set to `1`, the entrypoint verifies that `SERVICE_ROOT` is a Docker volume mount (not just a container directory). This prevents accidental data loss from using ephemeral container storage. |
 
-### Stage 2 Configuration Controls
+### Legacy configuration-helper controls
 
-These variables affect the `configure-shakemap.sh` script behavior:
+These variables affect the current internal `configure-shakemap.sh` helper.
+That helper does not by itself prove scientific or deployment readiness:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SHAKEMAP_SKIP_DATA_DOWNLOAD` | `0` | When set to `1`, skips downloading VS30 and topography grids from USGS servers during configuration. Use this for testing, air-gapped environments, or when providing custom data files. |
-| `SHAKEMAP_ALLOW_UNIFORM_VS30` | `0` | When set to `1`, allows the service to operate without a VS30 grid file. ShakeMap will use a uniform VS30 value of 760 m/s everywhere. **This is a development/testing override — not suitable for production accuracy.** The service reports `healthy_with_overrides` instead of `healthy` when this is active. |
+| `SHAKEMAP_ALLOW_UNIFORM_VS30` | `0` | Development/emergency override using 760 m/s everywhere. It cannot establish production or deployment readiness, even when current code reports `healthy_with_overrides`. |
 | `SHAKEMAP_VS30_FILE` | _(empty)_ | Absolute path (inside the container) to a custom VS30 grid file. Takes precedence over the default download location. Use this when you want to provide your own regional VS30 data via a volume mount. |
 | `SHAKEMAP_TOPO_FILE` | _(empty)_ | Absolute path (inside the container) to a custom topography grid file. Takes precedence over the default download location. |
 
@@ -38,7 +39,8 @@ These variables affect the `configure-shakemap.sh` script behavior:
 
 VS30 (time-averaged shear-wave velocity in the top 30 meters) is a geophysical parameter that determines how ShakeMap models site amplification effects. Without proper VS30 data, ShakeMap results are less accurate.
 
-There are four strategies for providing VS30 data:
+Use a compatible grid supplied outside the image. The current helper supports
+the following legacy provisioning paths:
 
 ### Strategy 1 — Download from USGS (default)
 
@@ -67,7 +69,7 @@ Place your grid file in the mounted runtime directory so it is accessible at the
 **Pros:** Use region-specific high-resolution VS30 data, no USGS download needed.
 **Cons:** Requires external data management.
 
-### Strategy 3 — Uniform VS30 Override (testing only)
+### Development/emergency only — uniform VS30 override
 
 ```bash
 ./scripts/start-shakemap-docker.sh \
@@ -77,15 +79,15 @@ Place your grid file in the mounted runtime directory so it is accessible at the
 
 ShakeMap uses a uniform VS30 value of 760 m/s (NEHRP B/C boundary) everywhere. No grid file is needed.
 
-**Pros:** No data downloads, fastest setup.
-**Cons:** Produces less accurate ShakeMaps. The service reports `healthy_with_overrides` to make this visible. **Not suitable for production.**
+This is not a normal setup path. It produces less accurate results and cannot
+prove production readiness, deployment readiness, or a valid real calculation.
+The current service reports `healthy_with_overrides`, but that status must not
+be interpreted as production-ready.
 
-### Strategy 4 — Bake VS30 into the Docker Image
+### Unsupported project workflow — bake VS30 into the image
 
-Download the VS30 grid during the Docker build by adding a `RUN` step to the Dockerfile. This makes the data always available without runtime downloads.
-
-**Pros:** Self-contained image, no runtime data provisioning.
-**Cons:** Larger Docker image (~700 MB larger), grid data may become outdated.
+Large scientific datasets are intentionally external to the base image. Do not
+add them to the normal project image; provide them through the mounted runtime.
 
 ---
 
@@ -113,7 +115,7 @@ The `data` symlink is critical — it bridges ShakeMap's expected directory stru
 
 ```bash
 ./scripts/start-shakemap-docker.sh --env SHAKEMAP_PROFILE=my_region
-docker exec shakemap /app/scripts/configure-shakemap.sh
+docker exec shakemap-docker /app/scripts/configure-shakemap.sh
 ```
 
 The configure script uses the `SHAKEMAP_PROFILE` variable to create the profile with the specified name.
@@ -122,11 +124,11 @@ The configure script uses the `SHAKEMAP_PROFILE` variable to create the profile 
 
 ```bash
 # Via CLI
-docker exec shakemap /app/scripts/inspect-shakemap-config.sh
+docker exec shakemap-docker /app/scripts/inspect-shakemap-config.sh
 
 # Via REST API
-curl -s http://localhost:9010/config | python3 -m json.tool
-curl -s http://localhost:9010/config/profiles | python3 -m json.tool
+curl -fsS http://localhost:9010/config | python -m json.tool
+curl -fsS http://localhost:9010/config/profiles | python -m json.tool
 ```
 
 ---

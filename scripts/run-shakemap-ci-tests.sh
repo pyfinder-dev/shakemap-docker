@@ -18,8 +18,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-IMAGE_TAG="shakemap-service:integration-test"
-CONTAINER_NAME="sm-integration-test-$$"
+IMAGE_TAG="shakemap-docker:integration-test"
+CONTAINER_NAME="shakemap-docker-ci-$$"
+QA_RUNTIME="$(mktemp -d /private/tmp/shakemap-docker-ci.XXXXXX)"
 CLEANUP_DONE=0
 OVERALL_RESULT=0
 
@@ -29,6 +30,7 @@ cleanup() {
         echo ""
         echo "--- Cleanup ---"
         docker rm -f "${CONTAINER_NAME}" 2>/dev/null || true
+        rm -rf -- "${QA_RUNTIME}"
     fi
 }
 trap cleanup EXIT
@@ -63,11 +65,8 @@ echo ""
 
 # -- [3/11] Start container --
 log "[3/11] Starting container"
-mkdir -p "${REPO_ROOT}/runtime"
-
 docker run -d --name "${CONTAINER_NAME}" \
-    -p 9010:9010 \
-    -v "${REPO_ROOT}/runtime:/home/sysop/runtime" \
+    -v "${QA_RUNTIME}:/home/sysop/runtime" \
     -e SHAKEMAP_SKIP_DATA_DOWNLOAD=1 \
     -e SHAKEMAP_ALLOW_UNIFORM_VS30=1 \
     "${IMAGE_TAG}"

@@ -4,17 +4,17 @@ set -euo pipefail
 # ------------------------------------------------------------------
 # start-shakemap-docker.sh -- Start the ShakeMap service container.
 #
-# Starts a Docker container with sensible defaults.  Override any
-# setting via command-line arguments.
+# Starts a Docker container with sensible defaults.  Override supported
+# settings via command-line arguments.
 #
 # Usage:
 #   ./scripts/start-shakemap-docker.sh [OPTIONS]
 #
 # Options:
-#   --name NAME         Container name       (default: shakemap)
+#   --name NAME         Container name       (default: shakemap-docker)
 #   --runtime DIR       Host runtime dir     (default: ./runtime)
 #   --port PORT         Host port mapping     (default: 9010)
-#   --image IMAGE       Image name:tag        (default: shakemap-service:latest)
+#   --image IMAGE       Image name:tag        (default: shakemap-docker:latest)
 #   --env KEY=VALUE     Extra env var (repeatable)
 #   --detach            Run in background     (default: yes)
 #   --foreground        Run in foreground (replaces --detach)
@@ -22,16 +22,16 @@ set -euo pipefail
 #
 # Examples:
 #   ./scripts/start-shakemap-docker.sh
-#   ./scripts/start-shakemap-docker.sh --name myshakemap --port 8080
-#   ./scripts/start-shakemap-docker.sh --runtime /data/shakemap --image shakemap-service:v2
+#   ./scripts/start-shakemap-docker.sh --name shakemap-docker-test --port 8080
+#   ./scripts/start-shakemap-docker.sh --runtime /data/shakemap --image shakemap-docker:test
 #   ./scripts/start-shakemap-docker.sh --env SHAKEMAP_SKIP_DATA_DOWNLOAD=1
 # ------------------------------------------------------------------
 
 # -- Defaults --
-CONTAINER_NAME="shakemap"
+CONTAINER_NAME="shakemap-docker"
 RUNTIME_DIR="./runtime"
 HOST_PORT="9010"
-IMAGE_TAG="shakemap-service:latest"
+IMAGE_TAG="shakemap-docker:latest"
 DETACH="yes"
 EXTRA_ENVS=()
 RESERVED_IDENTITY_KEYS=(
@@ -129,15 +129,17 @@ echo "  Runtime dir: ${RUNTIME_ABS}"
 
 # [3/4] Check for existing container
 echo "[start] [3/4] Checking for existing container"
-if docker inspect "${CONTAINER_NAME}" >/dev/null 2>&1; then
-    STATE="$(docker inspect -f '{{.State.Running}}' "${CONTAINER_NAME}" 2>/dev/null || echo "false")"
+if docker container inspect "${CONTAINER_NAME}" >/dev/null 2>&1; then
+    STATE="$(docker container inspect -f '{{.State.Running}}' "${CONTAINER_NAME}")"
     if [ "${STATE}" = "true" ]; then
-        echo "  Container '${CONTAINER_NAME}' is already running."
-        echo "  To restart: docker rm -f ${CONTAINER_NAME} && $0"
+        echo "ERROR: Container '${CONTAINER_NAME}' is already running; it was not modified." >&2
+        echo "Stop it explicitly with: docker stop ${CONTAINER_NAME}" >&2
         exit 1
     else
-        echo "  Removing stopped container '${CONTAINER_NAME}'"
-        docker rm "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+        echo "ERROR: Container '${CONTAINER_NAME}' already exists but is stopped; it was not modified." >&2
+        echo "Resume it with: docker start ${CONTAINER_NAME}" >&2
+        echo "To recreate it, first remove it explicitly with: docker rm ${CONTAINER_NAME}" >&2
+        exit 1
     fi
 fi
 
@@ -188,9 +190,7 @@ if [ "${DETACH}" = "yes" ]; then
     echo "Container '${CONTAINER_NAME}' started."
     echo ""
     echo "Next steps:"
-    echo "  1. Wait a few seconds for the service to initialize"
-    echo "  2. Configure ShakeMap:"
-    echo "     docker exec ${CONTAINER_NAME} /app/scripts/configure-shakemap.sh"
-    echo "  3. Verify deployment:"
-    echo "     ./scripts/verify-shakemap-deployment.sh ${CONTAINER_NAME} --expect ready"
+    echo "  1. Check configuration: curl -fsS http://localhost:${HOST_PORT}/config"
+    echo "  2. Check readiness:     curl -fsS http://localhost:${HOST_PORT}/healthz"
+    echo "  Scientific datasets remain external; not_ready can be the correct state."
 fi

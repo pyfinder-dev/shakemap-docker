@@ -10,21 +10,24 @@
 #   make verify     Verify the running deployment
 #   make ci         Run the full CI test suite
 #
-# Override the container name:
-#   make configure CONTAINER=myshakemap
-#   make verify CONTAINER=myshakemap EXPECT=not-ready
+# Override operator resources when needed:
+#   make start CONTAINER=shakemap-docker-test IMAGE=shakemap-docker:test PORT=19010
+#   make verify CONTAINER=shakemap-docker-test EXPECT=not-ready
 
-CONTAINER ?= shakemap
-EXPECT ?= ready
+IMAGE ?= shakemap-docker:latest
+CONTAINER ?= shakemap-docker
+RUNTIME ?= ./runtime
+PORT ?= 9010
+EXPECT ?= not-ready
 SCRIPTS := scripts
 
 .PHONY: build start configure verify inspect events ci
 
 build:
-	$(SCRIPTS)/build-shakemap-docker.sh
+	$(SCRIPTS)/build-shakemap-docker.sh --tag $(IMAGE)
 
 start:
-	$(SCRIPTS)/start-shakemap-docker.sh
+	$(SCRIPTS)/start-shakemap-docker.sh --name $(CONTAINER) --runtime $(RUNTIME) --port $(PORT) --image $(IMAGE)
 
 configure:
 	docker exec $(CONTAINER) /app/scripts/configure-shakemap.sh
@@ -40,4 +43,3 @@ events:
 
 ci:
 	$(SCRIPTS)/run-shakemap-ci-tests.sh
-

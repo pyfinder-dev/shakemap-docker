@@ -3,8 +3,8 @@
 """Durable Queue Foundation -- verification tests.
 
 Run with:
-    source /Users/savas/my-codes/eew/pyfinder-dev/.venv/bin/activate
-    cd /Users/savas/my-codes/eew/pyfinder-dev/shakemap-docker
+    cd shakemap-docker
+    source ../.venv/bin/activate
     python tests/test_durable_queue.py
 
 Test sections:

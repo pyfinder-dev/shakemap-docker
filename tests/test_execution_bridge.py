@@ -36,9 +36,9 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 FIXTURE_DIR = SCRIPT_DIR / "fixtures" / "shakemap_event_minimal"
-IMAGE_TAG = "shakemap-service:integration-test"
+IMAGE_TAG = "shakemap-docker:integration-test"
 EVENT_ID = "20240101_120000_fixture"
-CONTAINER_NAME = "shakemap-bridge-test"
+CONTAINER_NAME = "shakemap-docker-bridge-test"
 
 # Paths inside container
 RUNTIME_ROOT = "/home/sysop/runtime"

@@ -12,7 +12,7 @@ set -uo pipefail
 # the image contents directly.
 #
 # Usage:
-#   docker run --rm shakemap-service:latest /app/scripts/verify-shakemap-image.sh
+#   docker run --rm shakemap-docker:latest /app/scripts/verify-shakemap-image.sh
 #
 #   Or inside a running container:
 #   docker exec <container> /app/scripts/verify-shakemap-image.sh
