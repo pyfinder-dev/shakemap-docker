@@ -11,10 +11,10 @@ network-disabled short-lived preparation container
   ├─ verifies UID/GID and read-only scientific mounts
   ├─ creates release-native templates
   ├─ writes mounted global base snapshot
-  └─ runs fixed California and prepared-global checks
+  └─ runs fixed California and prepared-global checks with product gates
         │
         ▼
-stable service container starts and reports mounted preparation identity
+stable service container reports liveness, preparation, and disabled managed readiness separately
 ```
 
 The immutable image owns generic support: Natural Earth mapping files and the

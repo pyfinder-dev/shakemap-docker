@@ -98,9 +98,14 @@ echo "  Build context: ${BUILD_CONTEXT}"
 
 # [2/5] Resolve the official stable release once, before Docker starts.
 echo "[2/5] Resolving latest official stable USGS ShakeMap release"
-PYTHON_BIN="${SHAKEMAP_BUILD_PYTHON:-python}"
+PYTHON_BIN="${SHAKEMAP_HOST_PYTHON:-python3}"
 if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
-    echo "ERROR: Python interpreter not found: ${PYTHON_BIN}" >&2
+    echo "ERROR: Python 3.10 or newer is required; interpreter not found: ${PYTHON_BIN}" >&2
+    echo "Set SHAKEMAP_HOST_PYTHON to a supported interpreter path if needed." >&2
+    exit 1
+fi
+if ! "${PYTHON_BIN}" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)'; then
+    echo "ERROR: ${PYTHON_BIN} must be Python 3.10 or newer; no third-party host packages are required." >&2
     exit 1
 fi
 

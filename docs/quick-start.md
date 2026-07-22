@@ -3,13 +3,17 @@
 From the repository root:
 
 ```bash
-source ../.venv/bin/activate
 ./scripts/build-shakemap-docker.sh
 ./scripts/configure-shakemap.sh
 ./scripts/start-shakemap-docker.sh
-curl -fsS http://localhost:9010/config | python -m json.tool
-curl -fsS http://localhost:9010/healthz | python -m json.tool
+curl -fsS http://localhost:9010/config | python3 -m json.tool
+curl -fsS http://localhost:9010/healthz | python3 -m json.tool
 ```
+
+Prerequisites are Docker, Git, Bash, curl, and Python 3.10 or newer. The host
+scripts need no third-party Python packages and do not require a project
+virtual environment. Use `SHAKEMAP_HOST_PYTHON=/path/to/python` when the
+interpreter is not available as `python3`.
 
 Preparation precedes creation of the stable container. It reuses valid global
 grids, downloads only missing or explicitly invalid files, provisions external

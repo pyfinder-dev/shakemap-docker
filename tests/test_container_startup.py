@@ -95,6 +95,7 @@ exit 0
         self._write_executable(
             fake_python,
             """#!/usr/bin/env bash
+if [[ "$1" == "-c" ]]; then exit 0; fi
 if [[ "$3" == "resolve" ]]; then
   printf '%s\n' v4.4.10 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa https://code.usgs.gov/ghsc/esi/shakemap.git
   exit 0
@@ -111,7 +112,7 @@ exit 1
 """,
         )
         environment = self.environment.copy()
-        environment["SHAKEMAP_BUILD_PYTHON"] = str(fake_python)
+        environment["SHAKEMAP_HOST_PYTHON"] = str(fake_python)
         result = subprocess.run(
             ["bash", str(BUILD_SCRIPT)],
             cwd=PROJECT_DIR,

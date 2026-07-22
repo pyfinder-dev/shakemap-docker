@@ -44,6 +44,20 @@ def identity_manifest() -> dict:
                 "python_version": "3.12.7",
                 "dependency_inventory_path": "/opt/shakemap-build/dependencies.txt",
                 "dependency_inventory_sha256": "d" * 64,
+                "mapping_compatibility": {
+                    "schema_version": 1,
+                    "policy": "resolved_release_conda_lock",
+                    "distribution": "matplotlib",
+                    "platform": "linux-64",
+                    "source_lock_path": "/opt/shakemap/conda-lock.yml",
+                    "source_lock_sha256": "b" * 64,
+                    "before_version": "3.11.1",
+                    "locked_version": "3.10.8",
+                    "installed_version": "3.10.8",
+                    "changed": True,
+                    "record_path": "/opt/shakemap-build/mapping-compatibility.json",
+                    "record_sha256": "c" * 64,
+                },
             },
             "service": {
                 "source_commit": SERVICE_COMMIT,
@@ -105,6 +119,24 @@ def make_support(root: Path) -> tuple[Path, Path, Path, Path]:
     return manifest, cartopy, database, link
 
 
+def make_mapping_compatibility(root: Path, version: str) -> Path:
+    path = root / "mapping-compatibility.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "schema_version": 1,
+        "policy": "resolved_release_conda_lock",
+        "distribution": "matplotlib",
+        "platform": "linux-64",
+        "source_lock_path": "/opt/shakemap/conda-lock.yml",
+        "source_lock_sha256": "b" * 64,
+        "before_version": version,
+        "locked_version": version,
+        "installed_version": version,
+        "changed": False,
+    }), encoding="utf-8")
+    return path
+
+
 class BuildIdentityTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tempdir = tempfile.TemporaryDirectory(prefix="build_identity_")
@@ -155,6 +187,39 @@ class BuildIdentityTests(unittest.TestCase):
             ):
                 build_identity.validate_build_identity(bad)
 
+    def test_mapping_compatibility_comes_from_resolved_release_lock(self) -> None:
+        source = self.root / "resolved-release"
+        source.mkdir()
+        (source / "conda-lock.yml").write_text(
+            "package:\n"
+            "  - name: matplotlib\n"
+            "    version: 3.10.8\n"
+            "    manager: pip\n"
+            "    platform: linux-64\n",
+            encoding="utf-8",
+        )
+        output = self.root / "compatibility.json"
+        with patch.object(
+            build_identity,
+            "_distribution_version",
+            side_effect=["3.11.1", "3.10.8"],
+        ), patch.object(build_identity.subprocess, "run") as run:
+            record = build_identity.apply_upstream_mapping_compatibility(source, output)
+        self.assertEqual(record["before_version"], "3.11.1")
+        self.assertEqual(record["locked_version"], "3.10.8")
+        self.assertEqual(record["installed_version"], "3.10.8")
+        self.assertTrue(record["changed"])
+        self.assertIn("matplotlib==3.10.8", run.call_args_list[0].args[0])
+
+    def test_mapping_compatibility_fails_closed_without_linux_lock(self) -> None:
+        source = self.root / "future-release"
+        source.mkdir()
+        (source / "conda-lock.yml").write_text("package: []\n", encoding="utf-8")
+        with self.assertRaisesRegex(build_identity.BuildIdentityError, "exactly one"):
+            build_identity.apply_upstream_mapping_compatibility(
+                source, self.root / "unused.json"
+            )
+
     def test_deployment_identity_accepts_only_supported_docker_formats(self) -> None:
         with patch.dict(
             os.environ,
@@ -198,6 +263,10 @@ class BuildIdentityTests(unittest.TestCase):
             health_response = main.healthz()
         self.assertEqual(config_response["identity"], health_response["identity"])
         self.assertEqual(config_response["identity"]["deployment"]["image_id"], IMAGE_ID)
+        self.assertFalse(config_response["preparation_readiness"]["ready"])
+        self.assertFalse(health_response["preparation_readiness"]["ready"])
+        self.assertEqual(health_response["preparation_readiness"]["state"], "not_ready")
+        self.assertIn("checks", health_response["preparation_readiness"])
 
         provenance_path = self.root / "provenance.json"
         record = RequestStatus(
@@ -227,6 +296,7 @@ class BuildIdentityTests(unittest.TestCase):
         dependencies.write_text("example==1.0\n", encoding="utf-8")
         output = self.root / "written.json"
         natural_manifest, cartopy, strec_database, strec_link = make_support(self.root / "support-api")
+        mapping_compatibility = make_mapping_compatibility(self.root / "support-api", "1.2.3")
         class FakeStrec:
             version = "2.3.14"
             files = [Path("strec/data/moment_tensors.db")]
@@ -249,6 +319,7 @@ class BuildIdentityTests(unittest.TestCase):
                 build_timestamp_utc="2026-07-22T12:00:00Z",
                 natural_earth_manifest=natural_manifest,
                 cartopy_data_dir=cartopy,
+                mapping_compatibility_record=mapping_compatibility,
                 strec_database_link=strec_link,
             )
         self.assertEqual(json.loads(output.read_text(encoding="utf-8")), manifest)
@@ -261,6 +332,7 @@ class BuildIdentityTests(unittest.TestCase):
             ("shakemap-4.4.10.dist-info", "shakemap", "4.4.10"),
             ("shakemap_modules-1.2.3.dist-info", "shakemap-modules", "1.2.3"),
             ("usgs_strec-2.3.14.dist-info", "usgs-strec", "2.3.14"),
+            ("matplotlib-3.10.8.dist-info", "matplotlib", "3.10.8"),
         ):
             dist_info = metadata_root / directory
             dist_info.mkdir()
@@ -274,6 +346,7 @@ class BuildIdentityTests(unittest.TestCase):
         dependencies = self.root / "cli-dependencies.txt"
         dependencies.write_text("example==1.0\n", encoding="utf-8")
         output = self.root / "cli-identity.json"
+        mapping_compatibility = make_mapping_compatibility(self.root / "metadata", "3.10.8")
         environment = os.environ.copy()
         environment["PYTHONPATH"] = os.pathsep.join((str(metadata_root), str(PROJECT_DIR)))
         result = subprocess.run(
@@ -293,6 +366,7 @@ class BuildIdentityTests(unittest.TestCase):
                 "--build-timestamp-utc", "2026-07-22T12:00:00Z",
                 "--natural-earth-manifest", str(natural_manifest),
                 "--cartopy-data-dir", str(cartopy),
+                "--mapping-compatibility-record", str(mapping_compatibility),
                 "--strec-database-link", str(strec_link),
             ],
             cwd=PROJECT_DIR,

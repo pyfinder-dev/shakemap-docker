@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import base64
 import json
 import sys
 import tempfile
@@ -20,6 +21,9 @@ from shakemap_service import preparation
 
 
 HDF = b"\x89HDF\r\n\x1a\n" + b"scientific-grid"
+VALID_JPEG = base64.b64decode(
+    "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAAMAAoDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD3+iiigD//2Q=="
+)
 
 
 def spec(data: bytes = HDF) -> dict:
@@ -103,12 +107,14 @@ class SlabAndManifestTests(unittest.TestCase):
         manifest = service / ".service/preparation/manifest.json"
         manifest.parent.mkdir(parents=True)
         manifest.write_text(json.dumps({
-            "schema_version": 1,
+            "schema_version": 2,
             "run_id": "test",
             "identity": {},
             "permissions": {},
             "grids": {},
             "base_path": "/container/path",
+            "california_verification": {"product_validation": {"passed": True}},
+            "global_verification": {"product_validation": {"passed": True}},
             "ready": True,
         }), encoding="utf-8")
         state = preparation.load_preparation(service)
@@ -121,12 +127,14 @@ class SlabAndManifestTests(unittest.TestCase):
         manifest.parent.mkdir(parents=True)
         (service / ".service/preparation/base/global").mkdir(parents=True)
         manifest.write_text(json.dumps({
-            "schema_version": 1,
+            "schema_version": 2,
             "run_id": "test",
             "identity": {"available": True, "built_at_utc": "prepared-image"},
             "permissions": {},
             "grids": {},
             "base_path": "/container/path",
+            "california_verification": {"product_validation": {"passed": True}},
+            "global_verification": {"product_validation": {"passed": True}},
             "ready": True,
         }), encoding="utf-8")
         with patch(
@@ -136,6 +144,24 @@ class SlabAndManifestTests(unittest.TestCase):
             state = preparation.load_preparation(service)
         self.assertFalse(state["ready"])
         self.assertIn("identity does not match", state["reason"])
+
+    def test_failed_product_validation_keeps_preparation_not_ready(self) -> None:
+        service = self.root / "shakemap"
+        manifest = service / ".service/preparation/manifest.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(json.dumps({
+            "schema_version": 2,
+            "run_id": "failed-products",
+            "ready": False,
+            "error": "ProductValidationError: intensity.jpg is a legend-only strip",
+            "failed_product_validation": {
+                "passed": False,
+                "errors": ["intensity.jpg: image aspect is incompatible"],
+            },
+        }), encoding="utf-8")
+        state = preparation.load_preparation(service)
+        self.assertFalse(state["ready"])
+        self.assertIn("ProductValidationError", state["reason"])
 
     def test_host_permission_check_covers_contract_layout(self) -> None:
         evidence = preparation.ensure_host_permissions(self.root)
@@ -166,6 +192,22 @@ class LifecycleSourceTests(unittest.TestCase):
         self.assertNotIn("SHAKEMAP_ALLOW_UNIFORM_VS30", text)
         self.assertIn("shakemap_service.preparation", text)
 
+    def test_operator_workflow_has_portable_python_prerequisite(self) -> None:
+        project = Path(__file__).resolve().parents[1]
+        paths = [
+            project / "README.md",
+            project / "docs/quick-start.md",
+            project / "scripts/README.md",
+            project / "scripts/build-shakemap-docker.sh",
+            project / "scripts/configure-shakemap.sh",
+            project / "scripts/start-shakemap-docker.sh",
+            project / "scripts/verify-shakemap-deployment.sh",
+        ]
+        text = "\n".join(path.read_text(encoding="utf-8") for path in paths)
+        self.assertNotIn("../.venv", text)
+        self.assertIn("Python 3.10", text)
+        self.assertIn("SHAKEMAP_HOST_PYTHON", text)
+
     def test_obsolete_lifecycle_scripts_are_removed(self) -> None:
         scripts = Path(__file__).resolve().parents[1] / "scripts"
         for name in (
@@ -183,6 +225,75 @@ class LifecycleSourceTests(unittest.TestCase):
         self.assertEqual(len({item["target_path"] for item in manifest["files"]}), 20)
         self.assertTrue(all(len(item["sha256"]) == 64 and item["size"] > 0 for item in manifest["files"]))
 
+
+class ComposedImageValidationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def test_valid_spatial_map_passes(self) -> None:
+        path = self.root / "intensity.jpg"
+        path.write_bytes(VALID_JPEG)
+        result = preparation.validate_composed_image(path)
+        self.assertTrue(result["passed"])
+        self.assertEqual((result["width"], result["height"]), (10, 12))
+
+    def test_known_legend_only_form_fails(self) -> None:
+        path = self.root / "intensity.jpg"
+        legend = bytearray(VALID_JPEG)
+        frame = legend.index(b"\xff\xc0")
+        legend[frame + 5:frame + 7] = (2).to_bytes(2, "big")
+        legend[frame + 7:frame + 9] = (10).to_bytes(2, "big")
+        path.write_bytes(legend)
+        result = preparation.validate_composed_image(path)
+        self.assertFalse(result["passed"])
+        self.assertIn("legend/key-only", result["reason"])
+
+    def test_unreadable_image_fails(self) -> None:
+        path = self.root / "intensity.jpg"
+        path.write_bytes(b"not an image")
+        result = preparation.validate_composed_image(path)
+        self.assertFalse(result["passed"])
+        self.assertIn("unreadable", result["reason"])
+
+    def test_missing_required_image_fails(self) -> None:
+        result = preparation.validate_composed_image(self.root / "missing.jpg")
+        self.assertFalse(result["passed"])
+        self.assertIn("missing", result["reason"])
+
+
+class ComposedPdfValidationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = Path(self.tempdir.name)
+
+    def tearDown(self) -> None:
+        self.tempdir.cleanup()
+
+    def write_pdf(self, width: int, height: int) -> Path:
+        path = self.root / "map.pdf"
+        path.write_bytes(
+            b"%PDF-1.4\n1 0 obj\n<< /Type /Page /MediaBox [ 0 0 "
+            + str(width).encode()
+            + b" "
+            + str(height).encode()
+            + b" ] >>\nendobj\n%%EOF\n"
+        )
+        return path
+
+    def test_spatial_page_passes(self) -> None:
+        result = preparation._validate_pdf(self.write_pdf(600, 750))
+        self.assertTrue(result["passed"])
+        self.assertEqual(result["page_width"], 600)
+        self.assertEqual(result["page_height"], 750)
+
+    def test_legend_only_page_fails(self) -> None:
+        result = preparation._validate_pdf(self.write_pdf(562, 122))
+        self.assertFalse(result["passed"])
+        self.assertIn("legend/key-only", result["reason"])
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

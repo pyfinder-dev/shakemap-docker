@@ -113,6 +113,16 @@ if ! command -v docker >/dev/null 2>&1; then
     echo "ERROR: docker is not installed or not in PATH." >&2
     exit 1
 fi
+PYTHON_BIN="${SHAKEMAP_HOST_PYTHON:-python3}"
+if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
+    echo "ERROR: Python 3.10 or newer is required; interpreter not found: ${PYTHON_BIN}" >&2
+    echo "Set SHAKEMAP_HOST_PYTHON to a supported interpreter path if needed." >&2
+    exit 1
+fi
+if ! "${PYTHON_BIN}" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)'; then
+    echo "ERROR: ${PYTHON_BIN} must be Python 3.10 or newer; no third-party host packages are required." >&2
+    exit 1
+fi
 
 # Deployment identity is supplied by Docker at startup. It is intentionally
 # separate from the immutable build manifest, and a registry digest remains
@@ -127,7 +137,7 @@ RUNTIME_ABS="$(cd "$(dirname "${RUNTIME_DIR}")" 2>/dev/null && pwd)/$(basename "
 mkdir -p "${RUNTIME_DIR}"
 echo "  Runtime dir: ${RUNTIME_ABS}"
 mkdir -p "${RUNTIME_DIR}/shakemap/data"
-if python -m shakemap_service.preparation validate-record --service-root "${RUNTIME_ABS}/shakemap" >/dev/null 2>&1; then
+if "${PYTHON_BIN}" -m shakemap_service.preparation validate-record --service-root "${RUNTIME_ABS}/shakemap" >/dev/null 2>&1; then
     echo "  Preparation: valid"
 else
     echo "  WARNING: preparation record is missing or invalid; service will start in not_ready state." >&2

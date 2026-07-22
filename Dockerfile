@@ -56,6 +56,15 @@ RUN test -n "${SHAKEMAP_SOURCE_URL}" \
 # Even though the docs recommend conda, we rely on pip here inside Docker.
 RUN pip install --no-cache-dir /opt/shakemap
 
+# Copy the service identity implementation early so the resolved release's own
+# lock can supply plotting compatibility. This is release-derived: future
+# stable releases provide their own value or fail closed for explicit review.
+WORKDIR /app
+COPY shakemap_service /app/shakemap_service
+RUN python -m shakemap_service.build_identity apply-upstream-mapping-compatibility \
+      --source /opt/shakemap \
+      --output /opt/shakemap-build/mapping-compatibility.json
+
 # ---------- Install service dependencies (FastAPI HTTP wrapper) ----------
 # No local requirements.txt; everything is declared here.
 RUN pip install --no-cache-dir \
@@ -76,10 +85,7 @@ RUN python /tmp/install-image-support.py \
  && python -c "import importlib.metadata,pathlib; d=importlib.metadata.distribution('usgs-strec'); p=next(d.locate_file(f) for f in d.files if str(f).endswith('strec/data/moment_tensors.db')); pathlib.Path('/opt/shakemap-support/strec/moment_tensors.db').symlink_to(p)"
 
 # ---------- Create app directory and non-root user ----------
-WORKDIR /app
-
 # ---------- Copy service code ----------
-COPY shakemap_service /app/shakemap_service
 COPY entrypoint.sh /app/entrypoint.sh
 COPY scripts/verify-shakemap-image.sh /app/scripts/verify-shakemap-image.sh
 
@@ -100,9 +106,11 @@ RUN mkdir -p /opt/shakemap-build \
       --build-timestamp-utc "${BUILD_TIMESTAMP_UTC}" \
       --natural-earth-manifest /opt/shakemap-support/natural-earth-v5.1.2.json \
       --cartopy-data-dir /opt/shakemap-support/cartopy \
+      --mapping-compatibility-record /opt/shakemap-build/mapping-compatibility.json \
  && chmod -R a+rX /opt/shakemap-support \
  && chmod -R a-w /opt/shakemap-support \
- && chmod 0444 /opt/shakemap-build/identity.json /opt/shakemap-build/dependencies.txt
+ && chmod 0444 /opt/shakemap-build/identity.json /opt/shakemap-build/dependencies.txt \
+      /opt/shakemap-build/mapping-compatibility.json
 
 # ---------- Create non-root user and fix ownership ----------
 RUN groupadd -g 1000 sysop && useradd -u 1000 -g 1000 -ms /bin/bash sysop \

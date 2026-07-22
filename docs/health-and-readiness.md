@@ -5,12 +5,18 @@
 support identity with the running image and verify that the base snapshot
 exists.
 
-- `scientific_readiness.ready: true` means the current image identity matches a
-  durable preparation record whose fixed California and prepared-global native
-  plans passed offline.
-- `scientific_readiness.ready: false` means preparation is absent, invalid,
+- `process_liveness.live: true` means the HTTP process is responding. It does
+  not assert preparation or calculation readiness.
+- `preparation_readiness.ready: true` means the current image identity matches
+  a durable preparation record whose fixed California and prepared-global
+  native plans and product-structure gates passed offline.
+- `preparation_readiness.ready: false` means preparation is absent, invalid,
   incomplete, missing its base snapshot, or belongs to another image.
-- `/healthz` may run in `not_ready` state; startup does not invent a hard refusal.
+- `managed_calculation_readiness.ready` remains `false` while managed execution
+  is disabled and submission returns HTTP 503.
+- `overall_readiness.ready` therefore remains `false`, even when preparation
+  passed. `/healthz` returns liveness without calling the calculation service
+  healthy or ready.
 
 The response includes the manifest path, preparation record, global base path,
 external grid paths, image identity, proof scope, and explicit non-claims. It

@@ -40,9 +40,14 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-PYTHON_BIN="${SHAKEMAP_PREPARE_PYTHON:-python}"
+PYTHON_BIN="${SHAKEMAP_HOST_PYTHON:-python3}"
 if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
-    echo "ERROR: project Python is not active; run: source ../.venv/bin/activate" >&2
+    echo "ERROR: Python 3.10 or newer is required; interpreter not found: ${PYTHON_BIN}" >&2
+    echo "Set SHAKEMAP_HOST_PYTHON to a supported interpreter path if needed." >&2
+    exit 2
+fi
+if ! "${PYTHON_BIN}" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)'; then
+    echo "ERROR: ${PYTHON_BIN} must be Python 3.10 or newer; preparation uses only the standard library on the host." >&2
     exit 2
 fi
 if ! command -v docker >/dev/null 2>&1; then

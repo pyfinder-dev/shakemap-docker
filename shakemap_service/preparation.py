@@ -61,6 +61,16 @@ class PreparationError(RuntimeError):
     """Raised when preparation cannot produce validated durable state."""
 
 
+class ProductValidationError(PreparationError):
+    """Raised when native products fail the preparation integrity gate."""
+
+    def __init__(self, kind: str, evidence: dict[str, Any]):
+        self.kind = kind
+        self.evidence = evidence
+        failures = "; ".join(evidence.get("errors", [])) or "unknown product validation failure"
+        super().__init__(f"{kind} product validation failed: {failures}")
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -307,6 +317,266 @@ def inventory(root: Path) -> list[dict[str, Any]]:
     ]
 
 
+def validate_composed_image(path: Path, *, minimum_height_width_ratio: float = 0.5) -> dict[str, Any]:
+    """Validate that a required map is readable and not a legend-only strip."""
+    record: dict[str, Any] = {
+        "path": str(path),
+        "minimum_height_width_ratio": minimum_height_width_ratio,
+        "passed": False,
+    }
+    if not path.is_file():
+        record["reason"] = "required composed image is missing"
+        return record
+    try:
+        try:
+            from PIL import Image
+
+            with Image.open(path) as image:
+                image.verify()
+            with Image.open(path) as image:
+                width, height = image.size
+                image.load()
+                image_format = image.format
+        except ModuleNotFoundError:
+            data = path.read_bytes()
+            if not data.startswith(b"\xff\xd8") or not data.endswith(b"\xff\xd9"):
+                raise ValueError("not a complete JPEG stream")
+            width = height = 0
+            saw_scan = False
+            offset = 2
+            while offset < len(data) - 1:
+                if data[offset] != 0xFF:
+                    offset += 1
+                    continue
+                while offset < len(data) and data[offset] == 0xFF:
+                    offset += 1
+                marker = data[offset]
+                offset += 1
+                if marker == 0xDA:
+                    saw_scan = True
+                    break
+                if marker in (0xD8, 0xD9) or 0xD0 <= marker <= 0xD7:
+                    continue
+                if offset + 2 > len(data):
+                    raise ValueError("truncated JPEG segment")
+                length = int.from_bytes(data[offset:offset + 2], "big")
+                if length < 2 or offset + length > len(data):
+                    raise ValueError("invalid JPEG segment length")
+                if marker in {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}:
+                    if length < 7:
+                        raise ValueError("invalid JPEG frame header")
+                    height = int.from_bytes(data[offset + 3:offset + 5], "big")
+                    width = int.from_bytes(data[offset + 5:offset + 7], "big")
+                offset += length
+            if not saw_scan or width <= 0 or height <= 0:
+                raise ValueError("JPEG has no readable frame and scan structure")
+            image_format = "JPEG"
+    except Exception as exc:
+        record["reason"] = f"image is unreadable: {type(exc).__name__}: {exc}"
+        return record
+    ratio = height / width if width else 0.0
+    record.update(
+        {
+            "format": image_format,
+            "width": width,
+            "height": height,
+            "height_width_ratio": ratio,
+        }
+    )
+    if width <= 0 or height <= 0:
+        record["reason"] = "image dimensions are not positive"
+    elif ratio < minimum_height_width_ratio:
+        record["reason"] = (
+            "image aspect is incompatible with the release mapping figure and "
+            "matches a legend/key-only strip"
+        )
+    else:
+        record["passed"] = True
+        record["reason"] = "readable composed map with spatial-panel-compatible aspect"
+    return record
+
+
+def _validate_pdf(path: Path, *, minimum_height_width_ratio: float = 0.5) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "path": str(path),
+        "minimum_height_width_ratio": minimum_height_width_ratio,
+        "passed": False,
+    }
+    if not path.is_file():
+        record["reason"] = "required composed PDF is missing"
+        return record
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        record["reason"] = f"PDF is unreadable: {exc}"
+        return record
+    if not data.startswith(b"%PDF-") or b"%%EOF" not in data[-1024:]:
+        record["reason"] = "PDF header or end marker is invalid"
+        return record
+    number = rb"[-+]?(?:\d+(?:\.\d*)?|\.\d+)"
+    media_box = re.search(
+        rb"/MediaBox\s*\[\s*(" + number + rb")\s+(" + number + rb")\s+(" + number + rb")\s+(" + number + rb")\s*\]",
+        data,
+    )
+    if media_box is None:
+        record["reason"] = "PDF has no readable page MediaBox"
+        return record
+    x0, y0, x1, y1 = (float(value) for value in media_box.groups())
+    width = x1 - x0
+    height = y1 - y0
+    ratio = height / width if width else 0.0
+    record.update(
+        {
+            "size": len(data),
+            "page_width": width,
+            "page_height": height,
+            "height_width_ratio": ratio,
+        }
+    )
+    if width <= 0 or height <= 0:
+        record["reason"] = "PDF page dimensions are not positive"
+    elif ratio < minimum_height_width_ratio:
+        record["reason"] = (
+            "PDF page aspect is incompatible with the release mapping figure and "
+            "matches a legend/key-only strip"
+        )
+    else:
+        record.update({"passed": True, "reason": "readable composed map PDF with spatial-panel-compatible aspect"})
+    return record
+
+
+def validate_native_products(products: Path, expected_event_id: str) -> dict[str, Any]:
+    """Validate release-derived mapping and structured products for preparation."""
+    from esi_utils_io.smcontainers import ShakeMapOutputContainer
+    from esi_shakelib.utils.imt_string import oq_to_file
+    from PIL import Image
+
+    evidence: dict[str, Any] = {
+        "schema_version": 1,
+        "products_path": str(products),
+        "expected_event_id": expected_event_id,
+        "passed": False,
+        "checks": {},
+        "errors": [],
+    }
+    hdf_path = products / "shake_result.hdf"
+    container = None
+    try:
+        container = ShakeMapOutputContainer.load(str(hdf_path))
+        metadata = container.getMetadata()
+        hdf_event_id = str(metadata["input"]["event_information"]["event_id"])
+        if hdf_event_id != expected_event_id:
+            raise ValueError(f"HDF event_id {hdf_event_id!r} != {expected_event_id!r}")
+        if container.getDataType() != "grid":
+            raise ValueError(f"HDF data type is {container.getDataType()!r}, expected 'grid'")
+        imts = sorted({item.split("/", 1)[1] for item in container.getIMTs()})
+        if "MMI" not in imts:
+            raise ValueError("HDF has no MMI grid required by the fixed mapping plan")
+        component = container.getComponents("MMI")[0]
+        mmi_metadata = container.getIMTGrids("MMI", component)["mean_metadata"]
+        expected_overlay_size = (int(mmi_metadata["nx"]), int(mmi_metadata["ny"]))
+        evidence["checks"]["shake_result_hdf"] = {
+            "passed": True,
+            "path": str(hdf_path),
+            "data_type": "grid",
+            "event_id": hdf_event_id,
+            "imts": imts,
+            "mmi_grid_size": list(expected_overlay_size),
+        }
+    except Exception as exc:
+        evidence["checks"]["shake_result_hdf"] = {
+            "passed": False,
+            "path": str(hdf_path),
+            "reason": f"{type(exc).__name__}: {exc}",
+        }
+        evidence["errors"].append(f"shake_result.hdf: {type(exc).__name__}: {exc}")
+        imts = []
+        expected_overlay_size = None
+    finally:
+        if container is not None:
+            container.close()
+
+    stems = ["intensity" if imt == "MMI" else oq_to_file(imt) for imt in imts]
+    image_checks = {
+        stem: validate_composed_image(products / f"{stem}.jpg") for stem in stems
+    }
+    evidence["checks"]["composed_images"] = image_checks
+    for stem, check in image_checks.items():
+        if not check["passed"]:
+            evidence["errors"].append(f"{stem}.jpg: {check['reason']}")
+
+    pdf_checks = {stem: _validate_pdf(products / f"{stem}.pdf") for stem in stems}
+    evidence["checks"]["composed_pdfs"] = pdf_checks
+    for stem, check in pdf_checks.items():
+        if not check["passed"]:
+            evidence["errors"].append(f"{stem}.pdf: {check['reason']}")
+
+    overlay = products / "intensity_overlay.png"
+    overlay_check: dict[str, Any] = {"path": str(overlay), "passed": False}
+    try:
+        with Image.open(overlay) as image:
+            image.verify()
+        with Image.open(overlay) as image:
+            overlay_size = image.size
+            image.load()
+        overlay_check.update({"size": list(overlay_size)})
+        if expected_overlay_size is None or overlay_size != expected_overlay_size:
+            raise ValueError(
+                f"overlay size {overlay_size} does not match HDF MMI grid {expected_overlay_size}"
+            )
+        overlay_check.update({"passed": True, "reason": "readable spatial overlay matches HDF grid"})
+    except Exception as exc:
+        overlay_check["reason"] = f"{type(exc).__name__}: {exc}"
+        evidence["errors"].append(f"intensity_overlay.png: {overlay_check['reason']}")
+    evidence["checks"]["spatial_overlay"] = overlay_check
+
+    json_checks: dict[str, Any] = {}
+    json_paths = [products / "stationlist.json"] + [
+        products / f"cont_{oq_to_file(imt)}.json" for imt in imts
+    ]
+    for path in json_paths:
+        check: dict[str, Any] = {"path": str(path), "passed": False}
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+            if value.get("type") != "FeatureCollection" or not isinstance(value.get("features"), list):
+                raise ValueError("expected a GeoJSON FeatureCollection")
+            exposed_event = value.get("metadata", {}).get("eventid")
+            if exposed_event is not None and exposed_event != expected_event_id:
+                raise ValueError(f"eventid {exposed_event!r} != {expected_event_id!r}")
+            check.update(
+                {
+                    "passed": True,
+                    "feature_count": len(value["features"]),
+                    "event_id": exposed_event,
+                }
+            )
+        except Exception as exc:
+            check["reason"] = f"{type(exc).__name__}: {exc}"
+            evidence["errors"].append(f"{path.name}: {check['reason']}")
+        json_checks[path.name] = check
+    evidence["checks"]["structured_json"] = json_checks
+
+    xml_checks: dict[str, Any] = {}
+    for name in ("grid.xml", "uncertainty.xml"):
+        path = products / name
+        check = {"path": str(path), "passed": False}
+        try:
+            root = ET.parse(path).getroot()
+            event_id = root.attrib.get("event_id") or root.attrib.get("shakemap_id")
+            if event_id != expected_event_id:
+                raise ValueError(f"event_id {event_id!r} != {expected_event_id!r}")
+            check.update({"passed": True, "event_id": event_id, "root": root.tag})
+        except Exception as exc:
+            check["reason"] = f"{type(exc).__name__}: {exc}"
+            evidence["errors"].append(f"{name}: {check['reason']}")
+        xml_checks[name] = check
+    evidence["checks"]["structured_xml"] = xml_checks
+
+    evidence["required_composed_outputs"] = stems
+    evidence["passed"] = not evidence["errors"] and bool(stems)
+    return evidence
+
+
 def patch_line(path: Path, key: str, value: str) -> None:
     text = path.read_text(encoding="utf-8")
     pattern = re.compile(rf"^(\s*{re.escape(key)}\s*=).*$", re.MULTILINE)
@@ -506,10 +776,79 @@ def run_scenario(attempt_root: Path, kind: str, source_install: Path, scientific
         "network": "none", "cartopy_data_dir": IMAGE_CARTOPY_DIR,
         "strec_database": IMAGE_STREC_DB, "slab_directory": slab_dir,
     }
+    products = current / "products"
+    if evidence["module_plan_completed"]:
+        evidence["product_validation"] = validate_native_products(products, "SCENARIO")
+    else:
+        evidence["product_validation"] = {
+            "schema_version": 1,
+            "products_path": str(products),
+            "expected_event_id": "SCENARIO",
+            "passed": False,
+            "checks": {},
+            "errors": ["native module plan did not complete"],
+        }
     atomic_json(run_root / "evidence.json", evidence)
     if not evidence["module_plan_completed"]:
         raise PreparationError(f"{kind} native default plan failed; see {run_root}")
+    if not evidence["product_validation"]["passed"]:
+        raise ProductValidationError(kind, evidence["product_validation"])
     return evidence
+
+
+def write_preparation_report(prep_root: Path, record: dict[str, Any]) -> None:
+    ready = record.get("ready") is True
+    lines = [
+        "# ShakeMap runtime preparation report",
+        "",
+        f"Finished: {record.get('finished_at_utc', 'unknown')}",
+        "",
+        f"Ready for the fixed preparation scenarios: {'yes' if ready else 'no'}",
+        "",
+    ]
+    identity = record.get("identity", {})
+    upstream = identity.get("upstream", {}) if isinstance(identity, dict) else {}
+    if upstream:
+        lines.extend(
+            [
+                f"Image: {upstream.get('release_tag', 'unknown')} at {upstream.get('source_commit', 'unknown')}",
+                "",
+            ]
+        )
+    if ready:
+        lines.extend([f"Base snapshot: `{record['base_path']}`", ""])
+        for key, label in (
+            ("california_verification", "California"),
+            ("global_verification", "Prepared global"),
+        ):
+            validation = record[key]["product_validation"]
+            lines.extend([f"## {label} product validation", ""])
+            for stem, check in validation["checks"]["composed_images"].items():
+                lines.append(
+                    f"- `{stem}.jpg`: {check['width']} x {check['height']}; "
+                    f"height/width {check['height_width_ratio']:.3f}; passed"
+                )
+            for stem, check in validation["checks"]["composed_pdfs"].items():
+                lines.append(
+                    f"- `{stem}.pdf`: page {check['page_width']:.1f} x {check['page_height']:.1f}; "
+                    f"height/width {check['height_width_ratio']:.3f}; passed"
+                )
+            lines.append("")
+    else:
+        lines.extend(["## Failure", "", f"{record.get('error', 'Preparation failed.')}", ""])
+        failed = record.get("failed_product_validation")
+        if failed:
+            lines.extend(["Failed product checks:", ""])
+            lines.extend(f"- {item}" for item in failed.get("errors", []))
+            lines.append("")
+    lines.extend(
+        [
+            "These California and prepared-global runs invoke native ShakeMap directly in private preparation workspaces under `.service/preparation`.",
+            "They do not create `incoming/SCENARIO`, a queue record, or `products/SCENARIO`, and do not prove REST submission, queueing, authoritative service `SUCCESS`, concurrency, or managed calculation readiness.",
+            "",
+        ]
+    )
+    (prep_root / "report.md").write_text("\n".join(lines), encoding="utf-8")
 
 
 def container_permissions() -> dict[str, Any]:
@@ -538,13 +877,22 @@ def container_prepare(run_id: str) -> int:
     attempts.mkdir(parents=True, exist_ok=True)
     attempt_root = prep_root / "logs" / run_id
     attempt_root.mkdir(parents=True, exist_ok=False)
-    record: dict[str, Any] = {"schema_version": 1, "run_id": run_id, "started_at_utc": utc_now(), "ready": False}
+    record: dict[str, Any] = {"schema_version": 2, "run_id": run_id, "started_at_utc": utc_now(), "ready": False}
     try:
         from shakemap_service.build_identity import load_build_identity
         identity = load_build_identity()
         if not identity.get("immutable_image", {}).get("available"):
             raise PreparationError("immutable image identity is unavailable")
         record["identity"] = identity["immutable_image"]
+        dependency_inventory = attempt_root / "dependencies.txt"
+        compatibility_record = attempt_root / "mapping-compatibility.json"
+        shutil.copyfile("/opt/shakemap-build/dependencies.txt", dependency_inventory)
+        shutil.copyfile("/opt/shakemap-build/mapping-compatibility.json", compatibility_record)
+        record["dependency_identity"] = {
+            "inventory": file_record(dependency_inventory),
+            "mapping_compatibility": json.loads(compatibility_record.read_text(encoding="utf-8")),
+            "mapping_compatibility_record": file_record(compatibility_record),
+        }
         record["permissions"] = container_permissions()
         record["grids"] = validate_grids()
         record["strec_slabs"] = validate_slabs_native()
@@ -574,21 +922,18 @@ def container_prepare(run_id: str) -> int:
         record["base_path"] = str(base)
         atomic_json(attempts / f"{run_id}.json", record)
         atomic_json(prep_root / "manifest.json", record)
-        report = (
-            "# ShakeMap runtime preparation report\n\n"
-            f"Prepared: {record['finished_at_utc']}\n\n"
-            f"Ready for the fixed preparation scenarios: yes\n\n"
-            f"Image: {record['identity']['upstream']['release_tag']} at {record['identity']['upstream']['source_commit']}\n\n"
-            f"Base snapshot: `{record['base_path']}`\n\n"
-            "The California and prepared-global default plans completed offline. This does not prove queue, REST submission, concurrency, recalculation archival, authoritative service SUCCESS, or universal scientific validity.\n"
-        )
-        (prep_root / "report.md").write_text(report, encoding="utf-8")
+        write_preparation_report(prep_root, record)
         return 0
     except Exception as exc:
         record["finished_at_utc"] = utc_now()
         record["error"] = f"{type(exc).__name__}: {exc}"
+        if isinstance(exc, ProductValidationError):
+            record["failed_scenario"] = exc.kind
+            record["failed_product_validation"] = exc.evidence
         record["traceback"] = traceback.format_exc()
         atomic_json(attempts / f"{run_id}.json", record)
+        atomic_json(prep_root / "manifest.json", record)
+        write_preparation_report(prep_root, record)
         print(record["error"], file=sys.stderr)
         return 1
 
@@ -599,10 +944,21 @@ def load_preparation(service_root: Path) -> dict[str, Any]:
         record = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         return {"available": False, "ready": False, "manifest_path": str(path), "reason": f"durable preparation record unavailable: {exc}"}
-    required = ("schema_version", "run_id", "identity", "permissions", "grids", "base_path", "ready")
+    required = (
+        "schema_version", "run_id", "identity", "permissions", "grids", "base_path",
+        "california_verification", "global_verification", "ready",
+    )
     missing = [field for field in required if field not in record]
-    if missing or record.get("schema_version") != 1 or record.get("ready") is not True:
-        return {"available": True, "ready": False, "manifest_path": str(path), "reason": f"invalid preparation record; missing={missing}", "record": record}
+    validations_passed = all(
+        record.get(field, {}).get("product_validation", {}).get("passed") is True
+        for field in ("california_verification", "global_verification")
+    )
+    if missing or record.get("schema_version") != 2 or record.get("ready") is not True or not validations_passed:
+        error = record.get("error")
+        reason = f"invalid preparation record; missing={missing}; product_validation_passed={validations_passed}"
+        if error:
+            reason = f"preparation failed: {error}"
+        return {"available": True, "ready": False, "manifest_path": str(path), "reason": reason, "record": record}
     base = service_root / ".service/preparation/base/global"
     if not base.is_dir():
         return {"available": True, "ready": False, "manifest_path": str(path), "reason": f"base snapshot is missing: {base}", "record": record}

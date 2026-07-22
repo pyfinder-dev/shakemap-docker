@@ -480,18 +480,17 @@ sizes, and SHA-256 values are recorded in `package-manifest.json`.
 
 ## Prepare or import
 
-From the repository root and project environment:
+From the repository root with Python 3.10 or newer:
 
 ```bash
-source ../.venv/bin/activate
-python scripts/prepare-shakemap-verification-data.py prepare
+python3 scripts/prepare-shakemap-verification-data.py prepare
 ```
 
 For manual placement, arrange the checksum-pinned source files exactly as
 shown by `list-sources`, then run:
 
 ```bash
-python scripts/prepare-shakemap-verification-data.py prepare --source-dir /path/to/source-mirror
+python3 scripts/prepare-shakemap-verification-data.py prepare --source-dir /path/to/source-mirror
 ```
 
 The helper never overwrites an existing valid package and never deletes an

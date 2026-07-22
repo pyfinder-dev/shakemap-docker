@@ -22,8 +22,13 @@ the obsolete start-then-configure lifecycle and development override behavior.
 The preparation report, public endpoints, image verifier, and capability tests
 replace them.
 
-Use the existing environment for every project Python command:
+Operator scripts require Python 3.10 or newer and only its standard library.
+They do not require a repository-adjacent virtual environment. Override the
+interpreter name when necessary:
 
 ```bash
-source ../.venv/bin/activate
+SHAKEMAP_HOST_PYTHON=/path/to/python3 ./scripts/configure-shakemap.sh
 ```
+
+Repository development and test commands follow the separate project
+environment policy in `AGENTS.md`.

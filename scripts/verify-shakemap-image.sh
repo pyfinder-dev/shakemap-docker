@@ -93,6 +93,35 @@ PY
 )"
 check test "${MODULE_RESULT}" = OK
 
+MAPPING_STACK_RESULT="$(python - <<'PY'
+import importlib.metadata
+import json
+
+import cartopy
+import fiona
+import matplotlib
+import pyproj
+import rasterio
+import shapely
+from PIL import Image
+
+identity = json.load(open('/opt/shakemap-build/identity.json'))['immutable_image']
+compatibility = identity['installed']['mapping_compatibility']
+versions = {
+    name: importlib.metadata.version(name)
+    for name in ('matplotlib', 'cartopy', 'shapely', 'fiona', 'rasterio', 'pyproj', 'pillow')
+}
+errors = []
+if versions['matplotlib'] != compatibility['locked_version']:
+    errors.append('matplotlib does not match the resolved release lock')
+if compatibility['installed_version'] != versions['matplotlib']:
+    errors.append('mapping compatibility record differs from the installed stack')
+print('OK' if not errors else ' | '.join(errors))
+PY
+)"
+check test "${MAPPING_STACK_RESULT}" = OK
+if [[ "${MAPPING_STACK_RESULT}" != "OK" ]]; then echo "${MAPPING_STACK_RESULT}" >&2; fi
+
 check test -x /app/scripts/verify-shakemap-image.sh
 check test "$(find /app/scripts -maxdepth 1 -type f | wc -l | tr -d ' ')" = 1
 

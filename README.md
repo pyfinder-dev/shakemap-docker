@@ -7,13 +7,17 @@ is created.
 ## Normal workflow
 
 ```bash
-source ../.venv/bin/activate
 ./scripts/build-shakemap-docker.sh
 ./scripts/configure-shakemap.sh
 ./scripts/start-shakemap-docker.sh
-curl -fsS http://localhost:9010/config | python -m json.tool
-curl -fsS http://localhost:9010/healthz | python -m json.tool
+curl -fsS http://localhost:9010/config | python3 -m json.tool
+curl -fsS http://localhost:9010/healthz | python3 -m json.tool
 ```
+
+The host requires Docker, Git, Bash, curl, and Python 3.10 or newer. The
+operator scripts use only Python's standard library; no project virtual
+environment or third-party host package is required. Set
+`SHAKEMAP_HOST_PYTHON` when the supported interpreter is not named `python3`.
 
 Normal resources are image `shakemap-docker:latest`, container
 `shakemap-docker`, runtime `./runtime`, and host port `9010`. Configuration is
@@ -75,18 +79,22 @@ active profile. Later calculations must receive private copies.
 Preparation runs the complete plan
 `select assemble model contour mapping stations gridxml` twice without network:
 once with the California package and once with prepared global data. Exact
-commands, configuration/data identities, stdout, stderr, module order, and
-output inventories are retained under:
+commands, configuration/data identities, stdout, stderr, module order, output
+inventories, parsed structured-product checks, and dimensions/aspect checks for
+every required composed map are retained under:
 
 - `runtime/shakemap/.service/preparation/manifest.json`
 - `runtime/shakemap/.service/preparation/report.md`
 - `runtime/shakemap/.service/preparation/base/global/`
 - `runtime/shakemap/.service/preparation/logs/`
 
-These checks prove image/preparation integration for two fixed scenarios. They
-do not prove queue correctness, REST submission, structured-origin or
+These native runs use private preparation workspaces. They do not create
+`incoming/SCENARIO`, a queue record, or user-facing `products/SCENARIO`.
+They prove image/preparation integration for two fixed scenarios, but do not
+prove queue correctness, REST submission, structured-origin or
 prediction-only support, named regions, concurrency, recalculation archival,
-authoritative service `SUCCESS`, or universal scientific validity.
+authoritative service `SUCCESS`, managed calculation readiness, or universal
+scientific validity.
 
 ## Runtime layout
 

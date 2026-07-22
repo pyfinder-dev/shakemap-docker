@@ -262,12 +262,22 @@ def get_config() -> dict:
     base_config = paths.global_base_dir() / "install/config"
 
     return {
-        "response_schema_version": 2,
+        "response_schema_version": 3,
         "identity": service_identity(),
-        "scientific_readiness": {
+        "preparation_readiness": {
             "ready": sentinel_info["passed"],
             "state": readiness_state,
             "reason": sentinel_info.get("reason", ""),
+        },
+        "managed_calculation_readiness": {
+            "ready": False,
+            "state": "disabled",
+            "reason": "managed calculation execution remains intentionally disabled",
+        },
+        "overall_readiness": {
+            "ready": False,
+            "state": "not_ready",
+            "reason": "managed calculation execution remains intentionally disabled",
         },
         "preparation": preparation,
         "global_base_snapshot": str(paths.global_base_dir()),
@@ -279,8 +289,6 @@ def get_config() -> dict:
         "vs30_file_exists": prepared_data.get("vs30_file_exists", False),
         "topo_file": prepared_data.get("topo_file", ""),
         "topo_file_exists": prepared_data.get("topo_file_exists", False),
-        "readiness_state": readiness_state,
-        "readiness_reason": sentinel_info.get("reason", ""),
         "proof_scope": "fixed California and fixed prepared-global native scenarios only",
         "non_claims": ["durable queue", "REST submission", "concurrency", "recalculation archival", "authoritative service SUCCESS", "universal scientific validity"],
         "service_root": settings.service_root,
@@ -382,7 +390,7 @@ async def submit_event_endpoint(
 
 @app.get("/healthz")
 def healthz() -> dict:
-    """Report infrastructure health and bounded preparation readiness."""
+    """Report process liveness separately from preparation and calculation readiness."""
     dir_checks: dict[str, dict[str, bool]] = {}
     for d in paths.all_service_dirs():
         exists = d.is_dir()
@@ -418,7 +426,8 @@ def healthz() -> dict:
         base_config_valid,
     ))
     preparation_readiness = {
-        "passed": preparation_passed,
+        "ready": preparation_passed,
+        "state": "prepared" if preparation_passed else "not_ready",
         **({} if preparation_passed else {"reason": sentinel_info.get("reason", "prepared data or base snapshot is incomplete")}),
         "checks": {
             "vs30_file": prepared_data.get("vs30_file", ""),
@@ -435,7 +444,7 @@ def healthz() -> dict:
         "base_snapshot": str(paths.global_base_dir()),
         "preparation": sentinel_info["preparation"],
     }
-    status = "healthy" if infrastructure_passed and preparation_passed else "not_ready"
+    status = "live"
     blocking_reasons = _compute_blocking_reasons(
         shake_cli_available=shake_cli_available,
         dir_checks=dir_checks,
@@ -446,14 +455,24 @@ def healthz() -> dict:
         base_config_valid=base_config_valid,
     )
     return {
-        "response_schema_version": 2,
+        "response_schema_version": 3,
         "identity": service_identity(),
-        "scientific_readiness": {
-            "ready": preparation_passed,
-            "state": "prepared" if preparation_passed else "not_ready",
-            "reason": sentinel_info.get("reason", ""),
-        },
         "status": status,
+        "process_liveness": {
+            "live": True,
+            "state": "live",
+            "reason": "the HTTP process is responding",
+        },
+        "managed_calculation_readiness": {
+            "ready": False,
+            "state": "disabled",
+            "reason": "durable queue and authoritative execution semantics remain deferred",
+        },
+        "overall_readiness": {
+            "ready": False,
+            "state": "not_ready",
+            "reason": "managed calculation execution is disabled",
+        },
         "blocking_reasons": blocking_reasons,
         "next_action": _compute_next_action(blocking_reasons, sentinel_info),
         "infrastructure": infrastructure,
