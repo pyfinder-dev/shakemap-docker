@@ -6,6 +6,12 @@ __pycache__/
 # C extensions
 *.so
 
+# Project based custom files and folders that should be ignored.
+# These probably store very large data files.
+.agent
+AGENTS.md
+runtime/
+
 # Mac
 .DS_Store
 
