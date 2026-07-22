@@ -39,6 +39,7 @@ from fastapi.responses import JSONResponse
 
 from .config import settings
 from . import paths
+from .build_identity import service_identity
 from .submission import submit_event, SubmissionResult
 from .worker import recover_interrupted_events, run_worker_cycle, execute_shakemap
 from .queue import discover_queue
@@ -384,6 +385,13 @@ def get_config() -> dict:
             )
 
     return {
+        "response_schema_version": 2,
+        "identity": service_identity(),
+        "scientific_readiness": {
+            "ready": sentinel_info["passed"],
+            "state": readiness_state,
+            "reason": sentinel_info.get("reason", ""),
+        },
         "active_profile": settings.shakemap_profile,
         "available_profiles": paths.list_profiles(),
         "profiles_conf_path": str(paths.profiles_conf()),
@@ -675,6 +683,13 @@ def healthz() -> dict:
     next_action = _compute_next_action(blocking_reasons, sentinel_info)
 
     response = {
+        "response_schema_version": 2,
+        "identity": service_identity(),
+        "scientific_readiness": {
+            "ready": stage2_passed,
+            "state": "ready" if stage2_passed else "not_ready",
+            "reason": sentinel_info.get("reason", ""),
+        },
         "status": status,
         "blocking_reasons": blocking_reasons,
         "next_action": next_action,

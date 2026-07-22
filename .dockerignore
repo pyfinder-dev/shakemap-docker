@@ -1,0 +1,8 @@
+.git
+.agent
+.DS_Store
+runtime
+tests
+docs
+__pycache__
+*.py[cod]

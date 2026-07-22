@@ -1,6 +1,6 @@
 # ShakeMap Docker Service
 
-A Docker-based deployment of [USGS ShakeMap 4](https://code.usgs.gov/ghsc/esi/shakemap) with a REST API for earthquake event submission, processing, and health monitoring. The service wraps the official ShakeMap software in a managed container with filesystem-based event queuing, automatic retry, and structured output publication. It is designed for seismic early warning and rapid earthquake assessment pipelines.
+A Docker-based deployment of [USGS ShakeMap 4](https://code.usgs.gov/ghsc/esi/shakemap) with a REST API for earthquake event submission, processing, and health monitoring. The service wraps the official ShakeMap software in a managed container with filesystem-based event state and structured output publication. It is designed for seismic early warning and rapid earthquake assessment pipelines.
 
 ## Prerequisites
 
@@ -10,13 +10,16 @@ A Docker-based deployment of [USGS ShakeMap 4](https://code.usgs.gov/ghsc/esi/sh
 - **Network access** to `apps.usgs.gov` during configuration (optional — for downloading VS30 and topography grids)
 - **Host directory** for persistent runtime data (volume mount)
 - Basic familiarity with Docker commands (`docker run`, `docker exec`)
+- The repository's existing Python environment at
+  `/Users/savas/my-codes/eew/pyfinder-dev/.venv`
 
 ## Quick Start
 
 Four commands take you from zero to a running, configured ShakeMap service:
 
 ```bash
-# 1. Build the Docker image
+# 1. Activate the project environment and build the Docker image
+source /Users/savas/my-codes/eew/pyfinder-dev/.venv/bin/activate
 ./scripts/build-shakemap-docker.sh
 
 # 2. Start the container
@@ -45,6 +48,38 @@ make build && make start && make configure && make verify
 > **Note:** If you want to skip the USGS data download (for testing or air-gapped environments), pass environment variables at start time. See the [Configuration](#configuration) section below.
 
 For a full walkthrough with expected terminal output and common variations, see the [Quick Start Guide](docs/quick-start.md).
+
+## Release and Image Identity
+
+The default build resolves the latest final semantic-version release from the
+official USGS repository, resolves that tag to a full commit, and builds only
+that immutable source identity. A reproducible override requires both a stable
+tag and its exact official 40-character commit:
+
+```bash
+source /Users/savas/my-codes/eew/pyfinder-dev/.venv/bin/activate
+./scripts/build-shakemap-docker.sh \
+  --release-tag vX.Y.Z \
+  --release-commit 0123456789abcdef0123456789abcdef01234567
+```
+
+OCI image labels provide registry-visible summary metadata. The validated,
+read-only manifest at `/opt/shakemap-build/identity.json` is the authoritative
+in-container record of the upstream checkout, installed distributions,
+dependency inventory, Python version, service source state, and build time.
+The image ID and repository digest are separate deployment facts supplied by
+the supported startup helper and exposed with the same identity model by
+`/config`, `/healthz`, and calculation provenance.
+
+`SHAKEMAP_IMAGE_ID`, `SHAKEMAP_IMAGE_DIGEST`, and
+`SHAKEMAP_BUILD_IDENTITY_FILE` are reserved. The startup helper rejects them in
+`--env`; other environment variables remain supported. This protects the
+documented helper path, but it cannot stop an operator from bypassing the
+helper with a direct `docker run` command. Supplied deployment values are still
+format-validated before the service reports them as available.
+
+See [scripts/README.md](scripts/README.md) for the exact host, image-internal,
+and running-service verification workflow.
 
 ## How It Works
 
@@ -93,15 +128,16 @@ Inside the container, the service root at `SERVICE_ROOT` (`/home/sysop/runtime/s
 
 ```
 /home/sysop/runtime/shakemap/    (SERVICE_ROOT)
-├── events/        Event tracking — per-event status in requeststatus.json
 ├── incoming/      Submitted input files, staged atomically per event
-├── work/          ShakeMap private processing directory
 ├── products/      Published outputs — completed ShakeMap results
-├── archive/       Completed-run archive
 ├── logs/          Service logs
-└── data/          Shared data files
-    ├── vs30/      VS30 grid files
-    └── topo/      Topography grid files
+├── data/          Shared data files
+│   ├── vs30/      VS30 grid files
+│   └── topo/      Topography grid files
+└── .service/      Internal state (not a user-facing interface)
+    ├── events/    Per-event status and audit state
+    ├── work/      Private processing state
+    └── archive/   Internal completed-run archive
 ```
 
 When you mount a host directory (e.g., `./runtime:/home/sysop/runtime`), all event data, products, and logs persist across container restarts.
@@ -113,7 +149,8 @@ For the complete directory tree including per-event structure, ShakeMap profile 
 Check the service status at any time:
 
 ```bash
-curl -s http://localhost:9010/healthz | python3 -m json.tool
+source /Users/savas/my-codes/eew/pyfinder-dev/.venv/bin/activate
+curl -s http://localhost:9010/healthz | python -m json.tool
 ```
 
 The `/healthz` endpoint returns one of three statuses:
@@ -148,7 +185,10 @@ For request/response schemas, examples, and error codes, see the [REST API Refer
 
 ## Running Your First ShakeMap
 
-The repository includes a minimal test fixture at `tests/fixtures/shakemap_event_minimal/` with synthetic earthquake data (M5.0, Basel Region). After completing the [Quick Start](#quick-start):
+The repository includes a legacy minimal synthetic fixture at
+`tests/fixtures/shakemap_event_minimal/`. The example below documents the
+existing interface; it is not current proof of scientifically valid end-to-end
+execution or deployment readiness:
 
 ```bash
 # Submit the test event
@@ -230,16 +270,18 @@ For extended troubleshooting including log analysis, ShakeMap-specific errors, a
 
 ## Development
 
-**Run the Python test suite** (from the host, with the virtualenv activated):
+**Run the focused release and identity tests** (from the host):
 
 ```bash
-python tests/test_event_status_records.py
-python tests/test_event_submission_staging.py
-python tests/test_durable_queue.py
-python tests/test_worker_claim_locking.py
-python tests/test_shakemap_fixtures.py
-python tests/test_execution_bridge.py
+source /Users/savas/my-codes/eew/pyfinder-dev/.venv/bin/activate
+python tests/test_release_resolution.py
+python tests/test_build_identity.py
 ```
+
+The broader legacy test and CI scripts cover later operational capabilities.
+They are not evidence that release identity, scientific configuration, event
+processing, or deployment readiness is complete unless their relevant
+container and running-service checks also pass.
 
 **Run the full CI test suite** (builds image, starts container, runs integration checks):
 

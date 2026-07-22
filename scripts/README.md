@@ -1,131 +1,158 @@
-# ShakeMap Docker -- Scripts
+# ShakeMap Docker scripts
 
-## User Workflow
-
-The intended deployment workflow is four commands:
-
-```bash
-./scripts/build-shakemap-docker.sh                          # 1. Build image
-./scripts/start-shakemap-docker.sh                          # 2. Start container
-docker exec shakemap /app/scripts/configure-shakemap.sh     # 3. Configure ShakeMap
-./scripts/verify-shakemap-deployment.sh shakemap --expect ready  # 4. Verify
-```
-
-Or via Makefile:
+Run host commands from the repository root. Host-side Python commands must use
+the existing project environment:
 
 ```bash
-make build
-make start
-make configure
-make verify
+cd /Users/savas/my-codes/eew/pyfinder-dev/shakemap-docker
+source /Users/savas/my-codes/eew/pyfinder-dev/.venv/bin/activate
+docker info
 ```
 
-### build-shakemap-docker.sh
+Building requires Docker, Git, the project environment, free image space, and
+network access to the official USGS GitLab service plus Python package indexes.
+Configuration can require additional USGS data downloads.
 
-Build the Docker image.
+## Build and release resolution
 
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--tag TAG` | Image name and tag | `shakemap-service:latest` |
-| `--platform PLAT` | Target platform (e.g. `linux/amd64`) | current host platform |
-| `--no-cache` | Build without layer cache | caching enabled |
-| `--help` | Print usage and exit | -- |
-
-### start-shakemap-docker.sh
-
-Start the service container with sensible defaults.
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--name NAME` | Container name | `shakemap` |
-| `--runtime DIR` | Host runtime directory | `./runtime` |
-| `--port PORT` | Host port | `9010` |
-| `--image IMAGE` | Image name:tag | `shakemap-service:latest` |
-| `--env KEY=VALUE` | Extra env var (repeatable) | -- |
-| `--foreground` | Run in foreground | detached |
-| `--help` | Print usage and exit | -- |
-
-### configure-shakemap.sh
-
-Run inside the container after start. Configures the ShakeMap profile,
-sets up data, and writes the readiness sentinel.
+The default build resolves the latest final stable USGS ShakeMap release and
+its full commit once, then passes that immutable pair into Docker:
 
 ```bash
-docker exec <container> /app/scripts/configure-shakemap.sh
+./scripts/build-shakemap-docker.sh --tag shakemap-service:identity-check
 ```
 
-Idempotent and safe to run multiple times.
-
-#### Environment variables
-
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `SHAKEMAP_PROFILE` | `default` | Profile name |
-| `SHAKEMAP_SKIP_DATA_DOWNLOAD` | `0` | Set to `1` to skip USGS downloads |
-| `SHAKEMAP_ALLOW_UNIFORM_VS30` | `0` | Set to `1` to allow empty vs30file |
-| `SHAKEMAP_VS30_FILE` | -- | Custom path to VS30 grid |
-| `SHAKEMAP_TOPO_FILE` | -- | Custom path to topography grid |
-
-### verify-shakemap-deployment.sh
-
-Verify a running container. Does NOT rebuild or create containers.
+A pinned rebuild requires both values. The helper verifies that the full commit
+is the official target of the final stable tag; branches, prereleases, short
+commits, mismatched pairs, and one-sided overrides fail closed:
 
 ```bash
-./scripts/verify-shakemap-deployment.sh <container> --expect not-ready   # after start
-./scripts/verify-shakemap-deployment.sh <container> --expect ready       # after configure
+./scripts/build-shakemap-docker.sh \
+  --tag shakemap-service:identity-check \
+  --release-tag vX.Y.Z \
+  --release-commit 0123456789abcdef0123456789abcdef01234567
 ```
 
-### inspect-shakemap-config.sh
+Other build flags are `--platform PLAT`, `--no-cache`, and `--help`.
 
-Print the active ShakeMap configuration from within the container.
+## Host-side verification
+
+These checks do not prove that the image or running service works:
 
 ```bash
-docker exec <container> /app/scripts/inspect-shakemap-config.sh          # filesystem mode
-docker exec <container> /app/scripts/inspect-shakemap-config.sh --rest   # REST API mode
+source /Users/savas/my-codes/eew/pyfinder-dev/.venv/bin/activate
+python -m py_compile \
+  shakemap_service/release.py \
+  shakemap_service/build_identity.py \
+  tests/test_release_resolution.py \
+  tests/test_build_identity.py
+bash -n scripts/build-shakemap-docker.sh
+bash -n scripts/start-shakemap-docker.sh
+bash -n scripts/verify-shakemap-image.sh
+python tests/test_release_resolution.py
+python tests/test_build_identity.py
+git diff --check
 ```
 
-Shows: active profile, paths, VS30/topo status, readiness state, and active overrides.
+## Image labels and the immutable manifest
 
-### Health and Configuration Endpoints
-
-```
-GET http://localhost:9010/healthz           # Health and readiness
-GET http://localhost:9010/config            # Active configuration inspection
-GET http://localhost:9010/config/profiles   # List existing profiles
-```
-
-`/healthz` returns `status`, `blocking_reasons`, `next_action`, and `overrides` (active override flags like `uniform_vs30_override`).
-
-`/config` returns active profile, paths, VS30/topo status, readiness state, override flags, and override warnings.
-
-`/config/profiles` returns a list of existing profiles with validation status.
-
----
-
-## Developer / Internal Tooling
-
-### verify-shakemap-build.sh
-
-Validates build/infrastructure guarantees (user identity, directories, CLI, health endpoint). Run inside the container.
+OCI labels are a registry-visible summary. Inspect them on the host:
 
 ```bash
-docker exec <container> /app/scripts/verify-shakemap-build.sh
+docker image inspect shakemap-service:identity-check \
+  --format '{{json .Config.Labels}}' | python -m json.tool
 ```
 
-### verify-shakemap-config.sh
+The read-only `/opt/shakemap-build/identity.json` manifest is the validated
+authoritative in-container record. It includes the official upstream URL,
+stable tag and full commit; installed `shakemap` and `shakemap-modules`
+versions; Python version; dependency-inventory path and digest; service commit
+and dirty state when available; and build timestamp. Its code-fixed path cannot
+be redirected by an environment variable.
 
-Validates configuration/readiness guarantees (profile, symlink, data, sentinel, idempotency). Run inside the container after configure-shakemap.sh.
+The Docker image ID and optional repository digest are not build-manifest
+facts. They describe the deployed image and are collected by the supported
+startup helper. A locally built/loaded image commonly has an image ID but no
+repository digest; that absence is reported as unavailable rather than guessed.
+
+## Container-internal and running-service verification
+
+Use durable verification names and a distinct port/runtime directory:
 
 ```bash
-docker exec <container> /app/scripts/verify-shakemap-config.sh
+./scripts/start-shakemap-docker.sh \
+  --name shakemap-identity-check \
+  --runtime /private/tmp/shakemap-identity-check-runtime \
+  --port 19010 \
+  --image shakemap-service:identity-check \
+  --env IDENTITY_CHECK_MARKER=present
 ```
 
-### run-shakemap-ci-tests.sh
-
-Full automated CI test: builds the image, starts a container, runs build and config verification, checks submit gate behavior, and verifies idempotency. Run from the host.
+Confirm that ordinary environment variables reached the container, the
+manifest remains fixed even if a process supplies the old redirect variable,
+and all image-internal checks pass:
 
 ```bash
-./scripts/run-shakemap-ci-tests.sh
+docker exec shakemap-identity-check env | grep '^IDENTITY_CHECK_MARKER=present$'
+docker exec -e SHAKEMAP_BUILD_IDENTITY_FILE=/tmp/redirect.json \
+  shakemap-identity-check python -c \
+  'from shakemap_service.build_identity import load_build_identity; assert load_build_identity()["immutable_image"]["available"]'
+docker exec shakemap-identity-check \
+  python -m json.tool /opt/shakemap-build/identity.json
+docker exec shakemap-identity-check /app/scripts/verify-shakemap-image.sh
 ```
 
-Exit code is non-zero if any check fails.
+Then check the live endpoints and prove they expose the same shared identity:
+
+```bash
+curl -fsS http://localhost:19010/config | python -m json.tool
+curl -fsS http://localhost:19010/healthz | python -m json.tool
+python -c 'import json, urllib.request as u; c=json.load(u.urlopen("http://localhost:19010/config")); h=json.load(u.urlopen("http://localhost:19010/healthz")); assert c["identity"] == h["identity"]; print(json.dumps(c["identity"], indent=2))'
+```
+
+`not_ready` is an expected service state before scientific configuration. A
+successful build, a valid manifest, passing imports, or the existence of some
+products does not prove calculation readiness. Readiness requires valid data;
+uniform VS30 is only an explicit development/emergency override. Successful
+event processing additionally requires validated core products, provenance, a
+product manifest, and logs. Calculation-level deployment proof is deferred
+until release-matched test data and the later calculation work are available.
+
+## Startup helper environment rules
+
+`--env KEY=VALUE` remains supported for ordinary variables. These keys are
+reserved and rejected before Docker is invoked:
+
+- `SHAKEMAP_IMAGE_ID`
+- `SHAKEMAP_IMAGE_DIGEST`
+- `SHAKEMAP_BUILD_IDENTITY_FILE`
+
+For example, this must fail:
+
+```bash
+./scripts/start-shakemap-docker.sh --env SHAKEMAP_IMAGE_ID=untrusted
+```
+
+The restriction protects the supported helper path, not arbitrary direct
+`docker run` commands. The service validates supported Docker formats before it
+reports supplied deployment values as trusted facts.
+
+## Other scripts and current limitations
+
+- `configure-shakemap.sh` configures a running profile and data.
+- `verify-shakemap-deployment.sh` checks a running container; it does not build one.
+- `inspect-shakemap-config.sh` and `inspect-shakemap-events.sh` inspect existing state.
+- `verify-shakemap-build.sh`, `verify-shakemap-config.sh`, and
+  `run-shakemap-ci-tests.sh` are broader legacy/later-capability checks. Their
+  presence is not a claim that later event, queue, retry, regional-data, or
+  scientific-readiness milestones are complete.
+
+## Cleanup of the verification deployment
+
+The following removes only the container and runtime directory created by the
+commands above:
+
+```bash
+docker rm -f shakemap-identity-check
+rm -rf -- /private/tmp/shakemap-identity-check-runtime
+```

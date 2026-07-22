@@ -46,9 +46,86 @@ RUNTIME_ROOT="${RUNTIME_ROOT:-/home/sysop/runtime}"
 SERVICE_ROOT="${SERVICE_ROOT:-${RUNTIME_ROOT}/shakemap}"
 
 # ------------------------------------------------------------------
-# Section 1: Python module imports
+# Immutable image identity
 # ------------------------------------------------------------------
-echo "--- Section 1: Python module imports ---"
+echo "--- Immutable image identity ---"
+
+IDENTITY_CHECK=$(python3 - <<'PYEOF'
+import hashlib
+import importlib.metadata
+import json
+import platform
+import subprocess
+from pathlib import Path
+
+errors = []
+identity_path = Path("/opt/shakemap-build/identity.json")
+try:
+    from shakemap_service.build_identity import validate_build_identity
+    manifest = validate_build_identity(json.loads(identity_path.read_text()))
+    image = manifest["immutable_image"]
+    upstream = image["upstream"]
+    installed = image["installed"]
+
+    head = subprocess.run(
+        ["git", "-C", "/opt/shakemap", "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    if head != upstream["source_commit"]:
+        errors.append(f"source checkout={head}, manifest={upstream['source_commit']}")
+
+    import shakemap  # noqa: F401 -- proves package import
+    import shakemap_modules  # noqa: F401 -- proves package import
+    shake_version = importlib.metadata.version("shakemap")
+    modules_version = importlib.metadata.version("shakemap-modules")
+    if shake_version != installed["shakemap_distribution_version"]:
+        errors.append("installed ShakeMap version differs from manifest")
+    if modules_version != installed["shakemap_modules_distribution_version"]:
+        errors.append("installed shakemap-modules version differs from manifest")
+    if platform.python_version() != installed["python_version"]:
+        errors.append("Python version differs from manifest")
+
+    inventory = Path(installed["dependency_inventory_path"])
+    if not inventory.is_file() or not inventory.read_text().strip():
+        errors.append("dependency inventory missing or empty")
+    elif hashlib.sha256(inventory.read_bytes()).hexdigest() != installed["dependency_inventory_sha256"]:
+        errors.append("dependency inventory digest mismatch")
+except Exception as exc:
+    errors.append(f"identity validation failed: {type(exc).__name__}: {exc}")
+
+print("OK" if not errors else "ERRORS:" + "|".join(errors))
+PYEOF
+)
+
+[ "${IDENTITY_CHECK}" = "OK" ]
+check "Manifest, checkout, imports, versions, Python, and dependency inventory agree" $?
+if [ "${IDENTITY_CHECK}" != "OK" ]; then
+    echo "         ${IDENTITY_CHECK}"
+fi
+
+# ShakeMap 4.x reads profiles before processing --version, so create an
+# isolated throwaway HOME. Normalize only the documented 'ShakeMap version X'
+# prefix and require exact equality with the recorded installed version.
+IDENTITY_HOME="$(mktemp -d /tmp/shakemap-identity.XXXXXX)"
+if HOME="${IDENTITY_HOME}" sm_profile -c identity-check -a -n >/dev/null 2>&1; then
+    NATIVE_VERSION_OUTPUT="$(HOME="${IDENTITY_HOME}" shake --version 2>&1)"
+    NATIVE_VERSION="${NATIVE_VERSION_OUTPUT##*ShakeMap version }"
+    RECORDED_VERSION="$(python3 - <<'PYEOF'
+import json
+print(json.load(open('/opt/shakemap-build/identity.json'))['immutable_image']['installed']['shakemap_distribution_version'])
+PYEOF
+)"
+    [ "${NATIVE_VERSION}" = "${RECORDED_VERSION}" ]
+    check "shake --version agrees with recorded installed version" $?
+else
+    check "shake --version agrees with recorded installed version" 1
+fi
+rm -rf "${IDENTITY_HOME}"
+
+# ------------------------------------------------------------------
+# Python module imports
+# ------------------------------------------------------------------
+echo "--- Python module imports ---"
 
 python3 -c "from shakemap_service import paths" 2>/dev/null
 check "import shakemap_service.paths" $?
@@ -75,10 +152,10 @@ python3 -c "from shakemap_service.main import app" 2>/dev/null
 check "import shakemap_service.main.app (FastAPI)" $?
 
 # ------------------------------------------------------------------
-# Section 2: FastAPI app structure
+# FastAPI app structure
 # ------------------------------------------------------------------
 echo ""
-echo "--- Section 2: FastAPI app structure ---"
+echo "--- FastAPI app structure ---"
 
 ROUTES_CHECK=$(python3 - <<'PYEOF'
 import json
@@ -103,10 +180,10 @@ if [ "${ROUTES_CHECK}" != "OK" ]; then
 fi
 
 # ------------------------------------------------------------------
-# Section 3: paths.py resolution
+# paths.py resolution
 # ------------------------------------------------------------------
 echo ""
-echo "--- Section 3: Path resolution ---"
+echo "--- Path resolution ---"
 
 PATHS_CHECK=$(python3 - "${SERVICE_ROOT}" <<'PYEOF'
 import sys
@@ -179,10 +256,10 @@ if [ "${PATHS_CHECK}" != "OK" ]; then
 fi
 
 # ------------------------------------------------------------------
-# Section 4: Runtime directory structure
+# Runtime directory structure
 # ------------------------------------------------------------------
 echo ""
-echo "--- Section 4: Runtime directory structure ---"
+echo "--- Runtime directory structure ---"
 
 # User-facing directories
 for dir in incoming products logs data; do
@@ -207,10 +284,10 @@ done
 check "No old top-level events/work/archive dirs" ${OLD_DIRS_ABSENT}
 
 # ------------------------------------------------------------------
-# Section 5: sysop write access
+# sysop write access
 # ------------------------------------------------------------------
 echo ""
-echo "--- Section 5: sysop write access ---"
+echo "--- sysop write access ---"
 
 CURRENT_USER="$(id -un 2>/dev/null || echo unknown)"
 [ "${CURRENT_USER}" = "sysop" ]
@@ -227,10 +304,10 @@ for dir in incoming products logs .service/events .service/work .service/archive
 done
 
 # ------------------------------------------------------------------
-# Section 6: Scripts exist and are executable
+# Scripts exist and are executable
 # ------------------------------------------------------------------
 echo ""
-echo "--- Section 6: Scripts ---"
+echo "--- Scripts ---"
 
 EXPECTED_SCRIPTS=(
     configure-shakemap.sh
@@ -251,10 +328,10 @@ for script in "${EXPECTED_SCRIPTS[@]}"; do
 done
 
 # ------------------------------------------------------------------
-# Section 7: ShakeMap CLI
+# ShakeMap CLI
 # ------------------------------------------------------------------
 echo ""
-echo "--- Section 7: ShakeMap CLI ---"
+echo "--- ShakeMap CLI ---"
 
 command -v shake >/dev/null 2>&1
 check "shake is on PATH" $?
@@ -273,10 +350,10 @@ else
 fi
 
 # ------------------------------------------------------------------
-# Section 8: Runner features (product validation, manifest, provenance)
+# Runner features (product validation, manifest, provenance)
 # ------------------------------------------------------------------
 echo ""
-echo "--- Section 8: Runner features ---"
+echo "--- Runner features ---"
 
 RUNNER_CHECK=$(python3 - <<'PYEOF'
 errors = []
@@ -326,10 +403,10 @@ if [ "${RUNNER_CHECK}" != "OK" ]; then
 fi
 
 # ------------------------------------------------------------------
-# Section 9: Status module
+# Status module
 # ------------------------------------------------------------------
 echo ""
-echo "--- Section 9: Status module ---"
+echo "--- Status module ---"
 
 STATUS_CHECK=$(python3 - <<'PYEOF'
 errors = []
@@ -361,10 +438,10 @@ if [ "${STATUS_CHECK}" != "OK" ]; then
 fi
 
 # ------------------------------------------------------------------
-# Section 10: Worker module
+# Worker module
 # ------------------------------------------------------------------
 echo ""
-echo "--- Section 10: Worker module ---"
+echo "--- Worker module ---"
 
 WORKER_CHECK=$(python3 - <<'PYEOF'
 errors = []

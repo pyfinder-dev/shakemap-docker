@@ -33,6 +33,7 @@ import subprocess
 
 from . import paths
 from .config import settings
+from .build_identity import service_identity
 from .status import (
     RequestStatus,
     read_status,
@@ -247,6 +248,10 @@ def _write_provenance(
     model_conf = paths.profile_config_dir() / "model.conf"
     products_conf = paths.profile_config_dir() / "products.conf"
 
+    identity = service_identity()
+    immutable_image = identity.get("immutable_image", {})
+    installed_identity = immutable_image.get("installed", {})
+
     provenance: dict = {
         "event_id": event_id,
         "user_id": record.user_id,
@@ -262,18 +267,11 @@ def _write_provenance(
         "execution_timestamp": start_time.isoformat(),
         "completion_timestamp": end_time.isoformat(),
         "duration_seconds": round((end_time - start_time).total_seconds(), 3),
+        "software_identity": identity,
+        # Backward-compatible field sourced from the same immutable manifest.
+        # It is null when recorded build identity is unavailable; no live guess.
+        "shakemap_version": installed_identity.get("shakemap_distribution_version"),
     }
-
-    # Try to get shakemap version
-    try:
-        result = subprocess.run(
-            ["shake", "--version"],
-            capture_output=True, text=True, timeout=30,
-        )
-        if result.returncode == 0:
-            provenance["shakemap_version"] = result.stdout.strip()
-    except Exception:
-        provenance["shakemap_version"] = None
 
     prov_path = paths.event_provenance_file(event_id)
     prov_path.parent.mkdir(parents=True, exist_ok=True)
