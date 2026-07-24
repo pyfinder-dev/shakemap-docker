@@ -71,6 +71,61 @@ class ProductValidationError(PreparationError):
         super().__init__(f"{kind} product validation failed: {failures}")
 
 
+def inspect_data_assets(data_root: Path) -> dict[str, Any]:
+    """Return cheap, read-only presence evidence for contracted data paths."""
+    root = Path(data_root)
+    assets: dict[str, dict[str, Any]] = {}
+    for name, path, expected_kind in (
+        ("global_vs30", root / "global/vs30/global_vs30.grd", "file"),
+        ("global_topography", root / "global/topo/topo_30sec.grd", "file"),
+        ("strec_slabs", root / "global/strec/slabs", "directory"),
+    ):
+        present = path.is_file() if expected_kind == "file" else path.is_dir()
+        assets[name] = {
+            "path": str(path),
+            "present": present,
+            "readable": present and os.access(path, os.R_OK),
+        }
+
+    global_root = root / "global"
+    configurations = [
+        {
+            "name": "global",
+            "path": str(global_root),
+            "present": global_root.is_dir(),
+            "readable": global_root.is_dir() and os.access(global_root, os.R_OK),
+            "validation_state": "not_evaluated",
+        }
+    ]
+    regional_root = root / "regional"
+    if regional_root.is_dir() and os.access(regional_root, os.R_OK):
+        try:
+            configurations.extend(
+                {
+                    "name": path.name,
+                    "path": str(path),
+                    "present": True,
+                    "readable": os.access(path, os.R_OK),
+                    "validation_state": "not_evaluated",
+                }
+                for path in sorted(regional_root.iterdir(), key=lambda item: item.name)
+                if path.is_dir() and not path.name.startswith(".")
+            )
+        except OSError:
+            pass
+
+    return {
+        "assets": assets,
+        "configurations": configurations,
+        "summary": {
+            "validation_state": "not_evaluated",
+            "compatibility_state": "not_evaluated",
+            "coverage_state": "not_evaluated",
+            "actual_use_state": "not_evaluated",
+        },
+    }
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 

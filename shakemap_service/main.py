@@ -11,9 +11,8 @@ Provides:
   - ``GET /events/{event_id}/products`` -- event products listing.
   - ``GET /queue`` -- current queue state.
 
-Background worker:
-  - Starts on application startup via ``lifespan``.
-  - Remains gated off until the later managed-execution contract exists.
+Managed execution is disabled. Application startup is therefore inert: it
+does not recover queue records or start the calculation worker.
 
 Health reports process liveness, infrastructure, external data inspection, and
 managed-calculation readiness as separate concerns.
@@ -34,7 +33,7 @@ from fastapi.responses import JSONResponse
 from .config import settings
 from . import paths
 from .build_identity import service_identity
-from .data_assets import inspect_data_assets
+from .preparation import inspect_data_assets
 from .submission import submit_event, SubmissionResult
 from .worker import recover_interrupted_events, run_worker_cycle, execute_shakemap
 from .queue import discover_queue
@@ -103,11 +102,15 @@ def _worker_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan handler — startup recovery and worker thread."""
-    # -- Startup --
+    """Keep startup inert until managed execution is explicitly enabled."""
     logger.info("ShakeMap service starting up")
+    if not _managed_execution_enabled():
+        logger.info(
+            "Managed execution disabled; startup recovery and worker startup skipped"
+        )
+        yield
+        return
 
-    # Recover any events stuck in RUNNING from a previous crash
     try:
         recovered = recover_interrupted_events()
         if recovered:
@@ -118,7 +121,6 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("Startup recovery failed — continuing anyway")
 
-    # Start background worker thread
     _worker_stop.clear()
     worker_thread = threading.Thread(
         target=_worker_loop,
@@ -130,7 +132,6 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # -- Shutdown --
     logger.info("ShakeMap service shutting down — stopping worker")
     _worker_stop.set()
     worker_thread.join(timeout=30)
@@ -147,16 +148,9 @@ app = FastAPI(title="ShakeMap Service", version="0.1.0", lifespan=lifespan)
 # Internal helpers
 # ------------------------------------------------------------------
 
-def _data_inspection(identity: dict | None = None) -> dict:
-    """Return cheap external-data evidence tied to the immutable image release."""
-    shared_identity = identity if identity is not None else service_identity()
-    image = shared_identity.get("immutable_image", {})
-    upstream = image.get("upstream", {}) if image.get("available") else {}
-    return inspect_data_assets(
-        paths.shakemap_data_dir(),
-        release_tag=upstream.get("release_tag"),
-        source_commit=upstream.get("source_commit"),
-    )
+def _data_inspection() -> dict:
+    """Return cheap external-data presence/readability evidence."""
+    return inspect_data_assets(paths.shakemap_data_dir())
 
 
 def _managed_execution_enabled() -> bool:
@@ -216,7 +210,7 @@ def _compute_next_action(blocking_reasons: list[str]) -> str:
 def get_config() -> dict:
     """Return identity, contracted data paths, and honest capability state."""
     identity = service_identity()
-    data = _data_inspection(identity)
+    data = _data_inspection()
 
     return {
         "response_schema_version": "1.0",
@@ -364,7 +358,7 @@ def healthz() -> dict:
         "shake_cli_verification": "PATH presence only in this request",
     }
     identity = service_identity()
-    data = _data_inspection(identity)
+    data = _data_inspection()
     status = "live"
     blocking_reasons = _compute_blocking_reasons(
         shake_cli_available=shake_cli_available,

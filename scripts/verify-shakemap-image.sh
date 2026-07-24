@@ -102,7 +102,7 @@ from shakemap_modules.coremods.mapping import MappingModule
 from shakemap_modules.coremods.stations import StationModule
 from shakemap_modules.coremods.gridxml import GridXMLModule
 from shakemap_service.main import app
-from shakemap_service.data_assets import inspect_data_assets
+from shakemap_service.preparation import inspect_data_assets
 print('OK')
 PY
 )"
