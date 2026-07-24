@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
-# Container-internal verification of immutable ShakeMap and generic support.
+# Container-internal identity consistency verification.
 set -uo pipefail
+
+if [[ $# -gt 0 ]]; then
+    if [[ "$1" == "--help" || "$1" == "-h" ]]; then
+        echo "Usage: $0"
+        echo "Verify installed software, imports, support data, and upstream identity."
+        exit 0
+    fi
+    echo "ERROR: this verifier takes no options" >&2
+    exit 2
+fi
 
 PASS=0
 FAIL=0
@@ -20,15 +30,20 @@ import json
 import pathlib
 import subprocess
 
-from shakemap_service.build_identity import validate_build_identity
+from shakemap_service.build_identity import (
+    BUILD_IDENTITY_SCHEMA_VERSION,
+    validate_build_identity,
+)
 
 errors = []
 path = pathlib.Path('/opt/shakemap-build/identity.json')
 try:
     manifest = validate_build_identity(json.loads(path.read_text()))
     image = manifest['immutable_image']
-    if manifest['schema_version'] != 2:
-        errors.append('identity schema is not 2')
+    if manifest['schema_version'] != BUILD_IDENTITY_SCHEMA_VERSION:
+        errors.append(
+            f"identity schema is not {BUILD_IDENTITY_SCHEMA_VERSION}"
+        )
     head = subprocess.run(['git', '-C', '/opt/shakemap', 'rev-parse', 'HEAD'], check=True, capture_output=True, text=True).stdout.strip()
     if head != image['upstream']['source_commit']:
         errors.append('source commit mismatch')
@@ -87,7 +102,7 @@ from shakemap_modules.coremods.mapping import MappingModule
 from shakemap_modules.coremods.stations import StationModule
 from shakemap_modules.coremods.gridxml import GridXMLModule
 from shakemap_service.main import app
-from shakemap_service.preparation import load_preparation
+from shakemap_service.data_assets import inspect_data_assets
 print('OK')
 PY
 )"
@@ -125,5 +140,6 @@ if [[ "${MAPPING_STACK_RESULT}" != "OK" ]]; then echo "${MAPPING_STACK_RESULT}" 
 check test -x /app/scripts/verify-shakemap-image.sh
 check test "$(find /app/scripts -maxdepth 1 -type f | wc -l | tr -d ' ')" = 1
 
-echo "Container-internal verification: ${PASS} passed, ${FAIL} failed"
+echo "Container-internal image verification: ${PASS} passed, ${FAIL} failed"
+echo "This result does not establish running-service deployment readiness."
 test "${FAIL}" -eq 0

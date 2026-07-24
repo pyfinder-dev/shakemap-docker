@@ -5,8 +5,6 @@ ARG SHAKEMAP_SOURCE_URL
 ARG SHAKEMAP_RELEASE_TAG
 ARG SHAKEMAP_RELEASE_VERSION
 ARG SHAKEMAP_SOURCE_COMMIT
-ARG SERVICE_SOURCE_COMMIT=unavailable
-ARG SERVICE_WORKTREE_DIRTY=unknown
 ARG BUILD_TIMESTAMP_UTC
 
 # ---------- Environment ----------
@@ -101,8 +99,6 @@ RUN mkdir -p /opt/shakemap-build \
       --release-tag "${SHAKEMAP_RELEASE_TAG}" \
       --release-version "${SHAKEMAP_RELEASE_VERSION}" \
       --source-commit "${SHAKEMAP_SOURCE_COMMIT}" \
-      --service-commit "${SERVICE_SOURCE_COMMIT}" \
-      --service-worktree-dirty "${SERVICE_WORKTREE_DIRTY}" \
       --build-timestamp-utc "${BUILD_TIMESTAMP_UTC}" \
       --natural-earth-manifest /opt/shakemap-support/natural-earth-v5.1.2.json \
       --cartopy-data-dir /opt/shakemap-support/cartopy \
@@ -119,12 +115,10 @@ RUN groupadd -g 1000 sysop && useradd -u 1000 -g 1000 -ms /bin/bash sysop \
 
 # ---------- Image provenance labels ----------
 LABEL org.opencontainers.image.created="${BUILD_TIMESTAMP_UTC}" \
-      org.opencontainers.image.revision="${SERVICE_SOURCE_COMMIT}" \
       org.usgs.shakemap.source="${SHAKEMAP_SOURCE_URL}" \
       org.usgs.shakemap.release="${SHAKEMAP_RELEASE_TAG}" \
       org.usgs.shakemap.version="${SHAKEMAP_RELEASE_VERSION}" \
       org.usgs.shakemap.commit="${SHAKEMAP_SOURCE_COMMIT}" \
-      org.usgs.shakemap.service.worktree-dirty="${SERVICE_WORKTREE_DIRTY}" \
       org.usgs.shakemap.identity-file="/opt/shakemap-build/identity.json" \
       org.usgs.shakemap.dependency-inventory="/opt/shakemap-build/dependencies.txt" \
       org.usgs.shakemap.natural-earth.tag="v5.1.2" \

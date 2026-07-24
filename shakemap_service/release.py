@@ -169,48 +169,10 @@ def resolve_latest_official_release() -> ResolvedRelease:
     return ResolvedRelease(tag=tag, commit=commit)
 
 
-def resolve_immutable_override(tag: str, commit: str) -> ResolvedRelease:
-    """Validate a narrow stable-tag/full-commit override against upstream."""
+def resolve_official_release_tag(tag: str) -> ResolvedRelease:
+    """Resolve one requested official stable tag to its exact upstream commit."""
     stable_version(tag)
-    commit = validate_full_commit(commit)
-    official_commit = query_official_tag(tag)
-    if official_commit != commit:
-        raise ReleaseResolutionError(
-            f"Override commit {commit} does not match official tag {tag} ({official_commit})"
-        )
-    return ResolvedRelease(tag=tag, commit=commit)
-
-
-def construct_docker_build_command(
-    *,
-    image_tag: str,
-    build_context: str,
-    release: ResolvedRelease,
-    service_commit: str,
-    service_worktree_dirty: str,
-    build_timestamp_utc: str,
-    platform: str = "",
-    no_cache: bool = False,
-) -> list[str]:
-    """Construct the exact immutable Docker build command."""
-    command = ["docker", "buildx", "build", "--load", "-t", image_tag]
-    if platform:
-        command.extend(["--platform", platform])
-    if no_cache:
-        command.append("--no-cache")
-    build_args = {
-        "SHAKEMAP_SOURCE_URL": release.repository_url,
-        "SHAKEMAP_RELEASE_TAG": release.tag,
-        "SHAKEMAP_RELEASE_VERSION": release.version,
-        "SHAKEMAP_SOURCE_COMMIT": release.commit,
-        "SERVICE_SOURCE_COMMIT": service_commit,
-        "SERVICE_WORKTREE_DIRTY": service_worktree_dirty,
-        "BUILD_TIMESTAMP_UTC": build_timestamp_utc,
-    }
-    for key, value in build_args.items():
-        command.extend(["--build-arg", f"{key}={value}"])
-    command.append(build_context)
-    return command
+    return ResolvedRelease(tag=tag, commit=query_official_tag(tag))
 
 
 def _print_lines(values: Iterable[str]) -> None:
@@ -226,19 +188,7 @@ def _parser() -> argparse.ArgumentParser:
 
     resolve = subparsers.add_parser("resolve")
     resolve.add_argument("--release-tag")
-    resolve.add_argument("--release-commit")
 
-    build = subparsers.add_parser("build-command")
-    build.add_argument("--image-tag", required=True)
-    build.add_argument("--build-context", required=True)
-    build.add_argument("--release-tag", required=True)
-    build.add_argument("--release-commit", required=True)
-    build.add_argument("--repository-url", required=True)
-    build.add_argument("--service-commit", required=True)
-    build.add_argument("--service-worktree-dirty", required=True)
-    build.add_argument("--build-timestamp-utc", required=True)
-    build.add_argument("--platform", default="")
-    build.add_argument("--no-cache", action="store_true")
     return parser
 
 
@@ -246,35 +196,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         if args.command == "resolve":
-            if bool(args.release_tag) != bool(args.release_commit):
-                raise ReleaseResolutionError(
-                    "--release-tag and --release-commit must be supplied together"
-                )
             if args.release_tag:
-                release = resolve_immutable_override(args.release_tag, args.release_commit)
+                release = resolve_official_release_tag(args.release_tag)
             else:
                 release = resolve_latest_official_release()
             _print_lines([release.tag, release.commit, release.repository_url])
             return 0
 
-        release = ResolvedRelease(
-            tag=args.release_tag,
-            commit=validate_full_commit(args.release_commit),
-            repository_url=args.repository_url,
-        )
-        stable_version(release.tag)
-        command = construct_docker_build_command(
-            image_tag=args.image_tag,
-            build_context=args.build_context,
-            release=release,
-            service_commit=args.service_commit,
-            service_worktree_dirty=args.service_worktree_dirty,
-            build_timestamp_utc=args.build_timestamp_utc,
-            platform=args.platform,
-            no_cache=args.no_cache,
-        )
-        _print_lines(command)
-        return 0
     except ReleaseResolutionError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2

@@ -1,683 +1,381 @@
 # -*- coding: utf-8 -*-
-"""Event status record model and persistence helpers.
-
-Phase 02 — Event Record Foundation.
-
-This module provides:
-
-- ``EventStatus`` enum with all 9 FROZEN lifecycle status values.
-- ``AttemptRecord`` and ``RequestStatus`` dataclasses matching the
-  contract §3.4 ``requeststatus.json`` schema.
-- Atomic write/read/update helpers for ``requeststatus.json``.
-- Status transition helpers with validation of allowed transitions.
-- ``scan_event_records()`` for filesystem-based discovery of existing
-  event status records.
-
-Design constraints:
-
-- ``event_id`` is the only public identifier — no ``run_id``.
-- Atomic writes use write-to-temp-then-rename (contract §3.5).
-- ``requeststatus.json`` lives under
-  ``.service/events/<event_id>/`` only — never under
-  ``incoming/``.
-- No queue, worker, submission, or execution logic.
-"""
+"""Versioned durable queue status records and lifecycle transitions."""
 from __future__ import annotations
 
 import json
-import logging
+import hashlib
 import os
 import tempfile
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from . import paths
 
-logger = logging.getLogger(__name__)
 
+STATUS_SCHEMA_VERSION = 1
+STATUS_KINDS = frozenset({"calculation", "operation"})
 
-# ------------------------------------------------------------------
-# Status enum — FROZEN contract values (§3.3)
-# ------------------------------------------------------------------
 
 class EventStatus(str, Enum):
-    """FROZEN event lifecycle status values.
-
-    Using ``str, Enum`` so values serialise directly to JSON strings.
-    """
-
-    REGISTERED = "REGISTERED"
-    VALIDATING = "VALIDATING"
-    VALIDATION_FAILED = "VALIDATION_FAILED"
     QUEUED = "QUEUED"
     RUNNING = "RUNNING"
     SUCCESS = "SUCCESS"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
-    ARCHIVED = "ARCHIVED"
 
 
-# Terminal statuses — no automatic processing continues from these.
 TERMINAL_STATUSES = frozenset({
-    EventStatus.VALIDATION_FAILED,
     EventStatus.SUCCESS,
     EventStatus.FAILED,
     EventStatus.CANCELLED,
-    EventStatus.ARCHIVED,
 })
 
-# Allowed status transitions: target → set of allowed source statuses.
-_ALLOWED_TRANSITIONS: dict[EventStatus, frozenset[EventStatus]] = {
-    EventStatus.VALIDATING: frozenset({EventStatus.REGISTERED}),
-    EventStatus.VALIDATION_FAILED: frozenset({EventStatus.VALIDATING}),
-    EventStatus.QUEUED: frozenset({EventStatus.VALIDATING}),
+_ALLOWED_TRANSITIONS = {
+    EventStatus.QUEUED: frozenset(),
     EventStatus.RUNNING: frozenset({EventStatus.QUEUED}),
     EventStatus.SUCCESS: frozenset({EventStatus.RUNNING}),
-    EventStatus.FAILED: frozenset({EventStatus.RUNNING}),
-    EventStatus.CANCELLED: frozenset({
-        EventStatus.REGISTERED,
-        EventStatus.VALIDATING,
-        EventStatus.QUEUED,
-        EventStatus.RUNNING,
-    }),
-    EventStatus.ARCHIVED: frozenset({
-        EventStatus.SUCCESS,
-        EventStatus.FAILED,
-        EventStatus.CANCELLED,
-        EventStatus.VALIDATION_FAILED,
-    }),
+    EventStatus.FAILED: frozenset({EventStatus.QUEUED, EventStatus.RUNNING}),
+    EventStatus.CANCELLED: frozenset({EventStatus.QUEUED, EventStatus.RUNNING}),
 }
 
 
-# ------------------------------------------------------------------
-# Data models (§3.4)
-# ------------------------------------------------------------------
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
-@dataclass
-class AttemptRecord:
-    """A single execution attempt record within attempt_history."""
 
-    attempt_number: int
-    started_at: str  # ISO 8601
-    completed_at: Optional[str] = None  # ISO 8601 or None
-    status: str = "RUNNING"  # SUCCESS, FAILED, or RUNNING
-    failure_reason: Optional[str] = None
-    duration_seconds: Optional[float] = None
-    # Execution context: which profile/modules were used for this attempt.
-    # Set by runner.run_shake_for_event() when real execution is performed.
-    execution_context: Optional[dict] = None
+def mounted_paths_for(event_id: str, sequence: int) -> dict[str, str]:
+    return {
+        "service_root": str(paths.service_root()),
+        "queue_entry": str(paths.queue_entry_dir(sequence)),
+        "queued_request": str(paths.queue_request_dir(sequence)),
+        "calculation": str(paths.event_products_dir(event_id)),
+        "request": str(paths.event_request_dir(event_id)),
+        "effective": str(paths.event_effective_dir(event_id)),
+        "profile": str(paths.event_profile_dir(event_id)),
+        "current": str(paths.event_current_dir(event_id)),
+        "native_products": str(paths.event_native_products_dir(event_id)),
+        "logs": str(paths.event_logs_dir(event_id)),
+        "status": str(paths.event_status_file(event_id)),
+        "metadata": str(paths.event_metadata_file(event_id)),
+        "product_manifest": str(paths.event_manifest_file(event_id)),
+    }
 
 
 @dataclass
 class RequestStatus:
-    """Authoritative event status record — ``requeststatus.json`` schema.
-
-    All fields per contract §3.4. No ``run_id`` field.
-    """
-
+    schema_version: int
+    kind: str
     event_id: str
+    sequence: int
     user_id: str
-    status: str  # One of EventStatus values
-    submitted_at: str  # ISO 8601
-
-    validated_at: Optional[str] = None
-    queued_at: Optional[str] = None
+    status: str
+    submitted_at: str
+    queued_at: str
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
-
-    current_attempt: int = 0
-    max_attempts: int = 3
-
-    validation_errors: Optional[list[str]] = None
-    failure_reason: Optional[str] = None
-    published_products_directory: Optional[str] = None
-
-    attempt_history: list[AttemptRecord] = field(default_factory=list)
+    requested_region: Optional[str] = None
+    effective_region: Optional[str] = None
+    module_plan: Optional[list[str]] = None
+    current_child: Optional[dict[str, Any]] = None
+    failure: Optional[dict[str, Any]] = None
+    interruption: Optional[dict[str, Any]] = None
+    mounted_paths: dict[str, str] = field(default_factory=dict)
 
 
-# ------------------------------------------------------------------
-# Timestamp helper
-# ------------------------------------------------------------------
+def new_queued_record(
+    *,
+    event_id: str,
+    sequence: int,
+    user_id: str,
+    kind: str = "calculation",
+    requested_region: Optional[str] = None,
+    module_plan: Optional[list[str]] = None,
+) -> RequestStatus:
+    now = _now_iso()
+    return RequestStatus(
+        schema_version=STATUS_SCHEMA_VERSION,
+        kind=kind,
+        event_id=event_id,
+        sequence=sequence,
+        user_id=user_id,
+        status=EventStatus.QUEUED.value,
+        submitted_at=now,
+        queued_at=now,
+        requested_region=requested_region,
+        module_plan=list(module_plan) if module_plan is not None else None,
+        mounted_paths=mounted_paths_for(event_id, sequence),
+    )
 
-def _now_iso() -> str:
-    """Return current UTC time as ISO 8601 string."""
-    return datetime.now(timezone.utc).isoformat()
 
-
-# ------------------------------------------------------------------
-# Serialisation helpers
-# ------------------------------------------------------------------
-
-def _record_to_dict(record: RequestStatus) -> dict:
-    """Convert a RequestStatus to a JSON-serialisable dict."""
+def _record_to_dict(record: RequestStatus) -> dict[str, Any]:
     return asdict(record)
 
 
-def _dict_to_record(data: dict) -> RequestStatus:
-    """Reconstruct a RequestStatus from a deserialised dict.
-
-    Handles ``attempt_history`` entries that arrive as plain dicts.
-    """
-    history_raw = data.pop("attempt_history", [])
-    history = [
-        AttemptRecord(**entry) if isinstance(entry, dict) else entry
-        for entry in history_raw
-    ]
-    return RequestStatus(**data, attempt_history=history)
+def _dict_to_record(data: dict[str, Any]) -> RequestStatus:
+    if not isinstance(data, dict):
+        raise ValueError("status record is not a JSON object")
+    try:
+        record = RequestStatus(**data)
+    except TypeError as exc:
+        raise ValueError(f"status record fields are invalid: {exc}") from exc
+    _validate_record(record)
+    return record
 
 
-# ------------------------------------------------------------------
-# Persistence: atomic write / read / update
-# ------------------------------------------------------------------
+def _validate_record(record: RequestStatus, expected_sequence: Optional[int] = None) -> None:
+    if record.schema_version != STATUS_SCHEMA_VERSION:
+        raise ValueError(
+            f"unsupported status schema_version {record.schema_version!r}; "
+            f"expected {STATUS_SCHEMA_VERSION}"
+        )
+    if record.kind not in STATUS_KINDS:
+        raise ValueError(f"invalid status kind {record.kind!r}")
+    if not record.event_id or not isinstance(record.event_id, str):
+        raise ValueError("event_id must be a non-empty string")
+    if isinstance(record.sequence, bool) or not isinstance(record.sequence, int) or record.sequence < 1:
+        raise ValueError("sequence must be a positive integer")
+    if expected_sequence is not None and record.sequence != expected_sequence:
+        raise ValueError(
+            f"status sequence {record.sequence} does not match queue entry {expected_sequence}"
+        )
+    try:
+        EventStatus(record.status)
+    except ValueError as exc:
+        raise ValueError(f"invalid lifecycle status {record.status!r}") from exc
+    if not isinstance(record.mounted_paths, dict):
+        raise ValueError("mounted_paths must be an object")
 
-def write_status_atomic(event_id: str, record: RequestStatus) -> None:
-    """Write ``requeststatus.json`` atomically (write-to-temp-then-rename).
 
-    The temp file is created in the same directory as the target to
-    guarantee an atomic ``os.replace()`` on the same filesystem.
+def _fsync_directory(directory: Path) -> None:
+    try:
+        fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
 
-    Contract §3.5: "Writes to requeststatus.json SHOULD be atomic
-    (write-to-temp-then-rename) to prevent corruption from crashes
-    mid-write."
-    """
-    target = paths.event_status_file(event_id)
+
+def write_json_atomic(target: Path, data: dict[str, Any]) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
-
-    data = _record_to_dict(record)
-
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(target.parent),
-        prefix=".requeststatus_",
-        suffix=".tmp",
+    fd, temporary = tempfile.mkstemp(
+        dir=str(target.parent), prefix=f".{target.name}.", suffix=".tmp"
     )
     try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(data, f, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, str(target))
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(data, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, target)
+        _fsync_directory(target.parent)
     except BaseException:
-        # Clean up temp file on any failure.
         try:
-            os.unlink(tmp_path)
+            os.unlink(temporary)
         except OSError:
             pass
         raise
 
 
-def read_status(event_id: str) -> Optional[RequestStatus]:
-    """Read and deserialise ``requeststatus.json`` for an event.
+def write_status_atomic(sequence: int, record: RequestStatus) -> None:
+    _validate_record(record, expected_sequence=sequence)
+    write_json_atomic(paths.queue_status_file(sequence), _record_to_dict(record))
 
-    Returns ``None`` if the file does not exist.
-    Raises ``ValueError`` on malformed JSON or missing required fields.
-    """
-    status_file = paths.event_status_file(event_id)
-    if not status_file.is_file():
+
+def write_calculation_status(record: RequestStatus) -> None:
+    """Mirror status into the calculation only when this entry owns it."""
+    metadata = paths.event_metadata_file(record.event_id)
+    if not metadata.is_file():
+        return
+    try:
+        owner = json.loads(metadata.read_text(encoding="utf-8")).get("queue_sequence")
+    except (OSError, json.JSONDecodeError):
+        return
+    if owner == record.sequence:
+        write_json_atomic(paths.event_status_file(record.event_id), _record_to_dict(record))
+
+
+def read_status(sequence: int) -> Optional[RequestStatus]:
+    target = paths.queue_status_file(sequence)
+    if not target.is_file():
         return None
-
-    text = status_file.read_text(encoding="utf-8")
     try:
-        data = json.loads(text)
+        data = json.loads(target.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        raise ValueError(
-            f"Malformed requeststatus.json for event '{event_id}': {exc}"
-        ) from exc
-
-    if not isinstance(data, dict):
-        raise ValueError(
-            f"requeststatus.json for event '{event_id}' is not a JSON object"
-        )
-
-    # Validate required fields are present.
-    for required_field in ("event_id", "user_id", "status", "submitted_at"):
-        if required_field not in data:
-            raise ValueError(
-                f"requeststatus.json for event '{event_id}' missing "
-                f"required field '{required_field}'"
-            )
-
-    return _dict_to_record(data)
+        raise ValueError(f"malformed status record for sequence {sequence}: {exc}") from exc
+    record = _dict_to_record(data)
+    _validate_record(record, expected_sequence=sequence)
+    return record
 
 
-def update_status(event_id: str, **kwargs) -> RequestStatus:
-    """Read the current record, apply field updates, and write atomically.
-
-    Raises ``FileNotFoundError`` if no record exists for ``event_id``.
-    Raises ``TypeError`` if an unknown field name is passed.
-    """
-    record = read_status(event_id)
+def update_status(sequence: int, **changes: Any) -> RequestStatus:
+    record = read_status(sequence)
     if record is None:
-        raise FileNotFoundError(
-            f"No requeststatus.json found for event '{event_id}'"
-        )
-
-    valid_fields = {f.name for f in record.__dataclass_fields__.values()}
-    for key, value in kwargs.items():
-        if key not in valid_fields:
-            raise TypeError(
-                f"Unknown RequestStatus field: '{key}'"
-            )
-        setattr(record, key, value)
-
-    write_status_atomic(event_id, record)
+        raise FileNotFoundError(f"queue status for sequence {sequence} does not exist")
+    for name, value in changes.items():
+        if not hasattr(record, name):
+            raise ValueError(f"unknown RequestStatus field {name!r}")
+        setattr(record, name, value)
+    _validate_record(record, expected_sequence=sequence)
+    write_status_atomic(sequence, record)
+    write_calculation_status(record)
     return record
 
 
-# ------------------------------------------------------------------
-# Event record creation
-# ------------------------------------------------------------------
-
-def create_event_record(
-    event_id: str,
-    user_id: str,
-    max_attempts: int = 3,
-) -> RequestStatus:
-    """Create a new event record directory and write initial status.
-
-    Creates ``.service/events/<event_id>/`` and writes
-    ``requeststatus.json`` with status ``REGISTERED``.
-
-    Contract §5.3: "Before acknowledging receipt of a submission, the
-    service MUST write requeststatus.json with status REGISTERED."
-
-    Raises ``FileExistsError`` if a status file already exists for
-    this ``event_id``.
-    """
-    status_file = paths.event_status_file(event_id)
-    if status_file.is_file():
-        raise FileExistsError(
-            f"Event record already exists for '{event_id}': {status_file}"
-        )
-
-    record = RequestStatus(
-        event_id=event_id,
-        user_id=user_id,
-        status=EventStatus.REGISTERED.value,
-        submitted_at=_now_iso(),
-        current_attempt=0,
-        max_attempts=max_attempts,
-    )
-
-    write_status_atomic(event_id, record)
-    logger.info("Created event record: event_id=%s, user_id=%s", event_id, user_id)
-    return record
-
-
-# ------------------------------------------------------------------
-# Status transition helpers
-# ------------------------------------------------------------------
-
-def _validate_transition(
-    current: str,
+def transition_status(
+    sequence: int,
     target: EventStatus,
-) -> None:
-    """Raise ``ValueError`` if the transition is not allowed."""
-    try:
-        current_status = EventStatus(current)
-    except ValueError:
-        raise ValueError(
-            f"Unknown current status '{current}'; cannot transition to {target.value}"
-        )
-
-    allowed_from = _ALLOWED_TRANSITIONS.get(target)
-    if allowed_from is None:
-        raise ValueError(f"No transition rules defined for target '{target.value}'")
-
-    if current_status not in allowed_from:
-        allowed_names = ", ".join(s.value for s in sorted(allowed_from, key=lambda s: s.value))
-        raise ValueError(
-            f"Cannot transition from '{current}' to '{target.value}'. "
-            f"Allowed source statuses: {allowed_names}"
-        )
-
-
-def transition_to_validating(event_id: str) -> RequestStatus:
-    """Transition event from REGISTERED → VALIDATING."""
-    record = read_status(event_id)
-    if record is None:
-        raise FileNotFoundError(f"No record for event '{event_id}'")
-
-    _validate_transition(record.status, EventStatus.VALIDATING)
-
-    record.status = EventStatus.VALIDATING.value
-    write_status_atomic(event_id, record)
-    return record
-
-
-def transition_to_validation_failed(
-    event_id: str,
-    errors: list[str],
+    *,
+    failure: Optional[dict[str, Any]] = None,
+    interruption: Optional[dict[str, Any]] = None,
+    current_child: Optional[dict[str, Any]] = None,
 ) -> RequestStatus:
-    """Transition event from VALIDATING → VALIDATION_FAILED."""
-    record = read_status(event_id)
+    record = read_status(sequence)
     if record is None:
-        raise FileNotFoundError(f"No record for event '{event_id}'")
-
-    _validate_transition(record.status, EventStatus.VALIDATION_FAILED)
-
+        raise FileNotFoundError(f"queue status for sequence {sequence} does not exist")
+    source = EventStatus(record.status)
+    if source not in _ALLOWED_TRANSITIONS[target]:
+        raise ValueError(f"invalid status transition {source.value} -> {target.value}")
     now = _now_iso()
-    record.status = EventStatus.VALIDATION_FAILED.value
-    record.validated_at = now
-    record.completed_at = now
-    record.validation_errors = errors
-    write_status_atomic(event_id, record)
+    record.status = target.value
+    if target == EventStatus.RUNNING:
+        record.started_at = now
+        record.current_child = current_child
+    if target in TERMINAL_STATUSES:
+        record.completed_at = now
+        record.current_child = current_child
+    record.failure = failure
+    record.interruption = interruption
+    write_status_atomic(sequence, record)
+    write_calculation_status(record)
     return record
 
 
-def transition_to_queued(event_id: str) -> RequestStatus:
-    """Transition event from VALIDATING → QUEUED."""
-    record = read_status(event_id)
-    if record is None:
-        raise FileNotFoundError(f"No record for event '{event_id}'")
-
-    _validate_transition(record.status, EventStatus.QUEUED)
-
-    now = _now_iso()
-    record.status = EventStatus.QUEUED.value
-    record.validated_at = now
-    record.queued_at = now
-    write_status_atomic(event_id, record)
-    return record
+def transition_to_running(sequence: int) -> RequestStatus:
+    return transition_status(sequence, EventStatus.RUNNING)
 
 
-def transition_to_running(event_id: str) -> RequestStatus:
-    """Transition event from QUEUED → RUNNING.
-
-    Increments ``current_attempt`` and appends a new ``AttemptRecord``
-    to ``attempt_history`` with status ``RUNNING``.
-    """
-    record = read_status(event_id)
-    if record is None:
-        raise FileNotFoundError(f"No record for event '{event_id}'")
-
-    _validate_transition(record.status, EventStatus.RUNNING)
-
-    now = _now_iso()
-    record.status = EventStatus.RUNNING.value
-    record.started_at = now
-    record.current_attempt += 1
-
-    attempt = AttemptRecord(
-        attempt_number=record.current_attempt,
-        started_at=now,
-        status="RUNNING",
-    )
-    record.attempt_history.append(attempt)
-
-    write_status_atomic(event_id, record)
-    return record
-
-
-def transition_to_success(
-    event_id: str,
-    products_dir: Optional[str] = None,
-) -> RequestStatus:
-    """Transition event from RUNNING → SUCCESS.
-
-    Completes the current attempt in ``attempt_history``.
-    """
-    record = read_status(event_id)
-    if record is None:
-        raise FileNotFoundError(f"No record for event '{event_id}'")
-
-    _validate_transition(record.status, EventStatus.SUCCESS)
-
-    now = _now_iso()
-    record.status = EventStatus.SUCCESS.value
-    record.completed_at = now
-    record.published_products_directory = products_dir
-
-    # Complete the current attempt record.
-    if record.attempt_history:
-        current = record.attempt_history[-1]
-        current.completed_at = now
-        current.status = "SUCCESS"
-        if current.started_at:
-            try:
-                started = datetime.fromisoformat(current.started_at)
-                completed = datetime.fromisoformat(now)
-                current.duration_seconds = round(
-                    (completed - started).total_seconds(), 3
-                )
-            except (ValueError, TypeError):
-                current.duration_seconds = None
-
-    write_status_atomic(event_id, record)
-    return record
+def transition_to_success(sequence: int) -> RequestStatus:
+    return transition_status(sequence, EventStatus.SUCCESS)
 
 
 def transition_to_failed(
-    event_id: str,
+    sequence: int,
     reason: str,
+    *,
+    code: str = "execution_failed",
+    interruption: Optional[dict[str, Any]] = None,
+    current_child: Optional[dict[str, Any]] = None,
 ) -> RequestStatus:
-    """Transition event from RUNNING → FAILED.
-
-    Completes the current attempt in ``attempt_history``.
-    Sets ``failure_reason`` as the final failure reason.
-    """
-    record = read_status(event_id)
-    if record is None:
-        raise FileNotFoundError(f"No record for event '{event_id}'")
-
-    _validate_transition(record.status, EventStatus.FAILED)
-
-    now = _now_iso()
-    record.status = EventStatus.FAILED.value
-    record.completed_at = now
-    record.failure_reason = reason
-
-    # Complete the current attempt record.
-    if record.attempt_history:
-        current = record.attempt_history[-1]
-        current.completed_at = now
-        current.status = "FAILED"
-        current.failure_reason = reason
-        if current.started_at:
-            try:
-                started = datetime.fromisoformat(current.started_at)
-                completed = datetime.fromisoformat(now)
-                current.duration_seconds = round(
-                    (completed - started).total_seconds(), 3
-                )
-            except (ValueError, TypeError):
-                current.duration_seconds = None
-
-    write_status_atomic(event_id, record)
-    return record
+    return transition_status(
+        sequence,
+        EventStatus.FAILED,
+        failure={"code": code, "message": reason},
+        interruption=interruption,
+        current_child=current_child,
+    )
 
 
-def transition_to_cancelled(event_id: str) -> RequestStatus:
-    """Transition event to CANCELLED from REGISTERED/VALIDATING/QUEUED/RUNNING."""
-    record = read_status(event_id)
-    if record is None:
-        raise FileNotFoundError(f"No record for event '{event_id}'")
-
-    _validate_transition(record.status, EventStatus.CANCELLED)
-
-    now = _now_iso()
-    record.status = EventStatus.CANCELLED.value
-    record.completed_at = now
-
-    # If there's an active attempt, complete it.
-    if record.attempt_history:
-        current = record.attempt_history[-1]
-        if current.status == "RUNNING":
-            current.completed_at = now
-            current.status = "FAILED"
-            current.failure_reason = "Cancelled"
-            if current.started_at:
-                try:
-                    started = datetime.fromisoformat(current.started_at)
-                    completed = datetime.fromisoformat(now)
-                    current.duration_seconds = round(
-                        (completed - started).total_seconds(), 3
-                    )
-                except (ValueError, TypeError):
-                    current.duration_seconds = None
-
-    write_status_atomic(event_id, record)
-    return record
+def transition_to_cancelled(sequence: int, reason: str) -> RequestStatus:
+    return transition_status(
+        sequence,
+        EventStatus.CANCELLED,
+        failure={"code": "cancelled", "message": reason},
+    )
 
 
-def transition_to_archived(event_id: str) -> RequestStatus:
-    """Transition event to ARCHIVED from SUCCESS/FAILED/CANCELLED/VALIDATION_FAILED."""
-    record = read_status(event_id)
-    if record is None:
-        raise FileNotFoundError(f"No record for event '{event_id}'")
-
-    _validate_transition(record.status, EventStatus.ARCHIVED)
-
-    record.status = EventStatus.ARCHIVED.value
-    write_status_atomic(event_id, record)
-    return record
-
-
-# ------------------------------------------------------------------
-# Filesystem scan / discovery
-# ------------------------------------------------------------------
-
-def scan_event_records() -> list[RequestStatus]:
-    """Scan ``events/*/`` for existing ``requeststatus.json`` files.
-
-    Discovers all event status records under the contract events
-    directory.  Skips malformed or unreadable files with a warning log.
-
-    Does NOT scan ``incoming/`` — contract requires status records
-    only under ``.service/events/<event_id>/``.
-    """
-    events_root = paths.events_dir()
+def scan_event_records() -> tuple[list[RequestStatus], list[tuple[str, str]]]:
     records: list[RequestStatus] = []
-
-    if not events_root.is_dir():
-        return records
-
-    for entry in sorted(events_root.iterdir()):
-        if not entry.is_dir():
+    malformed: list[tuple[str, str]] = []
+    root = paths.events_dir()
+    if not root.is_dir():
+        return records, malformed
+    for entry in sorted(root.iterdir(), key=lambda item: item.name):
+        if entry.name.startswith("."):
             continue
-
-        event_id = entry.name
+        if not entry.is_dir():
+            malformed.append((entry.name, "queue entry is not a directory"))
+            continue
         try:
-            record = read_status(event_id)
-            if record is not None:
-                records.append(record)
-        except ValueError as exc:
-            logger.warning(
-                "Skipping malformed status record for event '%s': %s",
-                event_id, exc,
-            )
-        except Exception as exc:
-            logger.warning(
-                "Error reading status record for event '%s': %s",
-                event_id, exc,
-            )
+            sequence = paths.parse_queue_entry_name(entry.name)
+            record = read_status(sequence)
+            if record is None:
+                raise ValueError("status.json is missing")
+            request = paths.queue_request_dir(sequence)
+            if not request.is_dir():
+                raise ValueError("request snapshot directory is missing")
+            manifest_path = entry / "request-manifest.json"
+            if not manifest_path.is_file():
+                raise ValueError("request-manifest.json is missing")
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"request manifest is malformed: {exc}") from exc
+            if (
+                manifest.get("schema_version") != 1
+                or manifest.get("event_id") != record.event_id
+                or manifest.get("sequence") != sequence
+                or not isinstance(manifest.get("files"), list)
+            ):
+                raise ValueError("request manifest identity or schema is invalid")
+            expected_names = []
+            for item in manifest["files"]:
+                if not isinstance(item, dict) or not isinstance(item.get("name"), str):
+                    raise ValueError("request manifest file entry is invalid")
+                file_path = request / item["name"]
+                if not file_path.is_file():
+                    raise ValueError(f"request snapshot file is missing: {item['name']}")
+                content = file_path.read_bytes()
+                if len(content) != item.get("size_bytes"):
+                    raise ValueError(f"request snapshot size differs: {item['name']}")
+                if hashlib.sha256(content).hexdigest() != item.get("sha256"):
+                    raise ValueError(f"request snapshot checksum differs: {item['name']}")
+                expected_names.append(item["name"])
+            actual_names = sorted(item.name for item in request.iterdir() if item.is_file())
+            if sorted(expected_names) != actual_names:
+                raise ValueError("request snapshot contains unmanifested files")
+            records.append(record)
+        except (OSError, ValueError) as exc:
+            malformed.append((entry.name, str(exc)))
+    records.sort(key=lambda item: item.sequence)
+    return records, malformed
 
-    return records
+
+def records_for_event(event_id: str) -> list[RequestStatus]:
+    records, _ = scan_event_records()
+    return [record for record in records if record.event_id == event_id]
 
 
-# ------------------------------------------------------------------
-# Recovery helpers — stale RUNNING detection
-# ------------------------------------------------------------------
+def latest_status_for_event(event_id: str) -> Optional[RequestStatus]:
+    records = records_for_event(event_id)
+    return records[-1] if records else None
+
 
 def find_stale_running() -> list[RequestStatus]:
-    """Find all events with status RUNNING on disk.
-
-    This helper is intended for restart recovery (contract §3.5):
-    events found RUNNING after a service restart should be treated as
-    potentially interrupted.  The caller decides whether to re-queue
-    or fail them based on attempt budget.
-
-    Does NOT automatically change any status — callers must decide
-    the recovery action.  This is safe to call at any time.
-
-    Returns:
-        List of ``RequestStatus`` records with status RUNNING, sorted
-        by ``started_at`` (oldest first) for deterministic processing.
-    """
-    records = scan_event_records()
-    running = [r for r in records if r.status == EventStatus.RUNNING.value]
-
-    def _sort_key(r: RequestStatus) -> str:
-        return r.started_at or ""
-
-    running.sort(key=_sort_key)
-    return running
+    records, _ = scan_event_records()
+    return [record for record in records if record.status == EventStatus.RUNNING.value]
 
 
-def record_interrupted_attempt(
-    event_id: str,
-    reason: str = "Interrupted -- process no longer active",
-) -> RequestStatus:
-    """Record the current RUNNING attempt as interrupted and re-queue or fail.
-
-    Contract §3.5 recovery:
-    - If the service cannot verify an active owner, it MUST record the
-      previous attempt as interrupted in ``attempt_history``.
-    - After an interrupted attempt is recorded, the event MUST be
-      re-queued if attempts remain.
-    - If no attempts remain, the event MUST transition to FAILED.
-
-    This helper:
-    1. Completes the current attempt with status ``FAILED`` and the
-       given ``reason``.
-    2. If ``current_attempt < max_attempts``, transitions the event
-       back to ``QUEUED`` so it can be retried.
-    3. If ``current_attempt >= max_attempts``, transitions to ``FAILED``.
-
-    Raises:
-        FileNotFoundError: if no record exists for ``event_id``.
-        ValueError: if the event is not currently RUNNING.
-    """
-    record = read_status(event_id)
+def fail_interrupted(sequence: int) -> RequestStatus:
+    record = read_status(sequence)
     if record is None:
-        raise FileNotFoundError(f"No record for event '{event_id}'")
-
-    if record.status != EventStatus.RUNNING.value:
-        raise ValueError(
-            f"Cannot record interrupted attempt for event '{event_id}' "
-            f"with status '{record.status}' -- must be RUNNING"
-        )
-
-    now = _now_iso()
-
-    # Complete the current attempt as FAILED.
-    if record.attempt_history:
-        current = record.attempt_history[-1]
-        current.completed_at = now
-        current.status = "FAILED"
-        current.failure_reason = reason
-        if current.started_at:
-            try:
-                started = datetime.fromisoformat(current.started_at)
-                completed = datetime.fromisoformat(now)
-                current.duration_seconds = round(
-                    (completed - started).total_seconds(), 3
-                )
-            except (ValueError, TypeError):
-                current.duration_seconds = None
-
-    # Decide: re-queue or fail.
-    if record.current_attempt < record.max_attempts:
-        # Re-queue for another attempt.
-        record.status = EventStatus.QUEUED.value
-        record.started_at = None
-        record.completed_at = None
-        record.failure_reason = None
-        logger.info(
-            "Event '%s' interrupted attempt %d/%d -- re-queued",
-            event_id, record.current_attempt, record.max_attempts,
-        )
-    else:
-        # All attempts exhausted.
-        record.status = EventStatus.FAILED.value
-        record.completed_at = now
-        record.failure_reason = reason
-        logger.info(
-            "Event '%s' interrupted attempt %d/%d -- FAILED (no attempts left)",
-            event_id, record.current_attempt, record.max_attempts,
-        )
-
-    write_status_atomic(event_id, record)
-    return record
+        raise FileNotFoundError(f"queue status for sequence {sequence} does not exist")
+    evidence = {
+        "detected_at": _now_iso(),
+        "reason": "service restarted while the queue entry was RUNNING",
+        "previous_child": record.current_child,
+        "automatic_retry": False,
+    }
+    return transition_to_failed(
+        sequence,
+        "Interrupted by service restart; automatic retry is disabled",
+        code="interrupted_on_restart",
+        interruption=evidence,
+        current_child=record.current_child,
+    )

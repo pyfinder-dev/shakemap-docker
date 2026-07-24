@@ -1,35 +1,27 @@
-# Public preparation reporting
+# Read-only configuration and health API
 
 ## `GET /config`
 
-Returns immutable image identity, durable preparation state, the global base
-snapshot, external VS30/topography paths, configured module plan, proof scope,
-and explicit non-claims.
-
-```bash
-curl -fsS http://localhost:9010/config | python -m json.tool
-```
-
-## `GET /healthz`
-
-Returns infrastructure health plus the same preparation identity and readiness
-decision. A missing or mismatched manifest produces `not_ready` and an action
-that points to the host preparation command. The API is allowed to run while
-not ready.
-
-```bash
-curl -fsS http://localhost:9010/healthz | python -m json.tool
-```
+Returns response schema `"1.0"`, immutable/deployment identity, the contracted
+data root, per-asset inspection states, discovered configuration names, the
+default `global` name, and the explicit unimplemented configuration-resolution
+boundary.
 
 ## `GET /config/profiles`
 
-Reports the mounted global base snapshot and states that a shared mutable
-active profile is unsupported.
+Lists the same discovered configuration names for compatibility with the
+current route. It does not claim an active mutable profile or validated
+configuration.
 
-## Calculation endpoints
+## `GET /healthz`
 
-Calculation routes currently exist in the codebase, but this correction does
-not establish their final input, queue, execution, archival, CLI-parity, or
-`SUCCESS` semantics. They are not documented here as production-ready public
-capabilities. Preparation readiness must not be interpreted as a managed
-calculation guarantee.
+Returns liveness and infrastructure separately from external-data evidence,
+managed-execution readiness, and overall readiness.
+
+The API does not perform full checksums or scientific validation. Use
+`scripts/manage-shakemap-data.sh validate` for explicit full pinned global
+asset validation.
+
+Submission remains unavailable with HTTP 503 while managed execution is
+disabled. Queue, recalculation, archive, configuration selection, and managed
+calculation behavior are outside this corrective pass.

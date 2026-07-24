@@ -1,36 +1,29 @@
-# Runtime layout and persistence
+# Runtime layout
 
 ```text
-runtime/
-└── shakemap/
-    ├── incoming/
-    ├── products/
-    ├── logs/
-    ├── data/
-    │   ├── vs30/global_vs30.grd
-    │   ├── topo/topo_30sec.grd
-    │   ├── global/strec/
-    │   └── test/v4.4.9/
-    └── .service/
-        ├── events/
-        ├── work/
-        ├── archive/
-        └── preparation/
-            ├── manifest.json
-            ├── report.md
-            ├── base/global/
-            ├── attempts/
-            ├── logs/
-            └── history/
+runtime/shakemap/
+├── products/
+├── logs/
+├── data/
+│   ├── global/
+│   │   ├── vs30/
+│   │   ├── topo/
+│   │   └── strec/slabs/
+│   ├── regional/
+│   └── test/<resolved-version>/
+└── .service/
+    ├── events/
+    └── archive/
 ```
 
-Only `incoming/`, `products/`, `logs/`, and `data/` are user-facing top-level
-directories. Internal event, work, archive, and preparation state lives below
-`.service/`. New work must not create top-level `events/`, `work/`, or
-`archive/`.
+The user-facing top level is exactly `products/`, `logs/`, and `data/`.
+Service-owned state is under `.service/events/` and `.service/archive/`.
 
-The entire `runtime/` directory is mounted at `/home/sysop/runtime`. The nested
-`runtime/shakemap/data/` mount is read-only. Preparation output, profiles
-templates, reports, logs, and both native verification runs therefore survive
-container recreation; no required preparation state exists only under
-`/home/sysop` in the container layer.
+New runs do not use `incoming/`, `.service/work/`, `.service/preparation/`, or
+top-level `events/`, `work/`, `archive/`, or `preparation/`.
+
+`products/<event_id>/` belongs to ShakeMap and contains only its native event
+tree. Service status, requests, effective configuration, provenance, manifests,
+private home/profile material, and service logs belong under
+`.service/events/<event_id>/`. These event execution responsibilities are
+contracted but not implemented by the current disabled managed-execution path.

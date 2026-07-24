@@ -9,7 +9,6 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,18 +18,16 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 from shakemap_service import build_identity, main, release, runner
-from shakemap_service.status import RequestStatus
 
 
 COMMIT_A = "a" * 40
-SERVICE_COMMIT = "c" * 40
 IMAGE_ID = "sha256:" + "1" * 64
 IMAGE_DIGEST = "registry.example/shakemap@sha256:" + "2" * 64
 
 
 def identity_manifest() -> dict:
     return {
-        "schema_version": 2,
+        "schema_version": build_identity.BUILD_IDENTITY_SCHEMA_VERSION,
         "immutable_image": {
             "available": True,
             "upstream": {
@@ -58,10 +55,6 @@ def identity_manifest() -> dict:
                     "record_path": "/opt/shakemap-build/mapping-compatibility.json",
                     "record_sha256": "c" * 64,
                 },
-            },
-            "service": {
-                "source_commit": SERVICE_COMMIT,
-                "worktree_dirty_at_build": True,
             },
             "support": {
                 "natural_earth": {
@@ -187,6 +180,17 @@ class BuildIdentityTests(unittest.TestCase):
             ):
                 build_identity.validate_build_identity(bad)
 
+    def test_identity_schemas_are_literal_version_1_0(self) -> None:
+        self.assertEqual(build_identity.BUILD_IDENTITY_SCHEMA_VERSION, "1.0")
+        self.assertEqual(build_identity.SERVICE_IDENTITY_SCHEMA_VERSION, "1.0")
+        for obsolete in (2, 3, 4, "2", "3", "4"):
+            invalid = identity_manifest()
+            invalid["schema_version"] = obsolete
+            with self.subTest(obsolete=obsolete), self.assertRaisesRegex(
+                build_identity.BuildIdentityError, "schema_version"
+            ):
+                build_identity.validate_build_identity(invalid)
+
     def test_mapping_compatibility_comes_from_resolved_release_lock(self) -> None:
         source = self.root / "resolved-release"
         source.mkdir()
@@ -251,45 +255,21 @@ class BuildIdentityTests(unittest.TestCase):
         self.assertEqual(unavailable["invalid_fields"], [])
         self.assertEqual(unavailable["source"], "unavailable")
 
-    def test_config_health_and_provenance_use_shared_loader(self) -> None:
-        not_ready = {
-            "passed": False,
-            "reason": "test data unavailable",
-            "overrides": [],
-            "preparation": {"available": False, "ready": False},
-        }
-        with patch.object(main, "_read_readiness_sentinel", return_value=not_ready):
-            config_response = main.get_config()
-            health_response = main.healthz()
+    def test_config_health_and_runner_use_shared_identity_loader(self) -> None:
+        config_response = main.get_config()
+        health_response = main.healthz()
         self.assertEqual(config_response["identity"], health_response["identity"])
         self.assertEqual(config_response["identity"]["deployment"]["image_id"], IMAGE_ID)
-        self.assertFalse(config_response["preparation_readiness"]["ready"])
-        self.assertFalse(health_response["preparation_readiness"]["ready"])
-        self.assertEqual(health_response["preparation_readiness"]["state"], "not_ready")
-        self.assertIn("checks", health_response["preparation_readiness"])
-
-        provenance_path = self.root / "provenance.json"
-        record = RequestStatus(
-            event_id="identity-event",
-            user_id="test",
-            status="RUNNING",
-            submitted_at="2026-07-22T12:00:00+00:00",
-            current_attempt=1,
+        self.assertEqual(config_response["response_schema_version"], "1.0")
+        self.assertEqual(health_response["response_schema_version"], "1.0")
+        self.assertFalse(config_response["managed_execution_readiness"]["ready"])
+        self.assertFalse(health_response["managed_execution_readiness"]["ready"])
+        self.assertEqual(
+            health_response["data"]["summary"]["validation_state"],
+            "not_evaluated",
         )
-        with patch.object(runner.paths, "event_provenance_file", return_value=provenance_path), \
-             patch.object(runner.paths, "event_incoming_dir", return_value=self.root / "missing-incoming"), \
-             patch.object(runner.paths, "event_products_dir", return_value=self.root / "missing-products"), \
-             patch.object(runner.paths, "profile_config_dir", return_value=self.root / "missing-config"):
-            runner._write_provenance(
-                "identity-event",
-                record,
-                ["select", "assemble"],
-                datetime(2026, 7, 22, 12, 0, tzinfo=timezone.utc),
-                datetime(2026, 7, 22, 12, 1, tzinfo=timezone.utc),
-                1,
-            )
-        provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
-        self.assertEqual(provenance["software_identity"], main.get_config()["identity"])
+
+        self.assertEqual(runner.service_identity(), main.get_config()["identity"])
 
     def test_writer_api_validates_and_writes_manifest(self) -> None:
         dependencies = self.root / "dependencies.txt"
@@ -314,8 +294,6 @@ class BuildIdentityTests(unittest.TestCase):
                 release_tag="v4.4.10",
                 release_version="4.4.10",
                 source_commit=COMMIT_A,
-                service_commit=SERVICE_COMMIT,
-                service_worktree_dirty="false",
                 build_timestamp_utc="2026-07-22T12:00:00Z",
                 natural_earth_manifest=natural_manifest,
                 cartopy_data_dir=cartopy,
@@ -323,7 +301,7 @@ class BuildIdentityTests(unittest.TestCase):
                 strec_database_link=strec_link,
             )
         self.assertEqual(json.loads(output.read_text(encoding="utf-8")), manifest)
-        self.assertFalse(manifest["immutable_image"]["service"]["worktree_dirty_at_build"])
+        self.assertNotIn("service", manifest["immutable_image"])
 
     def test_module_cli_writes_manifest(self) -> None:
         metadata_root = self.root / "metadata"
@@ -361,8 +339,6 @@ class BuildIdentityTests(unittest.TestCase):
                 "--release-tag", "v4.4.10",
                 "--release-version", "4.4.10",
                 "--source-commit", COMMIT_A,
-                "--service-commit", SERVICE_COMMIT,
-                "--service-worktree-dirty", "unknown",
                 "--build-timestamp-utc", "2026-07-22T12:00:00Z",
                 "--natural-earth-manifest", str(natural_manifest),
                 "--cartopy-data-dir", str(cartopy),
@@ -439,6 +415,10 @@ class StartupHelperTests(unittest.TestCase):
             self.assertIn(f"SHAKEMAP_IMAGE_ID={IMAGE_ID}", arguments)
             self.assertIn(f"SHAKEMAP_IMAGE_DIGEST={IMAGE_DIGEST}", arguments)
             self.assertIn("IDENTITY_CHECK_MARKER=present", arguments)
+            combined = result.stdout + result.stderr
+            self.assertNotIn(IMAGE_ID, combined)
+            self.assertNotIn(IMAGE_DIGEST, combined)
+            self.assertNotIn("docker run", combined)
 
 
 if __name__ == "__main__":

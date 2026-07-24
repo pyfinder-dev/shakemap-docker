@@ -1,28 +1,19 @@
-# Health and preparation reporting
+# Health and readiness
 
-`GET /config` and `GET /healthz` load the mounted
-`.service/preparation/manifest.json`. They compare its ShakeMap and immutable
-support identity with the running image and verify that the base snapshot
-exists.
+`GET /healthz` response schema `"1.0"` separates:
 
-- `process_liveness.live: true` means the HTTP process is responding. It does
-  not assert preparation or calculation readiness.
-- `preparation_readiness.ready: true` means the current image identity matches
-  a durable preparation record whose fixed California and prepared-global
-  native plans and product-structure gates passed offline.
-- `preparation_readiness.ready: false` means preparation is absent, invalid,
-  incomplete, missing its base snapshot, or belongs to another image.
-- `managed_calculation_readiness.ready` remains `false` while managed execution
-  is disabled and submission returns HTTP 503.
-- `overall_readiness.ready` therefore remains `false`, even when preparation
-  passed. `/healthz` returns liveness without calling the calculation service
-  healthy or ready.
+- `process_liveness`: the HTTP process responded;
+- `infrastructure`: contracted paths and ShakeMap CLI PATH presence;
+- `data`: cheap external-data presence/readability and manifest evidence;
+- `managed_execution_readiness`: always false in the current implementation;
+- `overall_readiness`: therefore false.
 
-The response includes the manifest path, preparation record, global base path,
-external grid paths, image identity, proof scope, and explicit non-claims. It
-does not report a container-home sentinel, shared active profile, or uniform
-VS30 override.
+The data inspection does not hash large grids, open scientific datasets, invoke
+native ShakeMap, or evaluate event coverage. Those states are reported as
+`not_evaluated`. A release-matched package may be `compatible` only on the basis
+of its small manifest matching immutable image identity; that does not validate
+the package payload.
 
-Preparation readiness is bounded integration evidence. It is not authoritative
-calculation `SUCCESS`, queue correctness, REST submission proof, regional
-readiness, concurrency proof, or universal geographic/scientific validity.
+Missing assets in an isolated runtime describe only that isolated runtime.
+Operators must inspect the exact mounted data tree before concluding that
+datasets are missing.

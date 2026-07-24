@@ -1,32 +1,21 @@
 # Architecture
 
-```text
-build immutable image
-        │
-        ▼
-host validates/provisions external data
-        │
-        ▼
-network-disabled short-lived preparation container
-  ├─ verifies UID/GID and read-only scientific mounts
-  ├─ creates release-native templates
-  ├─ writes mounted global base snapshot
-  └─ runs fixed California and prepared-global checks with product gates
-        │
-        ▼
-stable service container reports liveness, preparation, and disabled managed readiness separately
-```
+The system has four deliberately separate concerns:
 
-The immutable image owns generic support: Natural Earth mapping files and the
-installed STREC moment database. The mounted runtime owns large scientific
-data, Slab2, generated configuration, reports, logs, and service state.
+1. The image build resolves one official stable ShakeMap release and records
+   immutable identity and generic mapping/STREC support.
+2. External scientific data is operator-owned below `shakemap/data/`.
+   Inspection is read-only; provisioning is explicit.
+3. The running FastAPI process reports identity, configuration discovery,
+   data evidence, liveness, and disabled managed readiness.
+4. Managed calculation execution remains disabled until effective
+   configuration resolution and the full calculation success contract exist.
 
-`shakemap_service.preparation` implements both host orchestration and the
-container-internal preparation operation. `configure-shakemap.sh` is the single
-operator-facing wrapper. `build_identity` records immutable image support, and
-`main` exposes the current image/preparation relationship through `/config` and
-`/healthz`.
+`shakemap_service.data_assets` performs cheap read-only inspection.
+`shakemap_service.data_management` performs explicit provisioning and full
+pinned validation. Neither owns persistent service lifecycle state.
 
-The global base is a template snapshot. It is not switched or modified by
-event execution. Private per-calculation materialization is a later capability
-and is not implemented by this correction.
+There is no preparation container, base snapshot, readiness sentinel, or
+`.service/preparation` tree. Disposable verification workspaces may be used by
+verification commands, but they are evidence for the tested scenario only and
+do not become service readiness state.

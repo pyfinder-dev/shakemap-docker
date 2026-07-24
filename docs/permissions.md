@@ -1,23 +1,18 @@
 # Permissions
 
-The image runs as `sysop` UID/GID `1000:1000`. Preparation checks host write
-access and then verifies inside a short-lived container that UID/GID 1000 can
-write:
+The container runs as UID/GID `1000:1000`.
 
-- `incoming/`, `products/`, and `logs/`;
-- `.service/events/`, `.service/work/`, `.service/archive/`;
-- `.service/preparation/`.
+The service needs write access to:
 
-It also attempts a write to the nested scientific-data mount and requires that
-attempt to fail. If a writable path check fails, correct the ownership or ACL
-on the exact runtime directory; do not recursively change an unrelated parent.
+- `products/`;
+- `logs/`;
+- `.service/events/`;
+- `.service/archive/`.
 
-On typical Linux hosts:
+The external `data/` tree is mounted read-only by the supported start helper.
+Use `--data DIR` to mount an existing exact tree while keeping service state in
+an isolated `--runtime DIR`.
 
-```bash
-sudo chown -R 1000:1000 ./runtime/shakemap
-```
-
-Review the resolved path before running that command. macOS Docker Desktop bind
-mounts usually map host permissions automatically, but preparation remains the
-authoritative check.
+If startup reports a writable-path failure, change ownership or permissions on
+the exact service-state path. Do not make scientific data writable merely to
+satisfy startup: data is an external read-only input.

@@ -13,8 +13,7 @@ set -euo pipefail
 #   [6/7] Verify ShakeMap CLI is on PATH (smoke check)
 #   [7/7] Start FastAPI service
 #
-# Runtime preparation is a host-side pre-start operation. This entrypoint never
-# downloads scientific data or creates a shared mutable ShakeMap profile.
+# Runtime data is mounted read-only and managed outside this entrypoint.
 # ------------------------------------------------------------------
 
 # [1/7] Read environment with defaults
@@ -51,32 +50,29 @@ fi
 # [5/7] Create service directories and verify permissions
 #
 # Layout:
-#   User-facing (top-level):  incoming/ products/ logs/ data/
-#   Internal (.service/):     .service/events/ .service/work/ .service/archive/
+#   User-facing (top-level):  products/ logs/
+#   External read-only data:  data/
+#   Internal (.service/):     .service/events/ .service/archive/
 #
 echo "[entrypoint] [5/7] Creating service directories and verifying permissions"
 
 # User-facing directories
-for dir in incoming products logs; do
+for dir in products logs; do
     mkdir -p "${SERVICE_ROOT}/${dir}"
 done
 
 # Internal service state directories
-for dir in .service/events .service/work .service/archive; do
+for dir in .service/events .service/archive; do
     mkdir -p "${SERVICE_ROOT}/${dir}"
 done
 
-# Stable external data directories (normally already prepared on the host)
-mkdir -p "${SERVICE_ROOT}/data/vs30"
-mkdir -p "${SERVICE_ROOT}/data/topo"
-
 # Best-effort chmod -- has NO real effect on bind mounts.
-for dir in incoming products logs data data/vs30 data/topo .service .service/events .service/work .service/archive; do
+for dir in products logs .service/events .service/archive; do
     chmod 0755 "${SERVICE_ROOT}/${dir}" 2>/dev/null || true
 done
 
 # Verify sysop can write to all required directories.
-for dir in incoming products logs .service/events .service/work .service/archive; do
+for dir in products logs .service/events .service/archive; do
     DIRPATH="${SERVICE_ROOT}/${dir}"
     if ! touch "${DIRPATH}/.writetest_$$" 2>/dev/null; then
         echo "" >&2
@@ -102,14 +98,6 @@ if command -v shake >/dev/null 2>&1; then
     echo "[entrypoint] ShakeMap CLI found: $(command -v shake)"
 else
     echo "[entrypoint] WARNING: 'shake' not found on PATH. ShakeMap may not be installed correctly."
-fi
-
-# Report but do not invent a hard startup refusal for missing preparation.
-if python -m shakemap_service.preparation validate-record --service-root "${SERVICE_ROOT}" >/dev/null 2>&1; then
-    echo "[entrypoint] Durable runtime preparation record is valid."
-else
-    echo "[entrypoint] WARNING: durable runtime preparation is missing or invalid; API will report not_ready."
-    echo "[entrypoint] Run ./scripts/configure-shakemap.sh on the host before recreating the container."
 fi
 
 # [7/7] Start the FastAPI service

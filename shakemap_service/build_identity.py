@@ -19,6 +19,8 @@ from typing import Any, Sequence
 from shakemap_service.release import OFFICIAL_REPOSITORY_URL
 
 IDENTITY_PATH = Path("/opt/shakemap-build/identity.json")
+BUILD_IDENTITY_SCHEMA_VERSION = "1.0"
+SERVICE_IDENTITY_SCHEMA_VERSION = "1.0"
 _FULL_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 _STABLE_TAG_RE = re.compile(r"^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -48,14 +50,13 @@ def _require_string(value: Any, field: str) -> str:
 def validate_build_identity(data: Any) -> dict:
     """Validate a manifest and return it unchanged as a plain mapping."""
     root = _require_mapping(data, "manifest")
-    if root.get("schema_version") != 2:
+    if root.get("schema_version") != BUILD_IDENTITY_SCHEMA_VERSION:
         raise BuildIdentityError("Unsupported build identity schema_version")
     image = _require_mapping(root.get("immutable_image"), "immutable_image")
     if image.get("available") is not True:
         raise BuildIdentityError("Image manifest must record available=true")
     upstream = _require_mapping(image.get("upstream"), "immutable_image.upstream")
     installed = _require_mapping(image.get("installed"), "immutable_image.installed")
-    service = _require_mapping(image.get("service"), "immutable_image.service")
     support = _require_mapping(image.get("support"), "immutable_image.support")
 
     repository_url = _require_string(upstream.get("repository_url"), "repository_url")
@@ -122,14 +123,6 @@ def validate_build_identity(data: Any) -> dict:
     if not isinstance(strec.get("database_size"), int) or strec["database_size"] <= 0:
         raise BuildIdentityError("strec.database_size must be positive")
 
-    service_commit = service.get("source_commit")
-    if service_commit is not None:
-        service_commit = _require_string(service_commit, "service.source_commit").lower()
-        if _FULL_COMMIT_RE.fullmatch(service_commit) is None:
-            raise BuildIdentityError("service.source_commit is not a full commit")
-        service["source_commit"] = service_commit
-    if service.get("worktree_dirty_at_build") not in (True, False, None):
-        raise BuildIdentityError("worktree_dirty_at_build must be true, false, or null")
     _require_string(image.get("built_at_utc"), "built_at_utc")
     return root
 
@@ -142,7 +135,7 @@ def _load_path(path_text: str) -> dict:
         return validate_build_identity(data)
     except (OSError, json.JSONDecodeError, BuildIdentityError) as exc:
         return {
-            "schema_version": 2,
+            "schema_version": BUILD_IDENTITY_SCHEMA_VERSION,
             "immutable_image": {
                 "available": False,
                 "reason": f"Recorded build identity unavailable: {exc}",
@@ -199,7 +192,7 @@ def service_identity() -> dict:
     """Return the shared API/calculation identity model."""
     build = load_build_identity()
     return {
-        "schema_version": 1,
+        "schema_version": SERVICE_IDENTITY_SCHEMA_VERSION,
         "immutable_image": build["immutable_image"],
         "deployment": deployment_identity(),
     }
@@ -308,8 +301,6 @@ def write_build_identity(
     release_tag: str,
     release_version: str,
     source_commit: str,
-    service_commit: str,
-    service_worktree_dirty: str,
     build_timestamp_utc: str,
     natural_earth_manifest: Path,
     cartopy_data_dir: Path,
@@ -364,7 +355,7 @@ def write_build_identity(
     strec_database = Path(strec_database)
 
     manifest = {
-        "schema_version": 2,
+        "schema_version": BUILD_IDENTITY_SCHEMA_VERSION,
         "immutable_image": {
             "available": True,
             "upstream": {
@@ -379,14 +370,6 @@ def write_build_identity(
                 "dependency_inventory_path": str(dependencies),
                 "dependency_inventory_sha256": _sha256(dependencies),
                 "mapping_compatibility": mapping_compatibility,
-            },
-            "service": {
-                "source_commit": None if service_commit == "unavailable" else service_commit,
-                "worktree_dirty_at_build": {
-                    "true": True,
-                    "false": False,
-                    "unknown": None,
-                }[service_worktree_dirty],
             },
             "support": {
                 "natural_earth": {
@@ -426,12 +409,6 @@ def _parser() -> argparse.ArgumentParser:
     writer.add_argument("--release-tag", required=True)
     writer.add_argument("--release-version", required=True)
     writer.add_argument("--source-commit", required=True)
-    writer.add_argument("--service-commit", required=True)
-    writer.add_argument(
-        "--service-worktree-dirty",
-        choices=("true", "false", "unknown"),
-        required=True,
-    )
     writer.add_argument("--build-timestamp-utc", required=True)
     writer.add_argument("--natural-earth-manifest", type=Path, required=True)
     writer.add_argument("--cartopy-data-dir", type=Path, required=True)
@@ -463,8 +440,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             release_tag=args.release_tag,
             release_version=args.release_version,
             source_commit=args.source_commit,
-            service_commit=args.service_commit,
-            service_worktree_dirty=args.service_worktree_dirty,
             build_timestamp_utc=args.build_timestamp_utc,
             natural_earth_manifest=args.natural_earth_manifest,
             cartopy_data_dir=args.cartopy_data_dir,

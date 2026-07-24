@@ -1,47 +1,35 @@
 # Troubleshooting
 
-## Service reports `not_ready`
+## An asset is reported absent
 
-Inspect both public responses:
+Confirm that the service mounted the intended exact tree:
 
 ```bash
-curl -fsS http://localhost:9010/config | python -m json.tool
-curl -fsS http://localhost:9010/healthz | python -m json.tool
+./scripts/manage-shakemap-data.sh inspect --runtime /path/to/runtime
 ```
 
-Then rerun the host preparation command. The last durable attempt is under
-`runtime/shakemap/.service/preparation/attempts/`; detailed native logs are
-under `runtime/shakemap/.service/preparation/logs/`.
+An empty disposable runtime proves only that its own data tree is empty. If
+using data stored elsewhere, start with `--data /exact/shakemap/data`.
 
-## Existing global file is rejected
+## An asset is present but not validated
 
-The report states whether size, HDF5 signature, digest, raster format, bounds,
-or coverage failed. Preparation downloads/imports a replacement to a temporary
-sibling first and preserves the rejected file with an `invalid-<timestamp>`
-suffix. It never deletes a valid file.
+This is expected from `/config`, `/healthz`, and `inspect`; those paths avoid
+large hashes and native reads. Run:
 
-## Download unavailable
+```bash
+./scripts/manage-shakemap-data.sh validate --runtime /path/to/runtime
+```
 
-Place official files manually and use `--vs30-source`, `--topo-source`, and
-`--slab-source` with `--no-download`. The same digest and native validations
-apply.
+Validation errors name the path and mismatch. Use explicit `provision` with a
+manual source or permitted download only when you intend to modify data.
 
-## California package migration
+## Overall readiness remains false
 
-The old generated package contained duplicate STREC and Natural Earth data.
-Migration occurs only after every old manifest entry matches its recorded
-digest and the corrected package validates separately. The old folder is
-preserved as `v4.4.9.legacy-<timestamp>-<suffix>`. Unknown operator folders are
-not changed.
+This is the correct current state. Dataset presence or validation cannot enable
+managed calculations because effective configuration resolution is not
+implemented.
 
-## Native verification fails
+## Service-state permission failure
 
-Do not weaken the check or substitute the California package for the global
-run. Inspect `native/california/` or `native/global/` stdout, stderr, evidence,
-configuration inventory, and output inventory. A failed attempt does not become
-the current preparation manifest.
-
-## Container already exists
-
-The start helper preserves it. Resume it explicitly, or explicitly stop/remove
-it before creating a replacement. Reusing the prepared runtime is supported.
+Ensure UID/GID `1000:1000` can write `products/`, `logs/`,
+`.service/events/`, and `.service/archive/`. Keep `data/` read-only.

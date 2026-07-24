@@ -1,60 +1,31 @@
-# Developer verification guide
+# Developer guide
 
-Use the existing environment for every host Python command:
-
-```bash
-source ../.venv/bin/activate
-```
-
-## Host layer
+Use the project environment for all project Python work:
 
 ```bash
-python -m py_compile shakemap_service/*.py scripts/*.py tests/*.py
-for file in scripts/*.sh entrypoint.sh; do bash -n "$file"; done
-for file in tests/test_*.py; do python "$file"; done
-git diff --check
+source /Users/savas/my-codes/eew/pyfinder-dev/.venv/bin/activate
 ```
 
-Host tests must cover valid-data download avoidance, missing/corrupt/partial
-data, manual placement, sibling-temporary and atomic placement, permissions,
-manifest validation, known-package migration, documentation references, and
-California package scope. Host success proves no container behavior.
-
-## Image layer
-
-Build a collision-resistant QA tag, leaving `shakemap-docker:latest` unchanged:
+Run host tests:
 
 ```bash
-./scripts/build-shakemap-docker.sh --tag shakemap-docker:qa-<unique>
-docker run --rm --network none \
-  --entrypoint /app/scripts/verify-shakemap-image.sh \
-  shakemap-docker:qa-<unique>
+for file in tests/test_*.py; do python "$file" || exit; done
 ```
 
-The verifier checks immutable ShakeMap identity, all Natural Earth checksums,
-offline Cartopy resolution, installed STREC version/database digest and symlink,
-imports, modules, user identity, and the supported script inventory.
+Verification is separated into:
 
-## Preparation/native layer
+1. host-side tests;
+2. container-internal image/module checks;
+3. running-service deployment checks.
 
-Run `configure-shakemap.sh` against an isolated runtime and QA image. After
-host downloads/imports, the preparation container has no network and mounts
-scientific data read-only. Require both fixed default-plan executions to pass.
-Retain the exact command, stdout/stderr, module order, configuration/data
-inventories, and output inventory beneath the isolated runtime.
+For running checks, test both an empty isolated runtime and a disposable
+service-state runtime mounted to the exact existing project data tree. Use
+`start-shakemap-docker.sh --data`; do not use a manual `docker run` substitute.
 
-## Running-service layer
+Before and after checks against operator data, compare metadata-only evidence
+such as path, size, and modification time. Do not hash hundreds of megabytes
+merely to prove non-mutation.
 
-Start an isolated container, port, and prepared runtime, then run:
-
-```bash
-./scripts/verify-shakemap-deployment.sh \
-  --url http://localhost:<qa-port> --expect ready
-```
-
-This checks public preparation reporting only. It intentionally does not test
-or claim later queue, submission, CLI, concurrency, regional, archival, or
-authoritative product-success capabilities.
-
-Remove only exact temporary containers created for the check. Do not retag,
-restart, remove, or recreate stable resources.
+Do not infer scientific readiness from uniform VS30, file presence, or partial
+products. Managed readiness remains false until the contracted configuration,
+execution, provenance, manifest, log, and core-product gates are implemented.

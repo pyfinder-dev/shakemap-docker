@@ -15,8 +15,8 @@ Background worker:
   - Starts on application startup via ``lifespan``.
   - Remains gated off until the later managed-execution contract exists.
 
-Health reports infrastructure and durable preparation separately. Preparation
-readiness is bounded evidence, not managed-calculation or SUCCESS readiness.
+Health reports process liveness, infrastructure, external data inspection, and
+managed-calculation readiness as separate concerns.
 """
 from __future__ import annotations
 
@@ -34,11 +34,16 @@ from fastapi.responses import JSONResponse
 from .config import settings
 from . import paths
 from .build_identity import service_identity
-from .preparation import load_preparation
+from .data_assets import inspect_data_assets
 from .submission import submit_event, SubmissionResult
 from .worker import recover_interrupted_events, run_worker_cycle, execute_shakemap
 from .queue import discover_queue
-from .status import read_status, scan_event_records, EventStatus
+from .status import (
+    EventStatus,
+    latest_status_for_event,
+    records_for_event,
+    scan_event_records,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +111,7 @@ async def lifespan(app: FastAPI):
     try:
         recovered = recover_interrupted_events()
         if recovered:
-            logger.info("Startup recovery: recovered %d interrupted events: %s",
+            logger.info("Startup recovery: failed %d interrupted queue entries without retry: %s",
                         len(recovered), recovered)
         else:
             logger.info("Startup recovery: no interrupted events found")
@@ -142,30 +147,16 @@ app = FastAPI(title="ShakeMap Service", version="0.1.0", lifespan=lifespan)
 # Internal helpers
 # ------------------------------------------------------------------
 
-def _read_readiness_sentinel() -> dict:
-    """Load the durable pre-start preparation record from the mounted runtime."""
-    state = load_preparation(paths.service_root())
-    return {
-        "passed": state["ready"],
-        "reason": "" if state["ready"] else state.get("reason", "runtime preparation is invalid"),
-        "overrides": [],
-        "preparation": state,
-    }
-
-
-def _check_prepared_data() -> dict:
-    """Report the external grids and validated base snapshot."""
-    vs30 = paths.vs30_grid_path()
-    topo = paths.topo_grid_path()
-    base_config = paths.global_base_dir() / "install/config"
-    return {
-        "vs30_file": str(vs30), "vs30_file_exists": vs30.is_file(),
-        "vs30_file_non_empty": vs30.is_file() and vs30.stat().st_size > 0,
-        "topo_file": str(topo), "topo_file_exists": topo.is_file(),
-        "topo_file_non_empty": topo.is_file() and topo.stat().st_size > 0,
-        "model_conf_valid": (base_config / "model.conf").is_file(),
-        "base_config_dir": str(base_config),
-    }
+def _data_inspection(identity: dict | None = None) -> dict:
+    """Return cheap external-data evidence tied to the immutable image release."""
+    shared_identity = identity if identity is not None else service_identity()
+    image = shared_identity.get("immutable_image", {})
+    upstream = image.get("upstream", {}) if image.get("available") else {}
+    return inspect_data_assets(
+        paths.shakemap_data_dir(),
+        release_tag=upstream.get("release_tag"),
+        source_commit=upstream.get("source_commit"),
+    )
 
 
 def _managed_execution_enabled() -> bool:
@@ -176,53 +167,32 @@ def _managed_execution_enabled() -> bool:
 def _compute_blocking_reasons(
     shake_cli_available: bool,
     dir_checks: dict,
-    sentinel_info: dict,
-    prepared_data: dict,
-    base_template_readable: bool,
-    base_exists: bool,
-    base_config_valid: bool,
 ) -> list[str]:
-    """Compute a list of human-readable blocking reasons."""
+    """Compute infrastructure blockers without treating data as readiness."""
     reasons: list[str] = []
 
     for name, info in dir_checks.items():
         if not info.get("exists"):
             reasons.append(f"Directory {name}/ does not exist")
-        elif not info.get("writable"):
+        elif info.get("required_access") == "read" and not info.get("readable"):
+            reasons.append(f"Directory {name}/ is not readable")
+        elif info.get("required_access") == "write" and not info.get("writable"):
             reasons.append(f"Directory {name}/ is not writable")
 
     if not shake_cli_available:
         reasons.append("ShakeMap CLI (shake) not found on PATH")
 
-    if not sentinel_info["passed"]:
-        reason = sentinel_info.get("reason", "runtime preparation is unavailable")
-        reasons.append(reason)
-    else:
-        if not prepared_data.get("vs30_file_exists"):
-            reasons.append("VS30 grid missing")
-        if not prepared_data.get("model_conf_valid"):
-            reasons.append("model.conf validation failed")
-        if not base_template_readable:
-            reasons.append("base profiles.conf template missing")
-        if not base_exists:
-            reasons.append("global base snapshot missing")
-        if not base_config_valid:
-            reasons.append("global base config directory missing")
-
+    reasons.append(
+        "Managed calculation execution is disabled because effective "
+        "ShakeMap configuration resolution is not implemented"
+    )
     return reasons
 
 
-def _compute_next_action(blocking_reasons: list[str], sentinel_info: dict) -> str:
+def _compute_next_action(blocking_reasons: list[str]) -> str:
     """Compute the recommended next action based on blocking reasons."""
     if not blocking_reasons:
         return ""
-
-    if not sentinel_info["passed"]:
-        reason = sentinel_info.get("reason", "")
-        if "not been run" in reason:
-            return "Run before starting the service: ./scripts/configure-shakemap.sh"
-        if "sentinel" in reason.lower():
-            return "Run before starting the service: ./scripts/configure-shakemap.sh"
 
     for reason in blocking_reasons:
         if "not writable" in reason.lower():
@@ -231,16 +201,11 @@ def _compute_next_action(blocking_reasons: list[str], sentinel_info: dict) -> st
             return "Restart the container to recreate service directories"
         if "shake" in reason.lower() and "path" in reason.lower():
             return "Rebuild the Docker image -- ShakeMap may not be installed correctly"
-        if "vs30" in reason.lower():
-            return "Provide the global VS30 grid, then run ./scripts/configure-shakemap.sh"
-        if "profile" in reason.lower() or "profiles.conf" in reason.lower():
-            return "Run before starting the service: ./scripts/configure-shakemap.sh"
-        if "model.conf" in reason.lower():
-            return "Run before starting the service: ./scripts/configure-shakemap.sh"
-        if "symlink" in reason.lower():
-            return "Run before starting the service: ./scripts/configure-shakemap.sh"
 
-    return "Run before starting the service: ./scripts/configure-shakemap.sh"
+    return (
+        "Implement and validate effective ShakeMap configuration resolution "
+        "before enabling managed calculations"
+    )
 
 
 # ------------------------------------------------------------------
@@ -249,50 +214,37 @@ def _compute_next_action(blocking_reasons: list[str], sentinel_info: dict) -> st
 
 @app.get("/config")
 def get_config() -> dict:
-    """Return the active ShakeMap configuration.
-
-    Read-only inspection of the durable preparation identity, base snapshot,
-    external scientific data, and bounded readiness evidence.
-    """
-    sentinel_info = _read_readiness_sentinel()
-    prepared_data = _check_prepared_data()
-
-    readiness_state = "prepared" if sentinel_info["passed"] else "not_ready"
-    preparation = sentinel_info["preparation"]
-    base_config = paths.global_base_dir() / "install/config"
+    """Return identity, contracted data paths, and honest capability state."""
+    identity = service_identity()
+    data = _data_inspection(identity)
 
     return {
-        "response_schema_version": 3,
-        "identity": service_identity(),
-        "preparation_readiness": {
-            "ready": sentinel_info["passed"],
-            "state": readiness_state,
-            "reason": sentinel_info.get("reason", ""),
+        "response_schema_version": "1.0",
+        "identity": identity,
+        "data": data,
+        "configurations": data["configurations"],
+        "default_configuration": "global",
+        "configuration_resolution": {
+            "implemented": False,
+            "state": "not_implemented",
+            "reason": "effective ShakeMap configuration resolution is not implemented",
         },
-        "managed_calculation_readiness": {
+        "managed_execution_readiness": {
             "ready": False,
             "state": "disabled",
-            "reason": "managed calculation execution remains intentionally disabled",
+            "reason": "effective ShakeMap configuration resolution is not implemented",
         },
         "overall_readiness": {
             "ready": False,
             "state": "not_ready",
-            "reason": "managed calculation execution remains intentionally disabled",
+            "reason": "managed calculation execution is disabled",
         },
-        "preparation": preparation,
-        "global_base_snapshot": str(paths.global_base_dir()),
-        "model_conf_path": str(base_config / "model.conf"),
-        "model_conf_exists": (base_config / "model.conf").is_file(),
-        "products_conf_path": str(base_config / "products.conf"),
-        "products_conf_exists": (base_config / "products.conf").is_file(),
-        "vs30_file": prepared_data.get("vs30_file", ""),
-        "vs30_file_exists": prepared_data.get("vs30_file_exists", False),
-        "topo_file": prepared_data.get("topo_file", ""),
-        "topo_file_exists": prepared_data.get("topo_file_exists", False),
-        "proof_scope": "fixed California and fixed prepared-global native scenarios only",
-        "non_claims": ["durable queue", "REST submission", "concurrency", "recalculation archival", "authoritative service SUCCESS", "universal scientific validity"],
         "service_root": settings.service_root,
         "shakemap_modules": settings.shakemap_modules,
+        "managed_execution": {
+            "enabled": False,
+            "reason": "effective ShakeMap configuration resolution is not implemented",
+        },
     }
 
 
@@ -302,17 +254,15 @@ def get_config() -> dict:
 
 @app.get("/config/profiles")
 def get_config_profiles() -> dict:
-    """Report the immutable base snapshot; active mutable profiles are unsupported."""
-    state = load_preparation(paths.service_root())
-    base = paths.global_base_dir()
+    """List discovered configuration names without claiming validation."""
+    data = _data_inspection()
     return {
+        "response_schema_version": "1.0",
         "active_profile": None,
         "shared_mutable_profile_supported": False,
-        "base_snapshot": {
-            "name": "global",
-            "path": str(base),
-            "valid": state["ready"] and base.is_dir(),
-        },
+        "default_configuration": "global",
+        "configurations": data["configurations"],
+        "resolution_implemented": False,
     }
 
 
@@ -334,16 +284,11 @@ async def submit_event_endpoint(
     ``replaced_previous``.
     """
     if not _managed_execution_enabled():
-        sentinel_info = _read_readiness_sentinel()
         return JSONResponse(
             status_code=503,
             content={
-                "detail": "Managed calculation execution is not enabled by the preparation correction",
-                "reason": (
-                    "runtime preparation is valid, but durable queue and authoritative execution semantics remain deferred"
-                    if sentinel_info.get("passed")
-                    else sentinel_info.get("reason", "runtime preparation is unavailable")
-                ),
+                "detail": "Managed calculation submission is not enabled",
+                "reason": "effective ShakeMap configuration resolution and authoritative success semantics are not implemented",
                 "status": "not_ready",
             },
         )
@@ -374,12 +319,9 @@ async def submit_event_endpoint(
         "event_id": result.event_id,
         "status": result.status,
         "status_path": result.status_path,
-        "replaced_previous": result.replaced_previous,
+        "internal_sequence": result.sequence,
         "validation_errors": result.validation_errors,
     }
-
-    if result.status == "VALIDATION_FAILED":
-        return JSONResponse(content=body, status_code=422)
 
     return body
 
@@ -390,14 +332,27 @@ async def submit_event_endpoint(
 
 @app.get("/healthz")
 def healthz() -> dict:
-    """Report process liveness separately from preparation and calculation readiness."""
-    dir_checks: dict[str, dict[str, bool]] = {}
+    """Report liveness, infrastructure, data evidence, and readiness separately."""
+    dir_checks: dict[str, dict[str, object]] = {}
     for d in paths.all_service_dirs():
         exists = d.is_dir()
+        required_access = "read" if d == paths.shakemap_data_dir() else "write"
+        readable = os.access(d, os.R_OK) if exists else False
         writable = os.access(d, os.W_OK) if exists else False
-        dir_checks[d.name] = {"exists": exists, "writable": writable}
+        dir_checks[d.name] = {
+            "exists": exists,
+            "readable": readable,
+            "writable": writable,
+            "required_access": required_access,
+        }
     directories_ready = all(
-        value["exists"] and value["writable"] for value in dir_checks.values()
+        value["exists"]
+        and (
+            value["readable"]
+            if value["required_access"] == "read"
+            else value["writable"]
+        )
+        for value in dir_checks.values()
     )
     shake_cli_available = shutil.which("shake") is not None
     infrastructure_passed = directories_ready and shake_cli_available
@@ -406,67 +361,28 @@ def healthz() -> dict:
         "service_root": str(paths.service_root()),
         "directories": dir_checks,
         "shake_cli_available": shake_cli_available,
-        "shake_cli_verification": "immutable image gate plus offline native preparation runs",
+        "shake_cli_verification": "PATH presence only in this request",
     }
-
-    sentinel_info = _read_readiness_sentinel()
-    prepared_data = _check_prepared_data()
-    base_config = paths.global_base_dir() / "install/config"
-    base_template_readable = (paths.global_base_dir() / "profiles.conf.template").is_file()
-    base_exists = paths.global_base_dir().is_dir()
-    base_config_valid = base_config.is_dir()
-    preparation_passed = sentinel_info["passed"] and all((
-        prepared_data.get("vs30_file_exists", False),
-        prepared_data.get("vs30_file_non_empty", False),
-        prepared_data.get("topo_file_exists", False),
-        prepared_data.get("topo_file_non_empty", False),
-        prepared_data.get("model_conf_valid", False),
-        base_template_readable,
-        base_exists,
-        base_config_valid,
-    ))
-    preparation_readiness = {
-        "ready": preparation_passed,
-        "state": "prepared" if preparation_passed else "not_ready",
-        **({} if preparation_passed else {"reason": sentinel_info.get("reason", "prepared data or base snapshot is incomplete")}),
-        "checks": {
-            "vs30_file": prepared_data.get("vs30_file", ""),
-            "vs30_file_exists": prepared_data.get("vs30_file_exists", False),
-            "vs30_file_non_empty": prepared_data.get("vs30_file_non_empty", False),
-            "topo_file": prepared_data.get("topo_file", ""),
-            "topo_file_exists": prepared_data.get("topo_file_exists", False),
-            "topo_file_non_empty": prepared_data.get("topo_file_non_empty", False),
-            "model_conf_valid": prepared_data.get("model_conf_valid", False),
-            "base_template_readable": base_template_readable,
-            "base_exists": base_exists,
-            "base_config_valid": base_config_valid,
-        },
-        "base_snapshot": str(paths.global_base_dir()),
-        "preparation": sentinel_info["preparation"],
-    }
+    identity = service_identity()
+    data = _data_inspection(identity)
     status = "live"
     blocking_reasons = _compute_blocking_reasons(
         shake_cli_available=shake_cli_available,
         dir_checks=dir_checks,
-        sentinel_info=sentinel_info,
-        prepared_data=prepared_data,
-        base_template_readable=base_template_readable,
-        base_exists=base_exists,
-        base_config_valid=base_config_valid,
     )
     return {
-        "response_schema_version": 3,
-        "identity": service_identity(),
+        "response_schema_version": "1.0",
+        "identity": identity,
         "status": status,
         "process_liveness": {
             "live": True,
             "state": "live",
             "reason": "the HTTP process is responding",
         },
-        "managed_calculation_readiness": {
+        "managed_execution_readiness": {
             "ready": False,
             "state": "disabled",
-            "reason": "durable queue and authoritative execution semantics remain deferred",
+            "reason": "effective ShakeMap configuration resolution is not implemented",
         },
         "overall_readiness": {
             "ready": False,
@@ -474,16 +390,18 @@ def healthz() -> dict:
             "reason": "managed calculation execution is disabled",
         },
         "blocking_reasons": blocking_reasons,
-        "next_action": _compute_next_action(blocking_reasons, sentinel_info),
+        "next_action": _compute_next_action(blocking_reasons),
         "infrastructure": infrastructure,
-        "preparation_readiness": preparation_readiness,
+        "data": data,
         "configuration": {
             "modules": settings.shakemap_modules,
             "service_root": settings.service_root,
+            "default": "global",
+            "resolution_state": "not_implemented",
         },
         "managed_execution": {
             "enabled": False,
-            "reason": "durable queue and authoritative execution semantics remain deferred",
+            "reason": "effective ShakeMap configuration resolution is not implemented",
         },
     }
 
@@ -508,7 +426,7 @@ def list_events(
         - ``limit``: max events to return (default 100, max 1000)
         - ``offset``: skip this many events (default 0)
     """
-    all_records = scan_event_records()
+    all_records, malformed = scan_event_records()
 
     # Sort by submitted_at descending (newest first)
     all_records.sort(key=lambda r: r.submitted_at or "", reverse=True)
@@ -537,13 +455,15 @@ def list_events(
             "queued_at": record.queued_at,
             "started_at": record.started_at,
             "completed_at": record.completed_at,
-            "current_attempt": record.current_attempt,
-            "max_attempts": record.max_attempts,
-            "failure_reason": record.failure_reason,
+            "kind": record.kind,
+            "internal_sequence": record.sequence,
+            "requested_region": record.requested_region,
+            "effective_region": record.effective_region,
+            "module_plan": record.module_plan,
+            "failure": record.failure,
+            "interruption": record.interruption,
+            "mounted_paths": record.mounted_paths,
         }
-        # Include products path if available
-        if record.published_products_directory:
-            event_entry["products_path"] = record.published_products_directory
         # Include whether products directory exists on disk
         products_dir = paths.event_products_dir(record.event_id)
         event_entry["has_products"] = products_dir.is_dir()
@@ -556,6 +476,8 @@ def list_events(
         "limit": limit,
         "offset": offset,
         "status_filter": status.upper() if status else None,
+        "malformed_count": len(malformed),
+        "malformed": [{"entry": entry, "error": error} for entry, error in malformed],
         "events": events,
     }
 
@@ -576,7 +498,7 @@ def get_event(event_id: str) -> dict:
 
     Returns HTTP 404 if the event does not exist.
     """
-    record = read_status(event_id)
+    record = latest_status_for_event(event_id)
     if record is None:
         raise HTTPException(status_code=404, detail=f"Event '{event_id}' not found")
 
@@ -586,42 +508,25 @@ def get_event(event_id: str) -> dict:
         "user_id": record.user_id,
         "status": record.status,
         "submitted_at": record.submitted_at,
-        "validated_at": record.validated_at,
         "queued_at": record.queued_at,
         "started_at": record.started_at,
         "completed_at": record.completed_at,
-        "current_attempt": record.current_attempt,
-        "max_attempts": record.max_attempts,
-        "failure_reason": record.failure_reason,
-        "validation_errors": record.validation_errors,
+        "schema_version": record.schema_version,
+        "kind": record.kind,
+        "internal_sequence": record.sequence,
+        "requested_region": record.requested_region,
+        "effective_region": record.effective_region,
+        "module_plan": record.module_plan,
+        "current_child": record.current_child,
+        "failure": record.failure,
+        "interruption": record.interruption,
+        "mounted_paths": record.mounted_paths,
     }
-
-    # Execution context from the latest attempt
-    execution_context = None
-    if record.attempt_history:
-        latest = record.attempt_history[-1]
-        execution_context = latest.execution_context
-    response["execution_context"] = execution_context
-
-    # Full attempt history
-    response["attempt_history"] = [
-        {
-            "attempt_number": a.attempt_number,
-            "started_at": a.started_at,
-            "completed_at": a.completed_at,
-            "status": a.status,
-            "failure_reason": a.failure_reason,
-            "duration_seconds": a.duration_seconds,
-            "execution_context": a.execution_context,
-        }
-        for a in record.attempt_history
-    ]
 
     # Products reference
     products_dir = paths.event_products_dir(record.event_id)
     has_products = products_dir.is_dir()
     response["products"] = {
-        "published_products_directory": record.published_products_directory,
         "has_products": has_products,
         "products_path": str(products_dir) if has_products else None,
     }
@@ -633,15 +538,19 @@ def get_event(event_id: str) -> dict:
         "has_log": log_file.is_file(),
     }
 
-    # Incoming files reference
-    incoming = paths.event_incoming_dir(record.event_id)
-    incoming_files: list[str] = []
-    if incoming.is_dir():
-        incoming_files = sorted(f.name for f in incoming.iterdir() if f.is_file())
-    response["incoming_files"] = incoming_files
-
-    # Status file path (for debugging)
-    response["status_path"] = f".service/events/{record.event_id}/requeststatus.json"
+    queue_entries = records_for_event(event_id)
+    response["accepted_submissions"] = [
+        {
+            "internal_sequence": item.sequence,
+            "status": item.status,
+            "queued_at": item.queued_at,
+            "failure": item.failure,
+        }
+        for item in queue_entries
+    ]
+    response["status_path"] = (
+        f".service/events/{paths.queue_entry_name(record.sequence)}/status.json"
+    )
 
     return response
 
@@ -658,7 +567,7 @@ def get_event_products(event_id: str) -> dict:
     given event.  Returns HTTP 404 if the event does not exist.
     Returns an empty file list if no products have been published.
     """
-    record = read_status(event_id)
+    record = latest_status_for_event(event_id)
     if record is None:
         raise HTTPException(status_code=404, detail=f"Event '{event_id}' not found")
 
@@ -684,7 +593,7 @@ def get_event_products(event_id: str) -> dict:
         "event_id": event_id,
         "status": record.status,
         "products_directory": str(products_dir) if products_dir.is_dir() else None,
-        "published_products_directory": record.published_products_directory,
+        "native_products_directory": str(paths.event_native_products_dir(event_id)),
         "file_count": len(files),
         "files": files,
     }
@@ -709,14 +618,18 @@ def get_queue() -> dict:
             "user_id": r.user_id,
             "queued_at": r.queued_at,
             "submitted_at": r.submitted_at,
-            "current_attempt": r.current_attempt,
-            "max_attempts": r.max_attempts,
+            "kind": r.kind,
+            "internal_sequence": r.sequence,
+            "requested_region": r.requested_region,
+            "effective_region": r.effective_region,
+            "module_plan": r.module_plan,
+            "mounted_paths": r.mounted_paths,
         }
         for r in candidates
     ]
 
     malformed_entries = [
-        {"event_id": m.event_id, "error": m.error}
+        {"entry": m.entry, "error": m.error}
         for m in malformed
     ]
 

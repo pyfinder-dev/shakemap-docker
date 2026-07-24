@@ -13,6 +13,7 @@ set -euo pipefail
 # Options:
 #   --name NAME         Container name       (default: shakemap-docker)
 #   --runtime DIR       Host runtime dir     (default: ./runtime)
+#   --data DIR          Existing data dir (default: RUNTIME/shakemap/data)
 #   --port PORT         Host port mapping     (default: 9010)
 #   --image IMAGE       Image name:tag        (default: shakemap-docker:latest)
 #   --env KEY=VALUE     Extra env var (repeatable)
@@ -30,6 +31,7 @@ set -euo pipefail
 # -- Defaults --
 CONTAINER_NAME="shakemap-docker"
 RUNTIME_DIR="./runtime"
+DATA_DIR=""
 HOST_PORT="9010"
 IMAGE_TAG="shakemap-docker:latest"
 DETACH="yes"
@@ -69,6 +71,12 @@ while [[ $# -gt 0 ]]; do
                 echo "ERROR: --runtime requires a value" >&2; exit 1
             fi
             RUNTIME_DIR="$2"; shift 2
+            ;;
+        --data)
+            if [[ -z "${2:-}" ]]; then
+                echo "ERROR: --data requires a value" >&2; exit 1
+            fi
+            DATA_DIR="$2"; shift 2
             ;;
         --port)
             if [[ -z "${2:-}" ]]; then
@@ -113,17 +121,6 @@ if ! command -v docker >/dev/null 2>&1; then
     echo "ERROR: docker is not installed or not in PATH." >&2
     exit 1
 fi
-PYTHON_BIN="${SHAKEMAP_HOST_PYTHON:-python3}"
-if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
-    echo "ERROR: Python 3.10 or newer is required; interpreter not found: ${PYTHON_BIN}" >&2
-    echo "Set SHAKEMAP_HOST_PYTHON to a supported interpreter path if needed." >&2
-    exit 1
-fi
-if ! "${PYTHON_BIN}" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)'; then
-    echo "ERROR: ${PYTHON_BIN} must be Python 3.10 or newer; no third-party host packages are required." >&2
-    exit 1
-fi
-
 # Deployment identity is supplied by Docker at startup. It is intentionally
 # separate from the immutable build manifest, and a registry digest remains
 # unavailable when the locally loaded image has no RepoDigest.
@@ -136,13 +133,18 @@ echo "[start] [2/4] Ensuring runtime directory exists"
 RUNTIME_ABS="$(cd "$(dirname "${RUNTIME_DIR}")" 2>/dev/null && pwd)/$(basename "${RUNTIME_DIR}")" || RUNTIME_ABS="${RUNTIME_DIR}"
 mkdir -p "${RUNTIME_DIR}"
 echo "  Runtime dir: ${RUNTIME_ABS}"
-mkdir -p "${RUNTIME_DIR}/shakemap/data"
-if "${PYTHON_BIN}" -m shakemap_service.preparation validate-record --service-root "${RUNTIME_ABS}/shakemap" >/dev/null 2>&1; then
-    echo "  Preparation: valid"
-else
-    echo "  WARNING: preparation record is missing or invalid; service will start in not_ready state." >&2
-    echo "  Run ./scripts/configure-shakemap.sh before recreating this container." >&2
+if [[ -z "${DATA_DIR}" ]]; then
+    DATA_DIR="${RUNTIME_DIR}/shakemap/data"
+    mkdir -p "${DATA_DIR}"
+elif [[ ! -d "${DATA_DIR}" || ! -r "${DATA_DIR}" ]]; then
+    echo "ERROR: --data must name an existing readable directory: ${DATA_DIR}" >&2
+    exit 1
 fi
+DATA_ABS="$(cd "${DATA_DIR}" 2>/dev/null && pwd)" || {
+    echo "ERROR: cannot resolve data directory: ${DATA_DIR}" >&2
+    exit 1
+}
+echo "  Data dir:    ${DATA_ABS} (read-only)"
 
 # [3/4] Check for existing container
 echo "[start] [3/4] Checking for existing container"
@@ -172,7 +174,7 @@ fi
 CMD+=(--name "${CONTAINER_NAME}")
 CMD+=(-p "${HOST_PORT}:9010")
 CMD+=(-v "${RUNTIME_ABS}:/home/sysop/runtime")
-CMD+=(-v "${RUNTIME_ABS}/shakemap/data:/home/sysop/runtime/shakemap/data:ro")
+CMD+=(-v "${DATA_ABS}:/home/sysop/runtime/shakemap/data:ro")
 
 if [[ -n "${DEPLOYMENT_IMAGE_ID}" ]]; then
     CMD+=(-e "SHAKEMAP_IMAGE_ID=${DEPLOYMENT_IMAGE_ID}")
@@ -190,20 +192,13 @@ CMD+=("${IMAGE_TAG}")
 echo "  Name:     ${CONTAINER_NAME}"
 echo "  Port:     ${HOST_PORT}:9010"
 echo "  Runtime:  ${RUNTIME_ABS}:/home/sysop/runtime"
+echo "  Data:     ${DATA_ABS}:/home/sysop/runtime/shakemap/data:ro"
 echo "  Image:    ${IMAGE_TAG}"
-echo "  Image ID: ${DEPLOYMENT_IMAGE_ID:-unavailable}"
-echo "  Digest:   ${DEPLOYMENT_IMAGE_DIGEST:-unavailable}"
 echo "  Mode:     $([ "${DETACH}" = "yes" ] && echo "detached" || echo "foreground")"
-if [ ${#EXTRA_ENVS[@]} -gt 0 ]; then
-    echo "  Env:      ${EXTRA_ENVS[*]}"
-fi
 echo ""
-echo "  ${CMD[*]}"
-echo ""
-
-"${CMD[@]}"
 
 if [ "${DETACH}" = "yes" ]; then
+    "${CMD[@]}" >/dev/null
     echo ""
     echo "Container '${CONTAINER_NAME}' started."
     echo ""
@@ -211,4 +206,6 @@ if [ "${DETACH}" = "yes" ]; then
     echo "  1. Check configuration: curl -fsS http://localhost:${HOST_PORT}/config"
     echo "  2. Check readiness:     curl -fsS http://localhost:${HOST_PORT}/healthz"
     echo "  Scientific datasets remain external; not_ready can be the correct state."
+else
+    exec "${CMD[@]}"
 fi

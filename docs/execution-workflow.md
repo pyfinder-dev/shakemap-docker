@@ -1,21 +1,18 @@
-# Execution boundary
+# Current execution workflow
 
-This corrective release establishes build, runtime preparation, native
-integration checks, and preparation reporting. Its supported sequence is:
+The supported current workflow is:
 
-```text
-build → prepare/validate → start → inspect /config and /healthz
-```
+1. Build and verify the immutable image.
+2. Inspect the exact external data tree.
+3. Optionally run explicit full checksum validation.
+4. Start the service with state and data mounted separately.
+5. Inspect `/config` and `/healthz`.
 
-Preparation executes two fixed native scenarios directly in a short-lived,
-network-disabled container. Those executions are integration evidence and do
-not create `incoming/SCENARIO`, queue records, or `products/SCENARIO`; they do
-not enter the service queue or set service calculation status. Evidence stays
-under `.service/preparation`.
+Managed calculations are not part of this workflow. The public submission route
+returns HTTP 503 because effective configuration resolution and authoritative
+success semantics are not implemented.
 
-The existing calculation routes and worker code are not proof of the future
-contract. Durable FIFO redesign, structured-origin and prediction-only input,
-regional/private profile execution, concurrency, recalculation archival,
-public `shake-docker`, and authoritative product-gated `SUCCESS` remain later
-work. Do not describe a preparation-native exit code or product inventory as a
-successful managed calculation.
+Native verification of a fixed package, where explicitly invoked, proves only
+that scenario, release, inputs, module plan, and validation gate. It does not
+establish REST submission, queue behavior, recalculation archival, concurrency,
+or production readiness.

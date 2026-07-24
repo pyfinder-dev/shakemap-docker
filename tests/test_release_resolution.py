@@ -17,7 +17,6 @@ from shakemap_service import release
 
 COMMIT_A = "a" * 40
 COMMIT_B = "b" * 40
-SERVICE_COMMIT = "c" * 40
 
 
 class StableReleaseTests(unittest.TestCase):
@@ -74,37 +73,12 @@ class StableReleaseTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(release.ReleaseResolutionError):
                 release.validate_full_commit(value)
 
-    def test_override_requires_stable_tag_and_matching_official_commit(self) -> None:
+    def test_requested_stable_tag_resolves_its_official_commit(self) -> None:
         with patch.object(release, "query_official_tag", return_value=COMMIT_A):
-            resolved = release.resolve_immutable_override("v4.4.10", COMMIT_A)
+            resolved = release.resolve_official_release_tag("v4.4.10")
             self.assertEqual(resolved, release.ResolvedRelease(tag="v4.4.10", commit=COMMIT_A))
-            with self.assertRaises(release.ReleaseResolutionError):
-                release.resolve_immutable_override("v4.4.10", COMMIT_B)
         with self.assertRaises(release.ReleaseResolutionError):
-            release.resolve_immutable_override("main", COMMIT_A)
-
-    def test_docker_build_argument_construction(self) -> None:
-        resolved = release.ResolvedRelease(tag="v4.4.10", commit=COMMIT_A)
-        command = release.construct_docker_build_command(
-            image_tag="shake:test",
-            build_context="/workspace",
-            release=resolved,
-            service_commit=SERVICE_COMMIT,
-            service_worktree_dirty="true",
-            build_timestamp_utc="2026-07-22T12:00:00Z",
-            platform="linux/amd64",
-            no_cache=True,
-        )
-        self.assertEqual(command[:6], ["docker", "buildx", "build", "--load", "-t", "shake:test"])
-        self.assertIn("SHAKEMAP_RELEASE_TAG=v4.4.10", command)
-        self.assertIn(f"SHAKEMAP_SOURCE_COMMIT={COMMIT_A}", command)
-        self.assertIn(f"SHAKEMAP_SOURCE_URL={release.OFFICIAL_REPOSITORY_URL}", command)
-        self.assertIn("SHAKEMAP_RELEASE_VERSION=4.4.10", command)
-        self.assertIn(f"SERVICE_SOURCE_COMMIT={SERVICE_COMMIT}", command)
-        self.assertIn("SERVICE_WORKTREE_DIRTY=true", command)
-        self.assertIn("BUILD_TIMESTAMP_UTC=2026-07-22T12:00:00Z", command)
-        self.assertEqual(command[-1], "/workspace")
-
+            release.resolve_official_release_tag("main")
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

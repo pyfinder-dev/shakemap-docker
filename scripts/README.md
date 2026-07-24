@@ -1,34 +1,25 @@
-# Script inventory
+# Scripts
 
-## Supported operator-facing
-
-| Script | Purpose |
+| Script | Responsibility |
 |---|---|
-| `build-shakemap-docker.sh` | Resolve one official stable release and build the image. |
-| `configure-shakemap.sh` | Prepare and validate the mounted runtime before startup. |
-| `start-shakemap-docker.sh` | Start the service while preserving an existing container. |
-| `verify-shakemap-deployment.sh` | Verify `/config` and `/healthz` through public HTTP. |
+| `build-shakemap-docker.sh` | Resolve and build one immutable upstream ShakeMap release. |
+| `manage-shakemap-data.sh` | Inspect, fully validate, or explicitly provision external datasets. |
+| `prepare-shakemap-verification-data.py` | Prepare or validate a release-matched fixed verification package. |
+| `start-shakemap-docker.sh` | Start the stable service with isolated state and a read-only data mount. |
+| `verify-shakemap-image.sh` | Verify installed image identity, imports, and immutable support data. |
+| `verify-shakemap-deployment.sh` | Verify public schema, liveness, data evidence, and disabled readiness. |
 
-## Supported internal verification
+`manage-shakemap-data.sh inspect` is cheap and read-only.
+`manage-shakemap-data.sh validate` performs full pinned checksum validation and
+may take time. `manage-shakemap-data.sh provision` is the only action here that
+may alter scientific data.
 
-| Script | Purpose |
-|---|---|
-| `verify-shakemap-image.sh` | Verify image identity, generic support, imports, and modules. |
-| `prepare-shakemap-verification-data.py` | Prepare, migrate, validate, or run the California package. |
-| `install-image-support.py` | Build-time installer for pinned Natural Earth files. |
-
-The removed stage verifiers, container inspectors, and broad CI script encoded
-the obsolete start-then-configure lifecycle and development override behavior.
-The preparation report, public endpoints, image verifier, and capability tests
-replace them.
-
-Operator scripts require Python 3.10 or newer and only its standard library.
-They do not require a repository-adjacent virtual environment. Override the
-interpreter name when necessary:
+Host-side Python helpers require Python 3.10 or newer:
 
 ```bash
-SHAKEMAP_HOST_PYTHON=/path/to/python3 ./scripts/configure-shakemap.sh
+SHAKEMAP_HOST_PYTHON=/path/to/python3 ./scripts/manage-shakemap-data.sh inspect
 ```
 
-Repository development and test commands follow the separate project
-environment policy in `AGENTS.md`.
+The start helper accepts `--data DIR` for an existing exact data tree. It mounts
+that directory at `/home/sysop/runtime/shakemap/data:ro`; service-owned state
+continues to use the separately selected `--runtime` directory.

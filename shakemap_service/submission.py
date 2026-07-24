@@ -1,326 +1,189 @@
 # -*- coding: utf-8 -*-
-"""Event submission and staging foundation.
-
-Phase 03 — Event Submission and Staging.
-
-This module provides:
-
-- ``submit_event()`` — the service-layer entry point for event submission.
-- Input file staging under ``incoming/<event_id>/`` with atomic replacement.
-- Minimal input validation (event.xml required, station file required).
-- Status flow: REGISTERED → VALIDATING → QUEUED (or VALIDATION_FAILED).
-- Duplicate submission handling per contract §3.7 and §5.4.
-
-Design constraints:
-
-- ``event_id`` is the only public identifier — no ``run_id``.
-- ``requeststatus.json`` lives under
-  ``.service/events/<event_id>/`` only — never under ``incoming/``.
-- No queue worker, ShakeMap execution, product publication, or retry logic.
-- Atomic staging: no partial overwrite visible to consumers.
-"""
+"""Atomic durable submission snapshots for the internal FIFO queue."""
 from __future__ import annotations
 
-import logging
+import fcntl
+import hashlib
+import json
 import os
+import re
 import shutil
-import tempfile
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 from . import paths
 from .status import (
-    EventStatus,
     RequestStatus,
-    TERMINAL_STATUSES,
-    create_event_record,
-    read_status,
-    transition_to_queued,
-    transition_to_validating,
-    transition_to_validation_failed,
-    write_status_atomic,
-    _now_iso,
+    _fsync_directory,
+    _record_to_dict,
+    new_queued_record,
 )
 
-logger = logging.getLogger(__name__)
 
-
-# ------------------------------------------------------------------
-# Accepted input filenames (§4.2.4 MVP Input Requirements)
-# ------------------------------------------------------------------
-
-# Required: earthquake origin parameters
 REQUIRED_EVENT_FILE = "event.xml"
-
-# Required: at least one station data file in one of these formats.
-# The list is extensible — add new accepted names here.
-ACCEPTED_STATION_FILENAMES: frozenset[str] = frozenset({
-    "stationlist.json",   # GeoJSON station observations
-    "stationlist.xml",    # ShakeMap XML station observations
-    "event_dat.xml",      # ShakeMap XML station observations (legacy pyfinder format)
+ACCEPTED_STATION_FILENAMES = frozenset({
+    "stationlist.json",
+    "stationlist.xml",
+    "event_dat.xml",
 })
-
-# Optional inputs (accepted but not required for validation)
-OPTIONAL_INPUT_FILENAMES: frozenset[str] = frozenset({
-    "rupture.json",       # GeoJSON fault rupture geometry
-})
-
-# All accepted filenames for incoming submissions
-ALL_ACCEPTED_FILENAMES: frozenset[str] = (
+OPTIONAL_INPUT_FILENAMES = frozenset({"rupture.json"})
+ALL_ACCEPTED_FILENAMES = (
     frozenset({REQUIRED_EVENT_FILE})
     | ACCEPTED_STATION_FILENAMES
     | OPTIONAL_INPUT_FILENAMES
 )
+_EVENT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
-
-# ------------------------------------------------------------------
-# Submission result
-# ------------------------------------------------------------------
 
 @dataclass
 class SubmissionResult:
-    """Result of a submission attempt."""
-
     event_id: str
+    sequence: int
     status: str
-    status_path: str  # Relative path to requeststatus.json
-    replaced_previous: bool = False
+    status_path: str
     validation_errors: Optional[list[str]] = None
 
 
-# ------------------------------------------------------------------
-# Validation
-# ------------------------------------------------------------------
-
 def validate_inputs(file_names: list[str]) -> list[str]:
-    """Validate that the required input files are present.
-
-    Returns a list of validation error messages (empty if valid).
-
-    Per contract §4.2.4:
-    - ``event.xml`` is required.
-    - At least one station data file is required (one of:
-      ``stationlist.json``, ``stationlist.xml``, ``event_dat.xml``).
-    """
+    """Retain the current file-input boundary without implementing Milestone 4."""
     errors: list[str] = []
-
-    if REQUIRED_EVENT_FILE not in file_names:
-        errors.append(
-            f"Required file '{REQUIRED_EVENT_FILE}' is missing."
-        )
-
-    station_files_present = ACCEPTED_STATION_FILENAMES & set(file_names)
-    if not station_files_present:
+    names = set(file_names)
+    if REQUIRED_EVENT_FILE not in names:
+        errors.append(f"Required file '{REQUIRED_EVENT_FILE}' is missing.")
+    if not ACCEPTED_STATION_FILENAMES & names:
         accepted = ", ".join(sorted(ACCEPTED_STATION_FILENAMES))
         errors.append(
-            f"At least one station data file is required. "
-            f"Accepted filenames: {accepted}"
+            "The current pre-Milestone-4 file request requires one station file; "
+            f"accepted filenames: {accepted}"
         )
-
+    unsupported = sorted(names - ALL_ACCEPTED_FILENAMES)
+    if unsupported:
+        errors.append(f"Unsupported input filenames: {', '.join(unsupported)}")
     return errors
 
 
-# ------------------------------------------------------------------
-# Atomic staging helpers
-# ------------------------------------------------------------------
-
-def _stage_files_atomic(
-    event_id: str,
-    files: dict[str, bytes],
-) -> Path:
-    """Stage submitted files atomically under ``incoming/<event_id>/``.
-
-    Uses write-to-temporary-then-rename to prevent partial overwrites.
-    Any previous contents of ``incoming/<event_id>/`` are replaced
-    atomically.
-
-    Returns the final ``incoming/<event_id>/`` path.
-    """
-    target_dir = paths.event_incoming_dir(event_id)
-    incoming_root = paths.incoming_dir()
-    incoming_root.mkdir(parents=True, exist_ok=True)
-
-    # Write all files to a temporary directory on the same filesystem
-    # so os.rename() is atomic.
-    tmp_dir = Path(tempfile.mkdtemp(
-        dir=str(incoming_root),
-        prefix=f".{event_id}_",
-        suffix=".staging",
-    ))
-
-    try:
-        for filename, content in files.items():
-            file_path = tmp_dir / filename
-            file_path.write_bytes(content)
-
-        # Atomic swap: remove old target (if any), rename tmp → target.
-        # On POSIX, os.rename() on directories is atomic if on same FS.
-        if target_dir.exists():
-            # Move old dir aside first, then rename new, then remove old.
-            old_dir = Path(tempfile.mkdtemp(
-                dir=str(incoming_root),
-                prefix=f".{event_id}_",
-                suffix=".old",
-            ))
-            # Remove the empty temp dir so we can rename into it.
-            old_dir.rmdir()
-            os.rename(str(target_dir), str(old_dir))
-            try:
-                os.rename(str(tmp_dir), str(target_dir))
-            except BaseException:
-                # Rollback: restore old dir
-                os.rename(str(old_dir), str(target_dir))
-                raise
-            # Clean up old dir
-            shutil.rmtree(str(old_dir), ignore_errors=True)
-        else:
-            os.rename(str(tmp_dir), str(target_dir))
-
-    except BaseException:
-        # Clean up staging temp on any failure
-        shutil.rmtree(str(tmp_dir), ignore_errors=True)
-        raise
-
-    return target_dir
-
-
-# ------------------------------------------------------------------
-# Duplicate submission handling
-# ------------------------------------------------------------------
-
-def _handle_existing_event(
-    event_id: str,
-    user_id: str,
-    existing: RequestStatus,
-) -> RequestStatus:
-    """Handle a duplicate submission for an existing event_id.
-
-    Per contract §3.7:
-    - If REGISTERED/VALIDATING/QUEUED: atomically replace inputs, reset to REGISTERED.
-    - If terminal (SUCCESS/FAILED/VALIDATION_FAILED/CANCELLED/ARCHIVED):
-      transition back to REGISTERED for re-processing.
-    - If RUNNING: not handled in Phase 03 (no worker exists yet).
-    """
-    current = EventStatus(existing.status)
-
-    if current == EventStatus.RUNNING:
+def _validate_submission(event_id: str, user_id: str, files: dict[str, bytes]) -> None:
+    if not _EVENT_ID.fullmatch(event_id):
         raise ValueError(
-            f"Event '{event_id}' is currently RUNNING. "
-            f"Duplicate submission for RUNNING events is deferred to "
-            f"the queue/worker phase."
+            "event_id must be 1-128 characters using ASCII letters, digits, '.', '_' or '-'"
         )
-
-    # For non-running events, reset to REGISTERED with updated submission time.
-    now = _now_iso()
-    existing.user_id = user_id
-    existing.status = EventStatus.REGISTERED.value
-    existing.submitted_at = now
-    existing.validated_at = None
-    existing.queued_at = None
-    existing.started_at = None
-    existing.completed_at = None
-    existing.validation_errors = None
-    existing.failure_reason = None
-    existing.published_products_directory = None
-    # Preserve attempt_history and max_attempts for audit trail.
-    # Reset current_attempt for the new submission cycle.
-    existing.current_attempt = 0
-
-    write_status_atomic(event_id, existing)
-    logger.info(
-        "Duplicate submission: reset event_id=%s to REGISTERED (previous status=%s)",
-        event_id, current.value,
-    )
-    return existing
+    if not user_id or not user_id.strip():
+        raise ValueError("user_id must be non-empty")
+    if not files:
+        raise ValueError("at least one request file is required")
+    errors = validate_inputs(list(files))
+    if errors:
+        raise ValueError("; ".join(errors))
+    for name, content in files.items():
+        if Path(name).name != name or "/" in name or "\\" in name:
+            raise ValueError(f"input filename is not a safe basename: {name!r}")
+        if not isinstance(content, bytes):
+            raise ValueError(f"input {name!r} must be bytes")
 
 
-# ------------------------------------------------------------------
-# Main submission entry point
-# ------------------------------------------------------------------
+def _write_file_sync(target: Path, content: bytes) -> None:
+    with target.open("xb") as stream:
+        stream.write(content)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _write_json_sync(target: Path, data: dict) -> None:
+    payload = (json.dumps(data, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    _write_file_sync(target, payload)
+
+
+def _allocate_sequence() -> int:
+    root = paths.events_dir()
+    root.mkdir(parents=True, exist_ok=True)
+    lock_path = paths.queue_sequence_lock_file()
+    lock_path.touch(exist_ok=True)
+    with lock_path.open("r+", encoding="utf-8") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        state = paths.queue_sequence_file()
+        existing = []
+        for entry in root.iterdir():
+            if entry.name.startswith("."):
+                continue
+            try:
+                existing.append(paths.parse_queue_entry_name(entry.name))
+            except ValueError:
+                continue
+        filesystem_next = max(existing, default=0) + 1
+        if state.exists():
+            text = state.read_text(encoding="ascii").strip()
+            if not text.isascii() or not text.isdigit() or int(text) < 1:
+                raise ValueError(f"malformed queue sequence state: {state}")
+            sequence = max(int(text), filesystem_next)
+        else:
+            sequence = filesystem_next
+        temporary = state.with_name(f".next-sequence.{uuid.uuid4().hex}.tmp")
+        _write_file_sync(temporary, f"{sequence + 1}\n".encode("ascii"))
+        os.replace(temporary, state)
+        _fsync_directory(root)
+        return sequence
+
 
 def submit_event(
     event_id: str,
     user_id: str,
     files: dict[str, bytes],
+    *,
+    kind: str = "calculation",
+    requested_region: Optional[str] = None,
+    module_plan: Optional[list[str]] = None,
 ) -> SubmissionResult:
-    """Submit an event for ShakeMap processing.
+    """Durably accept one distinct queue entry.
 
-    This is the service-layer entry point for event submission.
-    It performs:
-
-    1. Creates or updates the event record (REGISTERED).
-    2. Transitions to VALIDATING.
-    3. Validates required inputs.
-    4. If valid: stages files atomically → transitions to QUEUED.
-    5. If invalid: transitions to VALIDATION_FAILED.
-
-    Parameters
-    ----------
-    event_id : str
-        Unique event identifier.
-    user_id : str
-        Identity of the requesting user/service.
-    files : dict[str, bytes]
-        Mapping of filename → file content bytes.
-
-    Returns
-    -------
-    SubmissionResult
-        Contains event_id, final status, status path reference,
-        whether a previous submission was replaced, and any
-        validation errors.
-
-    Raises
-    ------
-    ValueError
-        If event_id or user_id is empty, or if the event is RUNNING.
+    A submission is acknowledged only after its complete request snapshot and
+    status record become visible together through an atomic directory rename.
+    Sequence gaps are permitted after interrupted acceptance; ordering never
+    depends on wall-clock timestamps.
     """
-    if not event_id or not event_id.strip():
-        raise ValueError("event_id must be non-empty")
-    if not user_id or not user_id.strip():
-        raise ValueError("user_id must be non-empty")
-
-    replaced_previous = False
-
-    # Step 1: Create or update event record → REGISTERED
-    existing = read_status(event_id)
-    if existing is not None:
-        _handle_existing_event(event_id, user_id, existing)
-        replaced_previous = True
-    else:
-        create_event_record(event_id, user_id)
-
-    # Step 2: Transition to VALIDATING
-    transition_to_validating(event_id)
-
-    # Step 3: Validate inputs
-    file_names = list(files.keys())
-    errors = validate_inputs(file_names)
-
-    if errors:
-        # Step 5 (failure): Transition to VALIDATION_FAILED
-        record = transition_to_validation_failed(event_id, errors)
-        return SubmissionResult(
-            event_id=event_id,
-            status=record.status,
-            status_path=_relative_status_path(event_id),
-            replaced_previous=replaced_previous,
-            validation_errors=errors,
-        )
-
-    # Step 4 (success): Stage files atomically, then transition to QUEUED
-    _stage_files_atomic(event_id, files)
-    record = transition_to_queued(event_id)
-
+    _validate_submission(event_id, user_id, files)
+    sequence = _allocate_sequence()
+    record = new_queued_record(
+        event_id=event_id,
+        sequence=sequence,
+        user_id=user_id,
+        kind=kind,
+        requested_region=requested_region,
+        module_plan=module_plan,
+    )
+    root = paths.events_dir()
+    final = paths.queue_entry_dir(sequence)
+    temporary = root / f".pending-{paths.queue_entry_name(sequence)}-{uuid.uuid4().hex}"
+    try:
+        request = temporary / "request"
+        request.mkdir(parents=True, exist_ok=False)
+        manifest_files = []
+        for name in sorted(files):
+            _write_file_sync(request / name, files[name])
+            manifest_files.append({
+                "name": name,
+                "size_bytes": len(files[name]),
+                "sha256": hashlib.sha256(files[name]).hexdigest(),
+            })
+        _fsync_directory(request)
+        _write_json_sync(temporary / "request-manifest.json", {
+            "schema_version": 1,
+            "event_id": event_id,
+            "sequence": sequence,
+            "files": manifest_files,
+        })
+        _write_json_sync(temporary / "status.json", _record_to_dict(record))
+        _write_file_sync(temporary / "claim.lock", b"")
+        _fsync_directory(temporary)
+        os.rename(temporary, final)
+        _fsync_directory(root)
+    except BaseException:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
     return SubmissionResult(
         event_id=event_id,
+        sequence=sequence,
         status=record.status,
-        status_path=_relative_status_path(event_id),
-        replaced_previous=replaced_previous,
+        status_path=f".service/events/{paths.queue_entry_name(sequence)}/status.json",
     )
-
-
-def _relative_status_path(event_id: str) -> str:
-    """Return the contract-relative path to requeststatus.json for an event."""
-    return f".service/events/{event_id}/requeststatus.json"

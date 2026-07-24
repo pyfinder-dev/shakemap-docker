@@ -12,8 +12,8 @@ from pathlib import Path
 
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
-BUILD_SCRIPT = PROJECT_DIR / "scripts" / "build-shakemap-docker.sh"
 START_SCRIPT = PROJECT_DIR / "scripts" / "start-shakemap-docker.sh"
+ENTRYPOINT = PROJECT_DIR / "entrypoint.sh"
 
 
 class ContainerStartupTests(unittest.TestCase):
@@ -90,62 +90,64 @@ exit 0
             return []
         return self.trace.read_text(encoding="utf-8").splitlines()
 
-    def test_default_build_targets_stable_image_name(self) -> None:
-        fake_python = self.fakebin / "release-command"
-        self._write_executable(
-            fake_python,
-            """#!/usr/bin/env bash
-if [[ "$1" == "-c" ]]; then exit 0; fi
-if [[ "$3" == "resolve" ]]; then
-  printf '%s\n' v4.4.10 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa https://code.usgs.gov/ghsc/esi/shakemap.git
-  exit 0
-fi
-if [[ "$3" == "build-command" ]]; then
-  while [[ $# -gt 0 ]]; do
-    if [[ "$1" == "--image-tag" ]]; then image_tag="$2"; break; fi
-    shift
-  done
-  printf '%s\n' docker build --tag "$image_tag" .
-  exit 0
-fi
-exit 1
-""",
-        )
-        environment = self.environment.copy()
-        environment["SHAKEMAP_HOST_PYTHON"] = str(fake_python)
-        result = subprocess.run(
-            ["bash", str(BUILD_SCRIPT)],
-            cwd=PROJECT_DIR,
-            env=environment,
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(
-            any(
-                line.startswith("build --tag shakemap-docker:latest ")
-                for line in self._trace_lines()
-            )
-        )
-
     def test_default_start_uses_stable_container_and_image(self) -> None:
         result = self._start("absent")
         self.assertEqual(result.returncode, 0, result.stderr)
         run = next(line for line in self._trace_lines() if line.startswith("run "))
         self.assertIn("--name shakemap-docker", run)
         self.assertTrue(run.endswith(" shakemap-docker:latest"), run)
+        runtime = self.root / "runtime-absent"
+        self.assertTrue((runtime / "shakemap/data").is_dir())
+        self.assertIn(
+            f"-v {runtime}/shakemap/data:/home/sysop/runtime/shakemap/data:ro",
+            run,
+        )
+        combined = result.stdout + result.stderr
+        self.assertNotIn("sha256:", combined)
+        self.assertNotIn("docker run", combined)
+        self.assertNotIn("preparation", combined.lower())
         self.assertTrue(
             any(line.startswith("container inspect shakemap-docker") for line in self._trace_lines())
         )
 
-    def test_help_text_and_makefile_agree_with_defaults(self) -> None:
-        build_help = subprocess.run(
-            ["bash", str(BUILD_SCRIPT), "--help"],
+    def test_entrypoint_does_not_mutate_external_data(self) -> None:
+        source = ENTRYPOINT.read_text(encoding="utf-8")
+        self.assertNotIn("data/global/vs30", source)
+        self.assertNotIn("data/global/topo", source)
+        self.assertNotIn(".service/preparation", source)
+
+    def test_explicit_data_directory_is_mounted_read_only(self) -> None:
+        data = self.root / "operator-data"
+        data.mkdir()
+        result = subprocess.run(
+            [
+                "bash",
+                str(START_SCRIPT),
+                "--runtime",
+                str(self.root / "isolated-runtime"),
+                "--data",
+                str(data),
+                "--name",
+                "isolated-data-test",
+                "--port",
+                "19020",
+            ],
             cwd=PROJECT_DIR,
+            env=self.environment,
             capture_output=True,
             text=True,
-            check=True,
-        ).stdout
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        run = next(
+            line for line in self._trace_lines()
+            if line.startswith("run ") and "--name isolated-data-test" in line
+        )
+        self.assertIn(
+            f"-v {data}:/home/sysop/runtime/shakemap/data:ro",
+            run,
+        )
+
+    def test_help_text_and_makefile_agree_with_defaults(self) -> None:
         start_help = subprocess.run(
             ["bash", str(START_SCRIPT), "--help"],
             cwd=PROJECT_DIR,
@@ -154,7 +156,6 @@ exit 1
             check=True,
         ).stdout
         makefile = (PROJECT_DIR / "Makefile").read_text(encoding="utf-8")
-        self.assertIn("default: shakemap-docker:latest", build_help)
         self.assertIn("default: shakemap-docker", start_help)
         self.assertIn("default: shakemap-docker:latest", start_help)
         self.assertIn("IMAGE ?= shakemap-docker:latest", makefile)
