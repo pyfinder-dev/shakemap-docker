@@ -11,11 +11,8 @@ The system has four deliberately separate concerns:
 4. Managed calculation execution remains disabled until effective
    configuration resolution and the full calculation success contract exist.
 
-The existing `shakemap_service.preparation` module exposes one narrow,
-read-only inventory for the disabled API. That inventory is independent of the
-module's retained legacy preparation lifecycle, which startup does not invoke.
-
-The retained legacy module still contains preparation-container, base-snapshot,
-readiness-sentinel, and `.service/preparation` behavior. That obsolete
-lifecycle is not used by startup or inventory; its removal belongs to the
-separate Phase 0B pass.
+The `shakemap_service.preparation` module exposes the narrow read-only
+inventory used by the disabled API, explicit pinned global-data
+validation/provisioning, and retained native-product readers. It does not
+create or depend on persistent preparation state or a retained verification
+workspace.

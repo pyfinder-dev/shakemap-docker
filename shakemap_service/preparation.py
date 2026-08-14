@@ -1,19 +1,16 @@
 # -*- coding: utf-8 -*-
-"""Host and container implementation of durable pre-start runtime preparation."""
+"""Read-only data inspection, explicit provisioning, and product readers."""
 
 from __future__ import annotations
 
 import argparse
-import contextlib
 import hashlib
 import json
 import os
 import re
 import shutil
-import subprocess
 import sys
 import tempfile
-import traceback
 import urllib.request
 import uuid
 import zipfile
@@ -23,52 +20,48 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-MODULE_PLAN = ["select", "assemble", "model", "contour", "mapping", "stations", "gridxml"]
-IMAGE_STREC_DB = "/opt/shakemap-support/strec/moment_tensors.db"
-IMAGE_CARTOPY_DIR = "/opt/shakemap-support/cartopy"
-CONTAINER_RUNTIME = Path("/home/sysop/runtime")
-CONTAINER_SERVICE = CONTAINER_RUNTIME / "shakemap"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 GLOBAL_ASSETS = {
     "vs30": {
-        "relative": "shakemap/data/vs30/global_vs30.grd",
+        "label": "global Vs30 grid",
+        "relative": "global/vs30/global_vs30.grd",
         "url": "https://apps.usgs.gov/shakemap_geodata/vs30/global_vs30.grd",
         "size": 610189275,
         "sha256": "b07944c5be332c5a261777d23b3390fe8d5638f25b388b82f5dc1e98c6356011",
-        "checksum_authority": "project-verified download pin; USGS publishes no checksum alongside the file",
-        "bounds": [-180.00416666666666, -56.00416666666666, 180.00416666666666, 84.00416666666666],
+        "checksum_authority": (
+            "project-verified download pin; USGS publishes no checksum "
+            "alongside the file"
+        ),
     },
     "topography": {
-        "relative": "shakemap/data/topo/topo_30sec.grd",
+        "label": "global topography grid",
+        "relative": "global/topo/topo_30sec.grd",
         "url": "https://apps.usgs.gov/shakemap_geodata/topo/topo_30sec.grd",
         "size": 249661705,
         "sha256": "3aa02a77d56d656deae9bf4539afdb3ce1dd1b7057a67a5c7bdd0573fc97bd4c",
-        "checksum_authority": "project-verified download pin; USGS publishes no checksum alongside the file",
-        "bounds": [-180.000138888889, -90.000138888889, 179.99985967111104, 83.999860415111],
+        "checksum_authority": (
+            "project-verified download pin; USGS publishes no checksum "
+            "alongside the file"
+        ),
     },
 }
+
 SLAB2 = {
+    "label": "Slab2 archive",
     "url": "https://apps.usgs.gov/shakemap_geodata/slabs/slab2.zip",
     "size": 12028579,
     "sha256": "2258004fd3d8467e894a1bdb3cd4224a40bd3c876b4ec2e35617f265c7047360",
-    "checksum_authority": "project-verified download pin; USGS publishes no checksum alongside the file",
+    "checksum_authority": (
+        "project-verified download pin; USGS publishes no checksum alongside "
+        "the file"
+    ),
     "file_count": 108,
 }
 
 
-class PreparationError(RuntimeError):
-    """Raised when preparation cannot produce validated durable state."""
-
-
-class ProductValidationError(PreparationError):
-    """Raised when native products fail the preparation integrity gate."""
-
-    def __init__(self, kind: str, evidence: dict[str, Any]):
-        self.kind = kind
-        self.evidence = evidence
-        failures = "; ".join(evidence.get("errors", [])) or "unknown product validation failure"
-        super().__init__(f"{kind} product validation failed: {failures}")
+class DataProvisioningError(RuntimeError):
+    """Raised when an explicit data operation cannot complete safely."""
 
 
 def inspect_data_assets(data_root: Path) -> dict[str, Any]:
@@ -126,10 +119,6 @@ def inspect_data_assets(data_root: Path) -> dict[str, Any]:
     }
 
 
-def utc_now() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-
-
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -140,7 +129,9 @@ def sha256(path: Path) -> str:
 
 def atomic_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    handle, temporary_text = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    handle, temporary_text = tempfile.mkstemp(
+        prefix=f".{path.name}.", dir=path.parent
+    )
     temporary = Path(temporary_text)
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as stream:
@@ -154,35 +145,49 @@ def atomic_json(path: Path, value: Any) -> None:
         raise
 
 
-def file_record(path: Path, *, source: dict[str, Any] | None = None) -> dict[str, Any]:
-    record = {"path": str(path), "size": path.stat().st_size, "sha256": sha256(path)}
+def file_record(
+    path: Path, *, source: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    record = {
+        "path": str(path),
+        "size": path.stat().st_size,
+        "sha256": sha256(path),
+    }
     if source:
-        record.update({
-            "source_url": source["url"],
-            "checksum_authority": source["checksum_authority"],
-            "expected_size": source["size"],
-            "expected_sha256": source["sha256"],
-        })
+        record.update(
+            {
+                "source_url": source["url"],
+                "checksum_authority": source["checksum_authority"],
+                "expected_size": source["size"],
+                "expected_sha256": source["sha256"],
+            }
+        )
     return record
 
 
-def validate_pinned_file(path: Path, spec: dict[str, Any]) -> tuple[bool, str]:
+def validate_pinned_file(
+    path: Path, spec: dict[str, Any]
+) -> tuple[bool, str]:
     if not path.is_file():
         return False, "missing"
-    if path.stat().st_size != spec["size"]:
-        return False, f"size {path.stat().st_size} != {spec['size']}"
-    with path.open("rb") as stream:
-        signature = stream.read(8)
-    if signature != b"\x89HDF\r\n\x1a\n":
-        return False, "not an HDF5/netCDF4 grid"
-    actual = sha256(path)
-    if actual != spec["sha256"]:
-        return False, f"SHA-256 {actual} != {spec['sha256']}"
+    try:
+        if path.stat().st_size != spec["size"]:
+            return False, "size mismatch"
+        with path.open("rb") as stream:
+            signature = stream.read(8)
+        if signature != b"\x89HDF\r\n\x1a\n":
+            return False, "not an HDF5/netCDF4 grid"
+        if sha256(path) != spec["sha256"]:
+            return False, "checksum mismatch"
+    except OSError as exc:
+        return False, f"unreadable: {exc}"
     return True, "valid pinned file"
 
 
 def download(url: str, destination: Path) -> None:
-    request = urllib.request.Request(url, headers={"User-Agent": "shakemap-docker-runtime-preparation/1"})
+    request = urllib.request.Request(
+        url, headers={"User-Agent": "shakemap-docker-data-provisioning/1"}
+    )
     with urllib.request.urlopen(request, timeout=180) as response:
         with destination.open("wb") as output:
             shutil.copyfileobj(response, output, length=1024 * 1024)
@@ -194,31 +199,68 @@ def provision_file(
     source: Path | None,
     allow_download: bool,
 ) -> dict[str, Any]:
+    """Validate then atomically install one pinned file at its target."""
+    label = str(spec.get("label", target.name))
     valid, reason = validate_pinned_file(target, spec)
     if valid:
-        return {"action": "reused", "validation": reason, **file_record(target, source=spec)}
+        return {
+            "action": "reused",
+            "validation": reason,
+            **file_record(target, source=spec),
+        }
+
     target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_name(f".{target.name}.prepare-{uuid.uuid4().hex}")
+    temporary = target.with_name(f".{target.name}.install-{uuid.uuid4().hex}")
     try:
         if source is not None:
             if not source.is_file():
-                raise PreparationError(f"manual source is missing: {source}")
-            shutil.copyfile(source, temporary)
+                raise DataProvisioningError(
+                    f"{label}: manual source is missing at {source}; supply a "
+                    "readable source file or allow download"
+                )
+            try:
+                shutil.copyfile(source, temporary)
+            except OSError as exc:
+                raise DataProvisioningError(
+                    f"{label}: could not import {source} to target {target}: "
+                    f"{exc}; correct source permissions or choose another file"
+                ) from exc
             action = "imported"
         elif allow_download:
-            download(spec["url"], temporary)
+            try:
+                download(spec["url"], temporary)
+            except OSError as exc:
+                raise DataProvisioningError(
+                    f"{label}: download for target {target} failed from "
+                    f"{spec['url']}: {exc}; retry or supply a manual source"
+                ) from exc
             action = "downloaded"
         else:
-            raise PreparationError(f"{target} is {reason}; download disabled and no manual source supplied")
-        replacement_valid, replacement_reason = validate_pinned_file(temporary, spec)
+            raise DataProvisioningError(
+                f"{label}: target {target} is {reason}; supply a valid manual "
+                "source or rerun with download enabled"
+            )
+
+        replacement_valid, replacement_reason = validate_pinned_file(
+            temporary, spec
+        )
         if not replacement_valid:
-            raise PreparationError(f"replacement for {target} is invalid: {replacement_reason}")
+            raise DataProvisioningError(
+                f"{label}: replacement for {target} is invalid "
+                f"({replacement_reason}); obtain the pinned asset and retry"
+            )
+
         preserved = None
         if target.exists():
-            preserved = target.with_name(f"{target.name}.invalid-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}")
+            preserved = target.with_name(
+                f"{target.name}.invalid-"
+                f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+            )
             if preserved.exists():
-                preserved = target.with_name(f"{preserved.name}-{uuid.uuid4().hex[:8]}")
-            os.replace(target, preserved)
+                preserved = target.with_name(
+                    f"{preserved.name}-{uuid.uuid4().hex[:8]}"
+                )
+            shutil.copyfile(target, preserved)
         os.replace(temporary, target)
         return {
             "action": action,
@@ -231,7 +273,9 @@ def provision_file(
         raise
 
 
-def validate_slab_directory(root: Path) -> tuple[bool, str, dict[str, Any] | None]:
+def validate_slab_directory(
+    root: Path,
+) -> tuple[bool, str, dict[str, Any] | None]:
     manifest_path = root.parent / "slab2-manifest.json"
     if not root.is_dir() or not manifest_path.is_file():
         return False, "missing slab directory or manifest", None
@@ -243,136 +287,212 @@ def validate_slab_directory(root: Path) -> tuple[bool, str, dict[str, Any] | Non
         if len(records) != SLAB2["file_count"]:
             return False, "slab file count differs", manifest
         for record in records:
-            path = root / record["path"]
-            if not path.is_file() or path.stat().st_size != record["size"] or sha256(path) != record["sha256"]:
+            relative = Path(record["path"])
+            if relative.name != record["path"]:
+                return False, f"unsafe slab manifest path: {record['path']}", manifest
+            path = root / relative
+            if (
+                not path.is_file()
+                or path.stat().st_size != record["size"]
+                or sha256(path) != record["sha256"]
+            ):
                 return False, f"slab file invalid: {record['path']}", manifest
     except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
         return False, f"slab manifest unreadable: {exc}", None
     return True, "valid extracted Slab2 package", manifest
 
 
-def provision_slabs(runtime: Path, source: Path | None, allow_download: bool) -> dict[str, Any]:
-    strec_root = runtime / "shakemap/data/global/strec"
+def provision_slabs(
+    data_root: Path, source: Path | None, allow_download: bool
+) -> dict[str, Any]:
+    """Validate and install Slab2 below ``global/strec/slabs``."""
+    strec_root = data_root / "global/strec"
     target = strec_root / "slabs"
     valid, reason, manifest = validate_slab_directory(target)
     if valid:
         return {"action": "reused", "validation": reason, "manifest": manifest}
+
     strec_root.mkdir(parents=True, exist_ok=True)
     archive = strec_root / f".slab2-{uuid.uuid4().hex}.zip"
-    temporary = strec_root / f".slabs-prepare-{uuid.uuid4().hex}"
+    temporary = strec_root / f".slabs-install-{uuid.uuid4().hex}"
+    manifest_temporary: Path | None = None
     try:
-        if source:
+        if source is not None:
             if not source.is_file():
-                raise PreparationError(f"manual Slab2 archive is missing: {source}")
-            shutil.copyfile(source, archive)
+                raise DataProvisioningError(
+                    f"Slab2 archive: manual source is missing at {source}; "
+                    "supply a readable slab2.zip or allow download"
+                )
+            try:
+                shutil.copyfile(source, archive)
+            except OSError as exc:
+                raise DataProvisioningError(
+                    f"Slab2 archive: could not import {source} for target "
+                    f"{target}: {exc}; correct source permissions or choose "
+                    "another archive"
+                ) from exc
             action = "imported"
         elif allow_download:
-            download(SLAB2["url"], archive)
+            try:
+                download(SLAB2["url"], archive)
+            except OSError as exc:
+                raise DataProvisioningError(
+                    f"Slab2 archive: download for target {target} failed from "
+                    f"{SLAB2['url']}: {exc}; retry or supply a manual archive"
+                ) from exc
             action = "downloaded"
         else:
-            raise PreparationError(f"Slab2 is {reason}; download disabled and no manual archive supplied")
-        if archive.stat().st_size != SLAB2["size"] or sha256(archive) != SLAB2["sha256"]:
-            raise PreparationError("Slab2 archive does not match the pinned size and SHA-256")
+            raise DataProvisioningError(
+                f"Slab2 slabs: target {target} is {reason}; supply a valid "
+                "slab2.zip or rerun with download enabled"
+            )
+
+        if (
+            archive.stat().st_size != SLAB2["size"]
+            or sha256(archive) != SLAB2["sha256"]
+        ):
+            raise DataProvisioningError(
+                f"Slab2 archive: source for {target} does not match the pinned "
+                "asset; obtain the supported archive and retry"
+            )
+
         temporary.mkdir()
-        with zipfile.ZipFile(archive) as bundle:
-            names = bundle.namelist()
-            if len(names) != SLAB2["file_count"] or any(Path(name).name != name for name in names):
-                raise PreparationError("Slab2 archive layout is unexpected or unsafe")
-            bundle.extractall(temporary)
+        try:
+            with zipfile.ZipFile(archive) as bundle:
+                names = bundle.namelist()
+                if (
+                    len(names) != SLAB2["file_count"]
+                    or any(Path(name).name != name for name in names)
+                ):
+                    raise DataProvisioningError(
+                        f"Slab2 archive: source for {target} has an unexpected "
+                        "or unsafe layout; obtain the supported archive and "
+                        "retry"
+                    )
+                bundle.extractall(temporary)
+        except zipfile.BadZipFile as exc:
+            raise DataProvisioningError(
+                f"Slab2 archive: source for {target} is not a readable ZIP: "
+                f"{exc}; obtain the supported archive and retry"
+            ) from exc
+
         records = [
-            {"path": path.name, "size": path.stat().st_size, "sha256": sha256(path)}
-            for path in sorted(temporary.iterdir()) if path.is_file()
+            {
+                "path": path.name,
+                "size": path.stat().st_size,
+                "sha256": sha256(path),
+            }
+            for path in sorted(temporary.iterdir())
+            if path.is_file()
         ]
         new_manifest = {
             "schema_version": 1,
-            "prepared_at_utc": utc_now(),
+            "provisioned_at_utc": datetime.now(timezone.utc)
+            .replace(microsecond=0)
+            .isoformat(),
             "source": SLAB2,
             "files": records,
         }
-        manifest_temp = strec_root / f".slab2-manifest-{uuid.uuid4().hex}.json"
-        atomic_json(manifest_temp, new_manifest)
+        manifest_temporary = strec_root / (
+            f".slab2-manifest-install-{uuid.uuid4().hex}.json"
+        )
+        atomic_json(manifest_temporary, new_manifest)
+
         preserved = None
         if target.exists():
-            preserved = strec_root / f"slabs.invalid-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}"
+            preserved = strec_root / (
+                "slabs.invalid-"
+                f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-"
+                f"{uuid.uuid4().hex[:8]}"
+            )
             os.replace(target, preserved)
         os.replace(temporary, target)
-        os.replace(manifest_temp, strec_root / "slab2-manifest.json")
-        return {"action": action, "previous_validation": reason, "preserved_invalid_path": str(preserved) if preserved else None, "manifest": new_manifest}
+        os.replace(manifest_temporary, strec_root / "slab2-manifest.json")
+        manifest_temporary = None
+        return {
+            "action": action,
+            "previous_validation": reason,
+            "preserved_invalid_path": str(preserved) if preserved else None,
+            "manifest": new_manifest,
+        }
     finally:
         archive.unlink(missing_ok=True)
         if temporary.exists():
             shutil.rmtree(temporary)
+        if manifest_temporary is not None:
+            manifest_temporary.unlink(missing_ok=True)
 
 
-def ensure_host_permissions(runtime: Path) -> dict[str, Any]:
-    required = [
-        "shakemap/incoming", "shakemap/products", "shakemap/logs",
-        "shakemap/data", "shakemap/.service/events", "shakemap/.service/work",
-        "shakemap/.service/archive", "shakemap/.service/preparation",
-    ]
-    checks = []
-    for relative in required:
-        directory = runtime / relative
-        directory.mkdir(parents=True, exist_ok=True)
-        probe = directory / f".permission-{uuid.uuid4().hex}"
-        try:
-            probe.write_text("permission probe\n", encoding="utf-8")
-            checks.append({"path": str(directory), "writable": True})
-        except OSError as exc:
-            raise PreparationError(f"host path is not writable: {directory}: {exc}") from exc
-        finally:
-            probe.unlink(missing_ok=True)
-    return {"checks": checks}
-
-
-def docker_prepare(runtime: Path, image: str, fixture: Path, package: Path) -> dict[str, Any]:
-    run_id = f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:10]}"
-    name = f"shakemap-prepare-{uuid.uuid4().hex[:12]}"
-    command = [
-        "docker", "run", "--rm", "--name", name, "--network", "none",
-        "-v", f"{runtime.resolve()}:{CONTAINER_RUNTIME}",
-        "-v", f"{(runtime / 'shakemap/data').resolve()}:{CONTAINER_SERVICE / 'data'}:ro",
-        "-v", f"{fixture.resolve()}:/verification/request:ro",
-        "-v", f"{package.resolve()}:/verification/california:ro",
-        "--entrypoint", "python", image, "-m", "shakemap_service.preparation",
-        "container-prepare", "--run-id", run_id,
-    ]
-    result = subprocess.run(command, text=True, capture_output=True, check=False)
-    attempts = runtime / "shakemap/.service/preparation/attempts"
-    attempts.mkdir(parents=True, exist_ok=True)
-    (attempts / f"{run_id}.host.stdout.log").write_text(result.stdout, encoding="utf-8")
-    (attempts / f"{run_id}.host.stderr.log").write_text(result.stderr, encoding="utf-8")
-    attempt_path = attempts / f"{run_id}.json"
-    if not attempt_path.is_file():
-        raise PreparationError(f"preparation container exited {result.returncode} without a durable attempt record: {result.stderr.strip()}")
-    attempt = json.loads(attempt_path.read_text(encoding="utf-8"))
-    if result.returncode != 0 or not attempt.get("ready"):
-        raise PreparationError(f"preparation container failed; evidence: {attempt_path}")
-    return attempt
-
-
-def host_prepare(args: argparse.Namespace) -> int:
-    runtime = args.runtime.resolve()
-    host_permissions = ensure_host_permissions(runtime)
+def validate_pinned_global_assets(data_root: Path) -> dict[str, Any]:
+    """Check only pinned byte identity at the contracted global-data paths."""
     assets = {}
-    manual = {"vs30": args.vs30_source, "topography": args.topo_source}
     for name, spec in GLOBAL_ASSETS.items():
-        target = runtime / spec["relative"]
-        assets[name] = provision_file(target, spec, manual[name], not args.no_download)
-    slabs = provision_slabs(runtime, args.slab_source, not args.no_download)
-    attempt = docker_prepare(runtime, args.image, args.fixture, args.california_package)
-    print(json.dumps({"host_permissions": host_permissions, "global_assets": assets, "slabs": slabs, "preparation": attempt}, indent=2, sort_keys=True))
-    return 0
+        path = data_root / spec["relative"]
+        valid, reason = validate_pinned_file(path, spec)
+        assets[name] = {
+            "path": str(path),
+            "valid": valid,
+            "reason": reason,
+            "corrective_action": (
+                None
+                if valid
+                else "provision the pinned asset or place a valid manual copy "
+                "at this path"
+            ),
+        }
+
+    slab_path = data_root / "global/strec/slabs"
+    slab_valid, slab_reason, manifest = validate_slab_directory(slab_path)
+    pinned_integrity_valid = (
+        all(item["valid"] for item in assets.values()) and slab_valid
+    )
+    return {
+        "validation_scope": "pinned_content_integrity",
+        "global_assets": assets,
+        "slabs": {
+            "path": str(slab_path),
+            "valid": slab_valid,
+            "reason": slab_reason,
+            "manifest": manifest,
+            "corrective_action": (
+                None
+                if slab_valid
+                else "provision the pinned Slab2 archive or place a valid "
+                "slab tree and manifest at this path"
+            ),
+        },
+        "pinned_integrity_valid": pinned_integrity_valid,
+    }
 
 
-def inventory(root: Path) -> list[dict[str, Any]]:
-    return [
-        {"path": path.relative_to(root).as_posix(), "size": path.stat().st_size, "sha256": sha256(path)}
-        for path in sorted(root.rglob("*")) if path.is_file()
-    ]
+def provision_global_data(
+    data_root: Path,
+    *,
+    vs30_source: Path | None,
+    topo_source: Path | None,
+    slab_source: Path | None,
+    allow_download: bool,
+) -> dict[str, Any]:
+    """Explicitly provision pinned global data at contracted destinations."""
+    manual = {"vs30": vs30_source, "topography": topo_source}
+    assets = {
+        name: provision_file(
+            data_root / spec["relative"],
+            spec,
+            manual[name],
+            allow_download,
+        )
+        for name, spec in GLOBAL_ASSETS.items()
+    }
+    return {
+        "global_assets": assets,
+        "slabs": provision_slabs(data_root, slab_source, allow_download),
+    }
 
 
-def validate_composed_image(path: Path, *, minimum_height_width_ratio: float = 0.5) -> dict[str, Any]:
+def validate_composed_image(
+    path: Path, *, minimum_height_width_ratio: float = 0.5
+) -> dict[str, Any]:
     """Validate that a required map is readable and not a legend-only strip."""
     record: dict[str, Any] = {
         "path": str(path),
@@ -414,14 +534,28 @@ def validate_composed_image(path: Path, *, minimum_height_width_ratio: float = 0
                     continue
                 if offset + 2 > len(data):
                     raise ValueError("truncated JPEG segment")
-                length = int.from_bytes(data[offset:offset + 2], "big")
+                length = int.from_bytes(data[offset : offset + 2], "big")
                 if length < 2 or offset + length > len(data):
                     raise ValueError("invalid JPEG segment length")
-                if marker in {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}:
+                if marker in {
+                    0xC0,
+                    0xC1,
+                    0xC2,
+                    0xC3,
+                    0xC5,
+                    0xC6,
+                    0xC7,
+                    0xC9,
+                    0xCA,
+                    0xCB,
+                    0xCD,
+                    0xCE,
+                    0xCF,
+                }:
                     if length < 7:
                         raise ValueError("invalid JPEG frame header")
-                    height = int.from_bytes(data[offset + 3:offset + 5], "big")
-                    width = int.from_bytes(data[offset + 5:offset + 7], "big")
+                    height = int.from_bytes(data[offset + 3 : offset + 5], "big")
+                    width = int.from_bytes(data[offset + 5 : offset + 7], "big")
                 offset += length
             if not saw_scan or width <= 0 or height <= 0:
                 raise ValueError("JPEG has no readable frame and scan structure")
@@ -429,6 +563,7 @@ def validate_composed_image(path: Path, *, minimum_height_width_ratio: float = 0
     except Exception as exc:
         record["reason"] = f"image is unreadable: {type(exc).__name__}: {exc}"
         return record
+
     ratio = height / width if width else 0.0
     record.update(
         {
@@ -447,11 +582,15 @@ def validate_composed_image(path: Path, *, minimum_height_width_ratio: float = 0
         )
     else:
         record["passed"] = True
-        record["reason"] = "readable composed map with spatial-panel-compatible aspect"
+        record["reason"] = (
+            "readable composed map with spatial-panel-compatible aspect"
+        )
     return record
 
 
-def _validate_pdf(path: Path, *, minimum_height_width_ratio: float = 0.5) -> dict[str, Any]:
+def _validate_pdf(
+    path: Path, *, minimum_height_width_ratio: float = 0.5
+) -> dict[str, Any]:
     record: dict[str, Any] = {
         "path": str(path),
         "minimum_height_width_ratio": minimum_height_width_ratio,
@@ -470,7 +609,15 @@ def _validate_pdf(path: Path, *, minimum_height_width_ratio: float = 0.5) -> dic
         return record
     number = rb"[-+]?(?:\d+(?:\.\d*)?|\.\d+)"
     media_box = re.search(
-        rb"/MediaBox\s*\[\s*(" + number + rb")\s+(" + number + rb")\s+(" + number + rb")\s+(" + number + rb")\s*\]",
+        rb"/MediaBox\s*\[\s*("
+        + number
+        + rb")\s+("
+        + number
+        + rb")\s+("
+        + number
+        + rb")\s+("
+        + number
+        + rb")\s*\]",
         data,
     )
     if media_box is None:
@@ -492,16 +639,26 @@ def _validate_pdf(path: Path, *, minimum_height_width_ratio: float = 0.5) -> dic
         record["reason"] = "PDF page dimensions are not positive"
     elif ratio < minimum_height_width_ratio:
         record["reason"] = (
-            "PDF page aspect is incompatible with the release mapping figure and "
-            "matches a legend/key-only strip"
+            "PDF page aspect is incompatible with the release mapping figure "
+            "and matches a legend/key-only strip"
         )
     else:
-        record.update({"passed": True, "reason": "readable composed map PDF with spatial-panel-compatible aspect"})
+        record.update(
+            {
+                "passed": True,
+                "reason": (
+                    "readable composed map PDF with "
+                    "spatial-panel-compatible aspect"
+                ),
+            }
+        )
     return record
 
 
-def validate_native_products(products: Path, expected_event_id: str) -> dict[str, Any]:
-    """Validate release-derived mapping and structured products for preparation."""
+def validate_native_products(
+    products: Path, expected_event_id: str
+) -> dict[str, Any]:
+    """Read and operationally validate native structured and map products."""
     from esi_utils_io.smcontainers import ShakeMapOutputContainer
     from esi_shakelib.utils.imt_string import oq_to_file
     from PIL import Image
@@ -521,15 +678,22 @@ def validate_native_products(products: Path, expected_event_id: str) -> dict[str
         metadata = container.getMetadata()
         hdf_event_id = str(metadata["input"]["event_information"]["event_id"])
         if hdf_event_id != expected_event_id:
-            raise ValueError(f"HDF event_id {hdf_event_id!r} != {expected_event_id!r}")
+            raise ValueError(
+                f"HDF event_id {hdf_event_id!r} != {expected_event_id!r}"
+            )
         if container.getDataType() != "grid":
-            raise ValueError(f"HDF data type is {container.getDataType()!r}, expected 'grid'")
+            raise ValueError(
+                f"HDF data type is {container.getDataType()!r}, expected 'grid'"
+            )
         imts = sorted({item.split("/", 1)[1] for item in container.getIMTs()})
         if "MMI" not in imts:
-            raise ValueError("HDF has no MMI grid required by the fixed mapping plan")
+            raise ValueError("HDF has no MMI grid required by the mapping plan")
         component = container.getComponents("MMI")[0]
         mmi_metadata = container.getIMTGrids("MMI", component)["mean_metadata"]
-        expected_overlay_size = (int(mmi_metadata["nx"]), int(mmi_metadata["ny"]))
+        expected_overlay_size = (
+            int(mmi_metadata["nx"]),
+            int(mmi_metadata["ny"]),
+        )
         evidence["checks"]["shake_result_hdf"] = {
             "passed": True,
             "path": str(hdf_path),
@@ -544,7 +708,9 @@ def validate_native_products(products: Path, expected_event_id: str) -> dict[str
             "path": str(hdf_path),
             "reason": f"{type(exc).__name__}: {exc}",
         }
-        evidence["errors"].append(f"shake_result.hdf: {type(exc).__name__}: {exc}")
+        evidence["errors"].append(
+            f"shake_result.hdf: {type(exc).__name__}: {exc}"
+        )
         imts = []
         expected_overlay_size = None
     finally:
@@ -553,14 +719,17 @@ def validate_native_products(products: Path, expected_event_id: str) -> dict[str
 
     stems = ["intensity" if imt == "MMI" else oq_to_file(imt) for imt in imts]
     image_checks = {
-        stem: validate_composed_image(products / f"{stem}.jpg") for stem in stems
+        stem: validate_composed_image(products / f"{stem}.jpg")
+        for stem in stems
     }
     evidence["checks"]["composed_images"] = image_checks
     for stem, check in image_checks.items():
         if not check["passed"]:
             evidence["errors"].append(f"{stem}.jpg: {check['reason']}")
 
-    pdf_checks = {stem: _validate_pdf(products / f"{stem}.pdf") for stem in stems}
+    pdf_checks = {
+        stem: _validate_pdf(products / f"{stem}.pdf") for stem in stems
+    }
     evidence["checks"]["composed_pdfs"] = pdf_checks
     for stem, check in pdf_checks.items():
         if not check["passed"]:
@@ -577,12 +746,17 @@ def validate_native_products(products: Path, expected_event_id: str) -> dict[str
         overlay_check.update({"size": list(overlay_size)})
         if expected_overlay_size is None or overlay_size != expected_overlay_size:
             raise ValueError(
-                f"overlay size {overlay_size} does not match HDF MMI grid {expected_overlay_size}"
+                f"overlay size {overlay_size} does not match HDF MMI grid "
+                f"{expected_overlay_size}"
             )
-        overlay_check.update({"passed": True, "reason": "readable spatial overlay matches HDF grid"})
+        overlay_check.update(
+            {"passed": True, "reason": "readable spatial overlay matches HDF grid"}
+        )
     except Exception as exc:
         overlay_check["reason"] = f"{type(exc).__name__}: {exc}"
-        evidence["errors"].append(f"intensity_overlay.png: {overlay_check['reason']}")
+        evidence["errors"].append(
+            f"intensity_overlay.png: {overlay_check['reason']}"
+        )
     evidence["checks"]["spatial_overlay"] = overlay_check
 
     json_checks: dict[str, Any] = {}
@@ -593,11 +767,15 @@ def validate_native_products(products: Path, expected_event_id: str) -> dict[str
         check: dict[str, Any] = {"path": str(path), "passed": False}
         try:
             value = json.loads(path.read_text(encoding="utf-8"))
-            if value.get("type") != "FeatureCollection" or not isinstance(value.get("features"), list):
+            if value.get("type") != "FeatureCollection" or not isinstance(
+                value.get("features"), list
+            ):
                 raise ValueError("expected a GeoJSON FeatureCollection")
             exposed_event = value.get("metadata", {}).get("eventid")
             if exposed_event is not None and exposed_event != expected_event_id:
-                raise ValueError(f"eventid {exposed_event!r} != {expected_event_id!r}")
+                raise ValueError(
+                    f"eventid {exposed_event!r} != {expected_event_id!r}"
+                )
             check.update(
                 {
                     "passed": True,
@@ -617,10 +795,16 @@ def validate_native_products(products: Path, expected_event_id: str) -> dict[str
         check = {"path": str(path), "passed": False}
         try:
             root = ET.parse(path).getroot()
-            event_id = root.attrib.get("event_id") or root.attrib.get("shakemap_id")
+            event_id = root.attrib.get("event_id") or root.attrib.get(
+                "shakemap_id"
+            )
             if event_id != expected_event_id:
-                raise ValueError(f"event_id {event_id!r} != {expected_event_id!r}")
-            check.update({"passed": True, "event_id": event_id, "root": root.tag})
+                raise ValueError(
+                    f"event_id {event_id!r} != {expected_event_id!r}"
+                )
+            check.update(
+                {"passed": True, "event_id": event_id, "root": root.tag}
+            )
         except Exception as exc:
             check["reason"] = f"{type(exc).__name__}: {exc}"
             evidence["errors"].append(f"{name}: {check['reason']}")
@@ -632,436 +816,51 @@ def validate_native_products(products: Path, expected_event_id: str) -> dict[str
     return evidence
 
 
-def patch_line(path: Path, key: str, value: str) -> None:
-    text = path.read_text(encoding="utf-8")
-    pattern = re.compile(rf"^(\s*{re.escape(key)}\s*=).*$", re.MULTILINE)
-    replaced, count = pattern.subn(rf"\1 {value}", text, count=1)
-    if count != 1:
-        raise PreparationError(f"could not set {key} in {path}")
-    path.write_text(replaced, encoding="utf-8")
-
-
-def write_strec_config(path: Path, slab_dir: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        "[DATA]\n"
-        f"folder = {Path(IMAGE_STREC_DB).parent}\n"
-        f"slabfolder = {slab_dir}\n"
-        f"dbfile = {IMAGE_STREC_DB}\n"
-        "longest_axis = 3556.9858168964675\n\n"
-        "[CONSTANTS]\nminradial_disthist = 0.01\nmaxradial_disthist = 1.0\n"
-        "minradial_distcomp = 0.5\nmaxradial_distcomp = 1.0\nstep_distcomp = 0.1\n"
-        "depth_rangecomp = 10\nminno_comp = 3\ndefault_szdip = 17\n"
-        "dstrike_interf = 30\nddip_interf = 30\ndlambda = 60\n"
-        "ddepth_interf = 20\nddepth_intra = 10\n",
-        encoding="utf-8",
-    )
-
-
-def parse_module_order(log: str) -> tuple[list[str], list[str]]:
-    separator = r"(?:;| -- )"
-    running = re.findall(rf"shake\.main{separator}Running command ([A-Za-z0-9_-]+)", log)
-    completed = re.findall(rf"shake\.main{separator}Finished running command ([A-Za-z0-9_-]+):", log)
-    return running, completed
-
-
-def create_profile(home: Path, name: str) -> Path:
-    env = {**os.environ, "HOME": str(home), "XDG_CACHE_HOME": str(home / ".cache"), "MPLCONFIGDIR": str(home / ".config/matplotlib")}
-    home.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["sm_profile", "-c", name, "-a", "-n"], env=env, check=True, text=True, capture_output=True)
-    subprocess.run(["shake", "init"], env=env, check=True, text=True, capture_output=True)
-    return home / "shakemap_profiles" / name
-
-
-@contextlib.contextmanager
-def profile_environment(home: Path):
-    values = {
-        "HOME": str(home),
-        "XDG_CACHE_HOME": str(home / ".cache"),
-        "MPLCONFIGDIR": str(home / ".config/matplotlib"),
-    }
-    previous = {key: os.environ.get(key) for key in values}
-    os.environ.update(values)
-    try:
-        yield
-    finally:
-        for key, value in previous.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
-
-
-def validate_native_config(config_dir: Path, profile_home: Path) -> dict[str, Any]:
-    from configobj import ConfigObj
-    from shakemap_modules.utils.config import get_configspec, get_custom_validator
-    from shakemap_modules.utils.layers import validate_config as validate_select_config
-
-    checked = []
-    with profile_environment(profile_home):
-        for name in ("logging", "model", "modules", "products", "select", "shake"):
-            spec = get_configspec(name)
-            config = ConfigObj(str(config_dir / f"{name}.conf"), configspec=str(spec), interpolation=False)
-            if name == "select":
-                validate_select_config(
-                    config,
-                    str(config_dir.parent),
-                    str(profile_home / "shakemap_profiles/global-base/data"),
-                    str(profile_home / "shakemap_data"),
-                )
-            else:
-                result = config.validate(get_custom_validator(), preserve_errors=True)
-                if result is not True:
-                    raise PreparationError(f"native schema validation failed for {name}.conf: {result}")
-            checked.append(name)
-    ConfigObj(str(config_dir / "gmpe_sets.conf"), interpolation=False)
-    checked.append("gmpe_sets")
-    return {"validated_configs": checked}
-
-
-def validate_grids() -> dict[str, Any]:
-    import rasterio
-
-    results = {}
-    for name, spec in GLOBAL_ASSETS.items():
-        path = CONTAINER_RUNTIME / spec["relative"]
-        with rasterio.open(path) as dataset:
-            bounds = list(dataset.bounds)
-            results[name] = {
-                "path": str(path), "driver": dataset.driver, "width": dataset.width,
-                "height": dataset.height, "dtype": list(dataset.dtypes), "bounds": bounds,
-            }
-        if any(abs(actual - expected) > 1e-6 for actual, expected in zip(bounds, spec["bounds"])):
-            raise PreparationError(f"{name} grid bounds differ from the validated release input")
-    event = ET.parse(Path("/verification/request") / "event.xml").getroot()
-    lon, lat = float(event.attrib["lon"]), float(event.attrib["lat"])
-    for name, result in results.items():
-        xmin, ymin, xmax, ymax = result["bounds"]
-        if not (xmin <= lon <= xmax and ymin <= lat <= ymax):
-            raise PreparationError(f"SCENARIO lies outside {name} grid")
-    results["scenario"] = {"longitude": lon, "latitude": lat, "covered": True}
-    return results
-
-
-def validate_slabs_native() -> dict[str, Any]:
-    import rasterio
-
-    root = CONTAINER_SERVICE / "data/global/strec/slabs"
-    files = sorted(root.glob("*.grd"))
-    if len(files) != SLAB2["file_count"]:
-        raise PreparationError(f"expected {SLAB2['file_count']} Slab2 grids, found {len(files)}")
-    groups: dict[str, set[str]] = {}
-    for path in files:
-        parts = path.name.split("_")
-        if len(parts) < 4:
-            raise PreparationError(f"unexpected Slab2 filename: {path.name}")
-        groups.setdefault(parts[0], set()).add(parts[2])
-        with rasterio.open(path) as dataset:
-            if dataset.width <= 0 or dataset.height <= 0 or dataset.count != 1:
-                raise PreparationError(f"unreadable Slab2 grid dimensions: {path}")
-    incomplete = {name: sorted(values) for name, values in groups.items() if values != {"dep", "dip", "str", "unc"}}
-    if incomplete:
-        raise PreparationError(f"incomplete Slab2 region groups: {incomplete}")
-    return {"path": str(root), "file_count": len(files), "region_count": len(groups), "all_grids_readable": True}
-
-
-def prepare_base(attempt_root: Path) -> tuple[Path, dict[str, Any]]:
-    profile = create_profile(attempt_root / "base-home", "global-base")
-    install = profile / "install"
-    patch_line(install / "config/model.conf", "vs30file", str(CONTAINER_SERVICE / "data/vs30/global_vs30.grd"))
-    patch_line(install / "config/products.conf", "topography", str(CONTAINER_SERVICE / "data/topo/topo_30sec.grd"))
-    snapshot = attempt_root / "global-base"
-    (snapshot / "install/data").mkdir(parents=True)
-    shutil.copytree(install / "config", snapshot / "install/config")
-    shutil.copytree(install / "data/layers", snapshot / "install/data/layers")
-    write_strec_config(snapshot / "strec/config.ini", str(CONTAINER_SERVICE / "data/global/strec/slabs"))
-    profiles = "profile = global-base\n\n[profiles]\n    [[global-base]]\n        install_path = <PRIVATE_INSTALL>\n        data_path = <PRIVATE_DATA>\n"
-    (snapshot / "profiles.conf.template").write_text(profiles, encoding="utf-8")
-    validation = validate_native_config(snapshot / "install/config", attempt_root / "base-home")
-    return snapshot, validation
-
-
-def run_scenario(attempt_root: Path, kind: str, source_install: Path, scientific_links: dict[str, str], slab_dir: str) -> dict[str, Any]:
-    run_root = attempt_root / "native" / kind
-    install = run_root / "install"
-    home = run_root / "home"
-    events = run_root / "events"
-    current = events / "SCENARIO/current"
-    shutil.copytree(source_install / "config", install / "config")
-    (install / "data").mkdir(parents=True)
-    if (source_install / "data/layers").is_dir():
-        shutil.copytree(source_install / "data/layers", install / "data/layers")
-    for name, target in scientific_links.items():
-        link = install / "data" / name
-        if link.exists():
-            shutil.rmtree(link)
-        link.symlink_to(target)
-    (install / "logs").mkdir()
-    current.mkdir(parents=True)
-    for name in ("event.xml", "event_dat.xml"):
-        shutil.copyfile(Path("/verification/request") / name, current / name)
-    (home / ".shakemap").mkdir(parents=True)
-    (home / ".strec").mkdir(parents=True)
-    slab_path = Path(slab_dir)
-    if str(slab_path).startswith(str(run_root)):
-        slab_path.mkdir(parents=True, exist_ok=True)
-    (home / ".config/matplotlib").mkdir(parents=True)
-    (run_root / "cache").mkdir()
-    (run_root / "tmp").mkdir()
-    (home / ".shakemap/profiles.conf").write_text(
-        f"profile = {kind}\n\n[profiles]\n    [[{kind}]]\n        install_path = {install}\n        data_path = {events}\n",
-        encoding="utf-8",
-    )
-    write_strec_config(home / ".strec/config.ini", slab_dir)
-    command = ["shake", "SCENARIO", "select", "assemble", "-c", f"{kind} preparation verification", "model", "contour", "mapping", "stations", "gridxml"]
-    env = {**os.environ, "HOME": str(home), "CARTOPY_DATA_DIR": IMAGE_CARTOPY_DIR, "XDG_CACHE_HOME": str(run_root / "cache"), "MPLCONFIGDIR": str(home / ".config/matplotlib"), "TMPDIR": str(run_root / "tmp")}
-    started = utc_now()
-    result = subprocess.run(command, env=env, text=True, capture_output=True, check=False)
-    finished = utc_now()
-    (run_root / "stdout.log").write_text(result.stdout, encoding="utf-8")
-    (run_root / "stderr.log").write_text(result.stderr, encoding="utf-8")
-    running, completed = parse_module_order(result.stderr)
-    evidence = {
-        "kind": kind, "started_at_utc": started, "finished_at_utc": finished,
-        "command": command, "exit_code": result.returncode, "module_plan": MODULE_PLAN,
-        "observed_running_order": running, "observed_finished_order": completed,
-        "module_plan_completed": result.returncode == 0 and running == MODULE_PLAN and completed == MODULE_PLAN,
-        "configuration_inventory": inventory(install / "config"),
-        "output_inventory": inventory(current),
-        "network": "none", "cartopy_data_dir": IMAGE_CARTOPY_DIR,
-        "strec_database": IMAGE_STREC_DB, "slab_directory": slab_dir,
-    }
-    products = current / "products"
-    if evidence["module_plan_completed"]:
-        evidence["product_validation"] = validate_native_products(products, "SCENARIO")
-    else:
-        evidence["product_validation"] = {
-            "schema_version": 1,
-            "products_path": str(products),
-            "expected_event_id": "SCENARIO",
-            "passed": False,
-            "checks": {},
-            "errors": ["native module plan did not complete"],
-        }
-    atomic_json(run_root / "evidence.json", evidence)
-    if not evidence["module_plan_completed"]:
-        raise PreparationError(f"{kind} native default plan failed; see {run_root}")
-    if not evidence["product_validation"]["passed"]:
-        raise ProductValidationError(kind, evidence["product_validation"])
-    return evidence
-
-
-def write_preparation_report(prep_root: Path, record: dict[str, Any]) -> None:
-    ready = record.get("ready") is True
-    lines = [
-        "# ShakeMap runtime preparation report",
-        "",
-        f"Finished: {record.get('finished_at_utc', 'unknown')}",
-        "",
-        f"Ready for the fixed preparation scenarios: {'yes' if ready else 'no'}",
-        "",
-    ]
-    identity = record.get("identity", {})
-    upstream = identity.get("upstream", {}) if isinstance(identity, dict) else {}
-    if upstream:
-        lines.extend(
-            [
-                f"Image: {upstream.get('release_tag', 'unknown')} at {upstream.get('source_commit', 'unknown')}",
-                "",
-            ]
-        )
-    if ready:
-        lines.extend([f"Base snapshot: `{record['base_path']}`", ""])
-        for key, label in (
-            ("california_verification", "California"),
-            ("global_verification", "Prepared global"),
-        ):
-            validation = record[key]["product_validation"]
-            lines.extend([f"## {label} product validation", ""])
-            for stem, check in validation["checks"]["composed_images"].items():
-                lines.append(
-                    f"- `{stem}.jpg`: {check['width']} x {check['height']}; "
-                    f"height/width {check['height_width_ratio']:.3f}; passed"
-                )
-            for stem, check in validation["checks"]["composed_pdfs"].items():
-                lines.append(
-                    f"- `{stem}.pdf`: page {check['page_width']:.1f} x {check['page_height']:.1f}; "
-                    f"height/width {check['height_width_ratio']:.3f}; passed"
-                )
-            lines.append("")
-    else:
-        lines.extend(["## Failure", "", f"{record.get('error', 'Preparation failed.')}", ""])
-        failed = record.get("failed_product_validation")
-        if failed:
-            lines.extend(["Failed product checks:", ""])
-            lines.extend(f"- {item}" for item in failed.get("errors", []))
-            lines.append("")
-    lines.extend(
-        [
-            "These California and prepared-global runs invoke native ShakeMap directly in private preparation workspaces under `.service/preparation`.",
-            "They do not create `incoming/SCENARIO`, a queue record, or `products/SCENARIO`, and do not prove REST submission, queueing, authoritative service `SUCCESS`, concurrency, or managed calculation readiness.",
-            "",
-        ]
-    )
-    (prep_root / "report.md").write_text("\n".join(lines), encoding="utf-8")
-
-
-def container_permissions() -> dict[str, Any]:
-    checks = {"uid": os.getuid(), "gid": os.getgid(), "writable": [], "scientific_data_read_only": False}
-    if os.getuid() != 1000 or os.getgid() != 1000:
-        raise PreparationError(f"preparation container must run as 1000:1000, got {os.getuid()}:{os.getgid()}")
-    for relative in ("incoming", "products", "logs", ".service/events", ".service/work", ".service/archive", ".service/preparation"):
-        directory = CONTAINER_SERVICE / relative
-        probe = directory / f".container-permission-{uuid.uuid4().hex}"
-        probe.write_text("probe\n", encoding="utf-8")
-        probe.unlink()
-        checks["writable"].append(str(directory))
-    try:
-        with (CONTAINER_SERVICE / "data/vs30/global_vs30.grd").open("ab"):
-            pass
-    except OSError:
-        checks["scientific_data_read_only"] = True
-    if not checks["scientific_data_read_only"]:
-        raise PreparationError("scientific data mount is writable inside preparation container")
-    return checks
-
-
-def container_prepare(run_id: str) -> int:
-    prep_root = CONTAINER_SERVICE / ".service/preparation"
-    attempts = prep_root / "attempts"
-    attempts.mkdir(parents=True, exist_ok=True)
-    attempt_root = prep_root / "logs" / run_id
-    attempt_root.mkdir(parents=True, exist_ok=False)
-    record: dict[str, Any] = {"schema_version": 2, "run_id": run_id, "started_at_utc": utc_now(), "ready": False}
-    try:
-        from shakemap_service.build_identity import load_build_identity
-        identity = load_build_identity()
-        if not identity.get("immutable_image", {}).get("available"):
-            raise PreparationError("immutable image identity is unavailable")
-        record["identity"] = identity["immutable_image"]
-        dependency_inventory = attempt_root / "dependencies.txt"
-        compatibility_record = attempt_root / "mapping-compatibility.json"
-        shutil.copyfile("/opt/shakemap-build/dependencies.txt", dependency_inventory)
-        shutil.copyfile("/opt/shakemap-build/mapping-compatibility.json", compatibility_record)
-        record["dependency_identity"] = {
-            "inventory": file_record(dependency_inventory),
-            "mapping_compatibility": json.loads(compatibility_record.read_text(encoding="utf-8")),
-            "mapping_compatibility_record": file_record(compatibility_record),
-        }
-        record["permissions"] = container_permissions()
-        record["grids"] = validate_grids()
-        record["strec_slabs"] = validate_slabs_native()
-        snapshot, config_validation = prepare_base(attempt_root)
-        record["configuration_validation"] = config_validation
-        record["california_verification"] = run_scenario(
-            attempt_root, "california", Path("/verification/california"),
-            {"layers": "/verification/california/data/layers", "mapping": "/verification/california/data/mapping", "vs30": "/verification/california/data/vs30"},
-            str(attempt_root / "native/california/home/.strec/slabs"),
-        )
-        record["global_verification"] = run_scenario(
-            attempt_root, "global", snapshot / "install", {},
-            str(CONTAINER_SERVICE / "data/global/strec/slabs"),
-        )
-        record["base_inventory"] = inventory(snapshot)
-        record["ready"] = True
-        record["finished_at_utc"] = utc_now()
-
-        base = prep_root / "base/global"
-        base.parent.mkdir(parents=True, exist_ok=True)
-        if base.exists():
-            history = prep_root / "history" / f"global-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}"
-            history.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(base, history)
-            record["previous_base_preserved_at"] = str(history)
-        os.replace(snapshot, base)
-        record["base_path"] = str(base)
-        atomic_json(attempts / f"{run_id}.json", record)
-        atomic_json(prep_root / "manifest.json", record)
-        write_preparation_report(prep_root, record)
-        return 0
-    except Exception as exc:
-        record["finished_at_utc"] = utc_now()
-        record["error"] = f"{type(exc).__name__}: {exc}"
-        if isinstance(exc, ProductValidationError):
-            record["failed_scenario"] = exc.kind
-            record["failed_product_validation"] = exc.evidence
-        record["traceback"] = traceback.format_exc()
-        atomic_json(attempts / f"{run_id}.json", record)
-        atomic_json(prep_root / "manifest.json", record)
-        write_preparation_report(prep_root, record)
-        print(record["error"], file=sys.stderr)
-        return 1
-
-
-def load_preparation(service_root: Path) -> dict[str, Any]:
-    path = service_root / ".service/preparation/manifest.json"
-    try:
-        record = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        return {"available": False, "ready": False, "manifest_path": str(path), "reason": f"durable preparation record unavailable: {exc}"}
-    required = (
-        "schema_version", "run_id", "identity", "permissions", "grids", "base_path",
-        "california_verification", "global_verification", "ready",
-    )
-    missing = [field for field in required if field not in record]
-    validations_passed = all(
-        record.get(field, {}).get("product_validation", {}).get("passed") is True
-        for field in ("california_verification", "global_verification")
-    )
-    if missing or record.get("schema_version") != 2 or record.get("ready") is not True or not validations_passed:
-        error = record.get("error")
-        reason = f"invalid preparation record; missing={missing}; product_validation_passed={validations_passed}"
-        if error:
-            reason = f"preparation failed: {error}"
-        return {"available": True, "ready": False, "manifest_path": str(path), "reason": reason, "record": record}
-    base = service_root / ".service/preparation/base/global"
-    if not base.is_dir():
-        return {"available": True, "ready": False, "manifest_path": str(path), "reason": f"base snapshot is missing: {base}", "record": record}
-    try:
-        from shakemap_service.build_identity import load_build_identity
-        current = load_build_identity().get("immutable_image", {})
-        prepared = record.get("identity", {})
-        if current.get("available") and current != prepared:
-            return {"available": True, "ready": False, "manifest_path": str(path), "reason": "preparation identity does not match the running image", "record": record}
-    except Exception:
-        pass
-    return {"available": True, "ready": True, "manifest_path": str(path), "record": record}
-
-
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(description=__doc__)
     commands = root.add_subparsers(dest="command", required=True)
-    prepare = commands.add_parser("prepare")
-    prepare.add_argument("--runtime", type=Path, default=PROJECT_ROOT / "runtime")
-    prepare.add_argument("--image", default="shakemap-docker:latest")
-    prepare.add_argument("--fixture", type=Path, default=PROJECT_ROOT / "tests/fixtures/shakemap_scenario")
-    prepare.add_argument("--california-package", type=Path, default=PROJECT_ROOT / "runtime/shakemap/data/test/v4.4.9")
-    prepare.add_argument("--vs30-source", type=Path)
-    prepare.add_argument("--topo-source", type=Path)
-    prepare.add_argument("--slab-source", type=Path)
-    prepare.add_argument("--no-download", action="store_true")
-    internal = commands.add_parser("container-prepare")
-    internal.add_argument("--run-id", required=True)
-    validate = commands.add_parser("validate-record")
-    validate.add_argument("--service-root", type=Path, default=CONTAINER_SERVICE)
+    default_data = PROJECT_ROOT / "runtime/shakemap/data"
+
+    inspect = commands.add_parser("inspect")
+    inspect.add_argument("--data-root", type=Path, default=default_data)
+
+    validate = commands.add_parser("validate-pinned-global")
+    validate.add_argument("--data-root", type=Path, default=default_data)
+
+    provision = commands.add_parser("provision-global")
+    provision.add_argument("--data-root", type=Path, default=default_data)
+    provision.add_argument("--vs30-source", type=Path)
+    provision.add_argument("--topo-source", type=Path)
+    provision.add_argument("--slab-source", type=Path)
+    provision.add_argument("--no-download", action="store_true")
     return root
 
 
 def main(argv: Iterable[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
-        if args.command == "prepare":
-            return host_prepare(args)
-        if args.command == "container-prepare":
-            return container_prepare(args.run_id)
-        if args.command == "validate-record":
-            value = load_preparation(args.service_root)
-            print(json.dumps(value, indent=2, sort_keys=True))
-            return 0 if value["ready"] else 1
-    except (OSError, PreparationError, subprocess.SubprocessError, zipfile.BadZipFile) as exc:
+        if args.command == "inspect":
+            value = inspect_data_assets(args.data_root)
+            result = 0
+        elif args.command == "validate-pinned-global":
+            value = validate_pinned_global_assets(args.data_root)
+            result = 0 if value["pinned_integrity_valid"] else 1
+        elif args.command == "provision-global":
+            value = provision_global_data(
+                args.data_root,
+                vs30_source=args.vs30_source,
+                topo_source=args.topo_source,
+                slab_source=args.slab_source,
+                allow_download=not args.no_download,
+            )
+            result = 0
+        else:
+            return 2
+        print(json.dumps(value, indent=2, sort_keys=True))
+        return result
+    except (OSError, DataProvisioningError, zipfile.BadZipFile) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
-    return 2
 
 
 if __name__ == "__main__":
