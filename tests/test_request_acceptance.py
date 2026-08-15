@@ -77,6 +77,21 @@ class RequestAcceptanceTests(unittest.TestCase):
             entry for entry in root.iterdir() if entry.name.startswith(".accept-")
         )
 
+    def test_oversized_event_id_is_rejected_before_persistence(self) -> None:
+        upload = io.BytesIO(b"event")
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "uses 232 UTF-8 bytes; shorten it to at most 231 bytes",
+        ):
+            accept_request(
+                "a" * 232,
+                [Upload("event.xml", upload)],
+            )
+
+        self.assertEqual(upload.tell(), 0)
+        self.assertEqual(list(paths.runtime_root().iterdir()), [])
+
     def test_zero_upload_snapshot_uses_safe_regular_files(self) -> None:
         input_directory = self._input_directory("σεισμός 01")
         (input_directory / "event.xml").write_bytes(b"opaque event bytes\x00")

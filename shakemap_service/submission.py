@@ -882,7 +882,7 @@ def _publish_queue_entry_locked(
     record = new_queued_record(
         event_id=event_id,
         internal_sequence=internal_sequence,
-        requested_configuration=configuration,
+        selected_configuration=configuration,
         overwrite=overwrite,
         warnings=warnings,
         input_mode=input_mode,

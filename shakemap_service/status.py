@@ -37,6 +37,14 @@ class LifecycleState(str, Enum):
     FAILED = "FAILED"
 
 
+class RunningRecordRecoveryResult(str, Enum):
+    MISSING = "missing"
+    IDENTITY_MISMATCH = "identity_mismatch"
+    BLOCKING_CHILD_PRESENT = "blocking_child_present"
+    NOT_RUNNING = "not_running"
+    FAILED = "failed"
+
+
 TERMINAL_STATES = frozenset({LifecycleState.SUCCESS, LifecycleState.FAILED})
 
 _ALLOWED_TRANSITIONS = {
@@ -91,7 +99,7 @@ def new_queued_record(
     *,
     event_id: str,
     internal_sequence: int,
-    requested_configuration: str,
+    selected_configuration: str,
     overwrite: bool,
     warnings: list[str],
     input_mode: str,
@@ -109,12 +117,7 @@ def new_queued_record(
             "manifest": "request-manifest.json",
             "input_mode": input_mode,
         },
-        configuration={
-            "requested": requested_configuration,
-            "effective": None,
-            "fallback_used": None,
-            "fallback_reason": None,
-        },
+        configuration={"selected": selected_configuration},
         progress={
             "phase": None,
             "phase_started_at": None,
@@ -180,6 +183,7 @@ def _validate_timestamp(value: object, label: str, *, required: bool) -> None:
 def _validate_record(
     record: CalculationRecord,
     expected_sequence: Optional[int] = None,
+    expected_event_id: Optional[str] = None,
 ) -> None:
     if record.schema_version != STATUS_SCHEMA_VERSION:
         raise ValueError(
@@ -197,6 +201,11 @@ def _validate_record(
         raise ValueError(
             f"record sequence {record.internal_sequence} does not match "
             f"queue entry {expected_sequence}"
+        )
+    if expected_event_id is not None and record.event_id != expected_event_id:
+        raise ValueError(
+            f"current record event_id {record.event_id!r} does not match "
+            f"{expected_event_id!r}"
         )
     try:
         state = LifecycleState(record.status)
@@ -221,20 +230,10 @@ def _validate_record(
 
     configuration = _require_exact_keys(
         record.configuration,
-        {"requested", "effective", "fallback_used", "fallback_reason"},
+        {"selected"},
         "configuration",
     )
-    validate_configuration_name(configuration["requested"])
-    _validate_optional_text(configuration["effective"], "configuration.effective")
-    if configuration["effective"] is not None:
-        validate_configuration_name(configuration["effective"])
-    if configuration["fallback_used"] is not None and not isinstance(
-        configuration["fallback_used"], bool
-    ):
-        raise ValueError("configuration.fallback_used must be a boolean or null")
-    _validate_optional_text(
-        configuration["fallback_reason"], "configuration.fallback_reason"
-    )
+    validate_configuration_name(configuration["selected"])
 
     progress = _require_exact_keys(
         record.progress,
@@ -323,11 +322,6 @@ def _validate_record(
         raise ValueError("FAILED records require failure evidence")
     if state == LifecycleState.QUEUED:
         if any(
-            configuration[name] is not None
-            for name in ("effective", "fallback_used", "fallback_reason")
-        ):
-            raise ValueError("QUEUED records cannot contain resolved configuration")
-        if any(
             progress[name] is not None
             for name in ("phase", "phase_started_at", "current_module")
         ) or progress["completed_modules"]:
@@ -392,15 +386,26 @@ def _open_record_directory(
     record_directory: Path,
     *,
     exclusive: bool,
+    parent_descriptor: Optional[int] = None,
+    entry_name: Optional[str] = None,
 ) -> Optional[_RecordDirectoryAccess]:
     try:
-        descriptor = os.open(
-            record_directory,
-            directory_open_flags(),
-        )
+        if parent_descriptor is None:
+            descriptor = open_service_directory(
+                record_directory,
+                create=False,
+            ).descriptor
+        else:
+            if entry_name is None:
+                raise ValueError("record entry name is required with a parent descriptor")
+            descriptor = os.open(
+                entry_name,
+                directory_open_flags(),
+                dir_fd=parent_descriptor,
+            )
     except FileNotFoundError:
         return None
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         raise ValueError(
             f"record directory is missing or unsafe: {record_directory}: {exc}"
         ) from exc
@@ -425,6 +430,7 @@ def _load_record_from_directory(
     access: _RecordDirectoryAccess,
     *,
     expected_sequence: Optional[int],
+    expected_event_id: Optional[str] = None,
 ) -> CalculationRecord:
     descriptor, _ = _open_regular_child(
         access.descriptor,
@@ -439,7 +445,11 @@ def _load_record_from_directory(
             f"malformed calculation record in {access.path}: {exc}"
         ) from exc
     record = _dict_to_record(data)
-    _validate_record(record, expected_sequence=expected_sequence)
+    _validate_record(
+        record,
+        expected_sequence=expected_sequence,
+        expected_event_id=expected_event_id,
+    )
     return record
 
 
@@ -447,14 +457,23 @@ def _read_record_directory(
     record_directory: Path,
     *,
     expected_sequence: Optional[int],
+    expected_event_id: Optional[str] = None,
+    parent_descriptor: Optional[int] = None,
+    entry_name: Optional[str] = None,
 ) -> Optional[CalculationRecord]:
-    access = _open_record_directory(record_directory, exclusive=False)
+    access = _open_record_directory(
+        record_directory,
+        exclusive=False,
+        parent_descriptor=parent_descriptor,
+        entry_name=entry_name,
+    )
     if access is None:
         return None
     try:
         return _load_record_from_directory(
             access,
             expected_sequence=expected_sequence,
+            expected_event_id=expected_event_id,
         )
     finally:
         access.close()
@@ -465,8 +484,13 @@ def _replace_record_in_directory(
     record: CalculationRecord,
     *,
     expected_sequence: Optional[int],
+    expected_event_id: Optional[str] = None,
 ) -> None:
-    _validate_record(record, expected_sequence=expected_sequence)
+    _validate_record(
+        record,
+        expected_sequence=expected_sequence,
+        expected_event_id=expected_event_id,
+    )
     temporary_name = f".status-{uuid.uuid4().hex}.tmp"
     descriptor = os.open(
         temporary_name,
@@ -519,58 +543,82 @@ def read_status(sequence: int) -> Optional[CalculationRecord]:
 
 def read_current_record(event_id: str) -> Optional[CalculationRecord]:
     validate_event_id(event_id)
-    record = _read_record_directory(
+    return _read_record_directory(
         paths.event_service_dir(event_id),
         expected_sequence=None,
+        expected_event_id=event_id,
     )
-    if record is None:
-        return None
-    if record.event_id != event_id:
-        raise ValueError(
-            f"current record event_id {record.event_id!r} does not match {event_id!r}"
-        )
-    return record
 
 
 _UNSET = object()
 
 
-def update_status(sequence: int, **changes: Any) -> CalculationRecord:
+def _update_record_directory(
+    record_directory: Path,
+    *,
+    expected_sequence: Optional[int],
+    expected_event_id: Optional[str],
+    missing_message: str,
+    changes: dict[str, Any],
+) -> CalculationRecord:
     forbidden = {"schema_version", "event_id", "internal_sequence", "status"}
     if forbidden & set(changes):
         raise ValueError("identity and lifecycle fields require their dedicated operations")
     access = _open_record_directory(
-        paths.queue_entry_dir(sequence),
+        record_directory,
         exclusive=True,
     )
     if access is None:
-        raise FileNotFoundError(
-            f"calculation record for sequence {sequence} does not exist"
-        )
+        raise FileNotFoundError(missing_message)
     try:
         record = _load_record_from_directory(
             access,
-            expected_sequence=sequence,
+            expected_sequence=expected_sequence,
+            expected_event_id=expected_event_id,
         )
         for name, value in changes.items():
             if not hasattr(record, name):
                 raise ValueError(f"unknown calculation-record field {name!r}")
             setattr(record, name, value)
-        _validate_record(record, expected_sequence=sequence)
         _replace_record_in_directory(
             access,
             record,
-            expected_sequence=sequence,
+            expected_sequence=expected_sequence,
+            expected_event_id=expected_event_id,
         )
         return record
     finally:
         access.close()
 
 
-def transition_status(
-    sequence: int,
+def update_status(sequence: int, **changes: Any) -> CalculationRecord:
+    return _update_record_directory(
+        paths.queue_entry_dir(sequence),
+        expected_sequence=sequence,
+        expected_event_id=None,
+        missing_message=f"calculation record for sequence {sequence} does not exist",
+        changes=changes,
+    )
+
+
+def update_current_record(event_id: str, **changes: Any) -> CalculationRecord:
+    validate_event_id(event_id)
+    return _update_record_directory(
+        paths.event_service_dir(event_id),
+        expected_sequence=None,
+        expected_event_id=event_id,
+        missing_message=f"current calculation record for {event_id!r} does not exist",
+        changes=changes,
+    )
+
+
+def _transition_record_directory(
+    record_directory: Path,
     target: LifecycleState,
     *,
+    expected_sequence: Optional[int],
+    expected_event_id: Optional[str],
+    missing_message: str,
     progress: object = _UNSET,
     native_outcome: object = _UNSET,
     service_outcome: object = _UNSET,
@@ -579,17 +627,16 @@ def transition_status(
     if not isinstance(target, LifecycleState):
         raise ValueError("target must be a LifecycleState")
     access = _open_record_directory(
-        paths.queue_entry_dir(sequence),
+        record_directory,
         exclusive=True,
     )
     if access is None:
-        raise FileNotFoundError(
-            f"calculation record for sequence {sequence} does not exist"
-        )
+        raise FileNotFoundError(missing_message)
     try:
         record = _load_record_from_directory(
             access,
-            expected_sequence=sequence,
+            expected_sequence=expected_sequence,
+            expected_event_id=expected_event_id,
         )
         source = LifecycleState(record.status)
         # The directory lock covers transition read/check/write for service writers.
@@ -611,15 +658,155 @@ def transition_status(
             record.service_outcome = service_outcome  # type: ignore[assignment]
         if failure is not _UNSET:
             record.failure = failure  # type: ignore[assignment]
-        _validate_record(record, expected_sequence=sequence)
         _replace_record_in_directory(
             access,
             record,
-            expected_sequence=sequence,
+            expected_sequence=expected_sequence,
+            expected_event_id=expected_event_id,
         )
         return record
     finally:
         access.close()
+
+
+def transition_status(
+    sequence: int,
+    target: LifecycleState,
+    *,
+    progress: object = _UNSET,
+    native_outcome: object = _UNSET,
+    service_outcome: object = _UNSET,
+    failure: object = _UNSET,
+) -> CalculationRecord:
+    return _transition_record_directory(
+        paths.queue_entry_dir(sequence),
+        target,
+        expected_sequence=sequence,
+        expected_event_id=None,
+        missing_message=f"calculation record for sequence {sequence} does not exist",
+        progress=progress,
+        native_outcome=native_outcome,
+        service_outcome=service_outcome,
+        failure=failure,
+    )
+
+
+def transition_current_record(
+    event_id: str,
+    target: LifecycleState,
+    *,
+    progress: object = _UNSET,
+    native_outcome: object = _UNSET,
+    service_outcome: object = _UNSET,
+    failure: object = _UNSET,
+) -> CalculationRecord:
+    validate_event_id(event_id)
+    return _transition_record_directory(
+        paths.event_service_dir(event_id),
+        target,
+        expected_sequence=None,
+        expected_event_id=event_id,
+        missing_message=f"current calculation record for {event_id!r} does not exist",
+        progress=progress,
+        native_outcome=native_outcome,
+        service_outcome=service_outcome,
+        failure=failure,
+    )
+
+
+def fail_matching_running_record_if_child_absent(
+    record_directory: Path,
+    *,
+    expected_event_id: str,
+    expected_sequence: int,
+    blocking_child: str,
+    failure: dict[str, Any],
+) -> RunningRecordRecoveryResult:
+    validate_event_id(expected_event_id)
+    if (
+        isinstance(expected_sequence, bool)
+        or not isinstance(expected_sequence, int)
+        or expected_sequence < 1
+    ):
+        raise ValueError("expected_sequence must be a positive integer")
+    validate_upload_basename(blocking_child)
+    try:
+        parent = open_service_directory(record_directory.parent, create=False)
+    except FileNotFoundError:
+        return RunningRecordRecoveryResult.MISSING
+    try:
+        access = _open_record_directory(
+            record_directory,
+            exclusive=True,
+            parent_descriptor=parent.descriptor,
+            entry_name=record_directory.name,
+        )
+        if access is None:
+            return RunningRecordRecoveryResult.MISSING
+        try:
+            record = _load_record_from_directory(
+                access,
+                expected_sequence=None,
+                expected_event_id=None,
+            )
+            if (
+                record.event_id != expected_event_id
+                or record.internal_sequence != expected_sequence
+            ):
+                return RunningRecordRecoveryResult.IDENTITY_MISMATCH
+            try:
+                os.stat(
+                    blocking_child,
+                    dir_fd=access.descriptor,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                pass
+            else:
+                return RunningRecordRecoveryResult.BLOCKING_CHILD_PRESENT
+            if record.status != LifecycleState.RUNNING.value:
+                return RunningRecordRecoveryResult.NOT_RUNNING
+
+            parent_details = os.stat(
+                record_directory.name,
+                dir_fd=parent.descriptor,
+                follow_symlinks=False,
+            )
+            record_details = os.fstat(access.descriptor)
+            if (
+                not stat.S_ISDIR(parent_details.st_mode)
+                or parent_details.st_dev != record_details.st_dev
+                or parent_details.st_ino != record_details.st_ino
+            ):
+                raise ValueError(
+                    "record directory parent entry changed while recovery was locked"
+                )
+            try:
+                os.stat(
+                    blocking_child,
+                    dir_fd=access.descriptor,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                pass
+            else:
+                return RunningRecordRecoveryResult.BLOCKING_CHILD_PRESENT
+
+            record.status = LifecycleState.FAILED.value
+            record.failure = failure
+            record.service_outcome = {"completed": True, "successful": False}
+            record.timestamps["completed_at"] = _now_iso()
+            _replace_record_in_directory(
+                access,
+                record,
+                expected_sequence=expected_sequence,
+                expected_event_id=expected_event_id,
+            )
+            return RunningRecordRecoveryResult.FAILED
+        finally:
+            access.close()
+    finally:
+        parent.close()
 
 
 def transition_to_running(sequence: int) -> CalculationRecord:
@@ -662,6 +849,41 @@ def _open_regular_child(
     return descriptor, details
 
 
+def _load_request_manifest_identity(
+    access: _RecordDirectoryAccess,
+    record: CalculationRecord,
+) -> dict[str, Any]:
+    manifest_descriptor, _ = _open_regular_child(
+        access.descriptor,
+        "request-manifest.json",
+        "request-manifest.json",
+    )
+    try:
+        with os.fdopen(
+            manifest_descriptor,
+            "r",
+            encoding="utf-8",
+        ) as stream:
+            manifest = json.load(stream)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"request manifest is malformed: {exc}") from exc
+    manifest = _require_exact_keys(
+        manifest,
+        {"schema_version", "event_id", "internal_sequence", "files"},
+        "request manifest",
+    )
+    if (
+        type(manifest["schema_version"]) is not int
+        or manifest["schema_version"] != 1
+        or manifest["event_id"] != record.event_id
+        or type(manifest["internal_sequence"]) is not int
+        or manifest["internal_sequence"] != record.internal_sequence
+        or not isinstance(manifest["files"], list)
+    ):
+        raise ValueError("request manifest identity or schema is invalid")
+    return manifest
+
+
 def _validate_queue_entry(
     sequence: int,
     entry_name: str,
@@ -670,6 +892,8 @@ def _validate_queue_entry(
     access = _open_record_directory(
         queue_handle.path / entry_name,
         exclusive=False,
+        parent_descriptor=queue_handle.descriptor,
+        entry_name=entry_name,
     )
     if access is None:
         raise ValueError(f"queue entry is missing: {entry_name}")
@@ -689,34 +913,7 @@ def _validate_queue_entry(
                 f"request snapshot directory is missing or unsafe: {exc}"
             ) from exc
         try:
-            manifest_descriptor, _ = _open_regular_child(
-                access.descriptor,
-                "request-manifest.json",
-                "request-manifest.json",
-            )
-            try:
-                with os.fdopen(
-                    manifest_descriptor,
-                    "r",
-                    encoding="utf-8",
-                ) as stream:
-                    manifest = json.load(stream)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"request manifest is malformed: {exc}") from exc
-            manifest = _require_exact_keys(
-                manifest,
-                {"schema_version", "event_id", "internal_sequence", "files"},
-                "request manifest",
-            )
-            if (
-                type(manifest["schema_version"]) is not int
-                or manifest["schema_version"] != 1
-                or manifest["event_id"] != record.event_id
-                or type(manifest["internal_sequence"]) is not int
-                or manifest["internal_sequence"] != sequence
-                or not isinstance(manifest["files"], list)
-            ):
-                raise ValueError("request manifest identity or schema is invalid")
+            manifest = _load_request_manifest_identity(access, record)
             expected_sizes: dict[str, int] = {}
             for item in manifest["files"]:
                 if not isinstance(item, dict) or set(item) != {
@@ -825,6 +1022,57 @@ def scan_queue_records() -> tuple[list[CalculationRecord], list[tuple[str, str]]
             fcntl.flock(queue_handle.descriptor, fcntl.LOCK_UN)
     finally:
         queue_handle.close()
+
+
+def _scan_current_records_unlocked(
+    events_handle: DirectoryHandle,
+) -> tuple[list[CalculationRecord], list[tuple[str, str]]]:
+    records: list[CalculationRecord] = []
+    malformed: list[tuple[str, str]] = []
+    for event_id in sorted(os.listdir(events_handle.descriptor)):
+        try:
+            validate_event_id(event_id)
+            access = _open_record_directory(
+                events_handle.path / event_id,
+                exclusive=False,
+                parent_descriptor=events_handle.descriptor,
+                entry_name=event_id,
+            )
+            if access is None:
+                raise ValueError(f"current record is missing: {event_id}")
+            try:
+                record = _load_record_from_directory(
+                    access,
+                    expected_sequence=None,
+                    expected_event_id=event_id,
+                )
+                _load_request_manifest_identity(access, record)
+                records.append(record)
+            finally:
+                access.close()
+        except (OSError, TypeError, ValueError) as exc:
+            malformed.append((event_id, str(exc)))
+    records.sort(key=lambda item: item.internal_sequence)
+    return records, malformed
+
+
+def scan_current_records() -> tuple[list[CalculationRecord], list[tuple[str, str]]]:
+    try:
+        events_handle = open_service_directory(paths.events_dir(), create=False)
+    except FileNotFoundError:
+        return [], []
+    except (OSError, ValueError) as exc:
+        return [], [("<events>", str(exc))]
+    try:
+        fcntl.flock(events_handle.descriptor, fcntl.LOCK_SH)
+        try:
+            return _scan_current_records_unlocked(events_handle)
+        except (OSError, ValueError) as exc:
+            return [], [("<events>", str(exc))]
+        finally:
+            fcntl.flock(events_handle.descriptor, fcntl.LOCK_UN)
+    finally:
+        events_handle.close()
 
 
 def records_for_event(event_id: str) -> list[CalculationRecord]:

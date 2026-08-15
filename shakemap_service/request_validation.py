@@ -7,6 +7,7 @@ import unicodedata
 
 
 NATIVE_BASENAME_LIMIT_BYTES = 255
+EVENT_ID_LIMIT_BYTES = 231
 
 
 def _validate_unchanged_basename(value: object, label: str) -> str:
@@ -41,6 +42,13 @@ def validate_event_id(event_id: object) -> str:
         raise ValueError(
             "event_id cannot begin with '-' because the supported native command "
             "would interpret it as an option"
+        )
+    encoded_length = len(validated.encode("utf-8"))
+    if encoded_length > EVENT_ID_LIMIT_BYTES:
+        raise ValueError(
+            f"event_id uses {encoded_length} UTF-8 bytes; shorten it to at most "
+            f"{EVENT_ID_LIMIT_BYTES} bytes so timestamped archive names fit the "
+            f"native {NATIVE_BASENAME_LIMIT_BYTES}-byte directory-entry limit"
         )
     return validated
 

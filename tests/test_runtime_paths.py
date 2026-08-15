@@ -148,6 +148,20 @@ class RuntimePathTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_event_id("a" * 256)
 
+    def test_event_id_length_uses_utf8_bytes_for_archive_safe_names(self) -> None:
+        self.assertEqual(validate_event_id("a" * 231), "a" * 231)
+        with self.assertRaisesRegex(
+            ValueError,
+            "uses 232 UTF-8 bytes; shorten it to at most 231 bytes",
+        ):
+            validate_event_id("a" * 232)
+
+        multibyte_boundary = "a" + ("é" * 115)
+        self.assertEqual(len(multibyte_boundary.encode("utf-8")), 231)
+        self.assertEqual(validate_event_id(multibyte_boundary), multibyte_boundary)
+        with self.assertRaisesRegex(ValueError, "uses 232 UTF-8 bytes"):
+            validate_event_id("é" * 116)
+
     def test_configuration_validation_is_lookup_safety_only(self) -> None:
         self.assertEqual(validate_configuration_name("regional set+1"), "regional set+1")
         self.assertEqual(validate_configuration_name("regional\\set"), "regional\\set")

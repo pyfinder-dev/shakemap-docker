@@ -73,8 +73,7 @@ class LifecycleRecordTests(unittest.TestCase):
         self.assertTrue(record.overwrite)
         self.assertEqual(record.warnings, [])
         self.assertEqual(record.request["input_mode"], "upload")
-        self.assertEqual(record.configuration["requested"], "global")
-        self.assertIsNone(record.configuration["effective"])
+        self.assertEqual(record.configuration, {"selected": "global"})
         self.assertIsNone(record.progress["phase"])
         self.assertEqual(
             record.progress["module_plan"],
@@ -250,20 +249,138 @@ class LifecycleRecordTests(unittest.TestCase):
     def test_current_record_read_uses_the_same_schema_and_store_behavior(self) -> None:
         result = self._accept()
         current_directory = paths.event_service_dir("evt")
-        current_directory.mkdir(parents=True)
-        paths.event_status_file("evt").write_bytes(
-            paths.queue_status_file(result.internal_sequence).read_bytes()
-        )
+        current_directory.parent.mkdir(parents=True)
+        paths.queue_entry_dir(result.internal_sequence).rename(current_directory)
 
         current = status.read_current_record("evt")
+        updated = status.update_current_record("evt", warnings=["retained"])
+        running = status.transition_current_record("evt", LifecycleState.RUNNING)
 
         self.assertEqual(current.event_id, "evt")
         self.assertEqual(current.internal_sequence, result.internal_sequence)
+        self.assertEqual(updated.warnings, ["retained"])
+        self.assertEqual(running.status, "RUNNING")
+        self.assertEqual(status.read_current_record("evt").status, "RUNNING")
 
         redirected = paths.event_service_dir("redirected")
         redirected.symlink_to(current_directory, target_is_directory=True)
         with self.assertRaisesRegex(ValueError, "record directory is missing or unsafe"):
             status.read_current_record("redirected")
+
+    def test_current_record_scan_reports_unsafe_and_mismatched_entries(self) -> None:
+        paths.events_dir().mkdir(parents=True)
+
+        valid = self._accept("valid")
+        paths.queue_entry_dir(valid.internal_sequence).rename(
+            paths.event_service_dir("valid")
+        )
+
+        dot_prefixed = self._accept(".valid")
+        paths.queue_entry_dir(dot_prefixed.internal_sequence).rename(
+            paths.event_service_dir(".valid")
+        )
+
+        mismatched = self._accept("original")
+        paths.queue_entry_dir(mismatched.internal_sequence).rename(
+            paths.event_service_dir("mismatched")
+        )
+
+        malformed = self._accept("malformed")
+        paths.queue_entry_dir(malformed.internal_sequence).rename(
+            paths.event_service_dir("malformed")
+        )
+        paths.event_status_file("malformed").write_text("{broken", encoding="utf-8")
+
+        paths.events_dir().joinpath("not-a-directory").write_text(
+            "unsafe",
+            encoding="utf-8",
+        )
+        paths.events_dir().joinpath("redirected").symlink_to(
+            paths.event_service_dir("valid"),
+            target_is_directory=True,
+        )
+        paths.events_dir().joinpath(".private-state").mkdir()
+
+        records, errors = status.scan_current_records()
+
+        self.assertEqual(
+            [(record.internal_sequence, record.event_id) for record in records],
+            [
+                (valid.internal_sequence, "valid"),
+                (dot_prefixed.internal_sequence, ".valid"),
+            ],
+        )
+        messages = dict(errors)
+        self.assertEqual(
+            set(messages),
+            {
+                ".private-state",
+                "malformed",
+                "mismatched",
+                "not-a-directory",
+                "redirected",
+            },
+        )
+        self.assertIn("status.json is missing or unsafe", messages[".private-state"])
+        self.assertIn("malformed calculation record", messages["malformed"])
+        self.assertIn("does not match", messages["mismatched"])
+        self.assertIn("missing or unsafe", messages["not-a-directory"])
+        self.assertIn("missing or unsafe", messages["redirected"])
+
+    def test_current_record_scan_requires_manifest_identity(self) -> None:
+        result = self._accept("manifest-mismatch")
+        paths.events_dir().mkdir(parents=True)
+        paths.queue_entry_dir(result.internal_sequence).rename(
+            paths.event_service_dir("manifest-mismatch")
+        )
+        manifest_path = paths.event_service_dir("manifest-mismatch") / (
+            "request-manifest.json"
+        )
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["internal_sequence"] += 1
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+        records, errors = status.scan_current_records()
+
+        self.assertEqual(records, [])
+        self.assertEqual([name for name, _ in errors], ["manifest-mismatch"])
+        self.assertIn("identity or schema", errors[0][1])
+
+    def test_replaced_current_ancestor_is_rejected_for_all_record_access(self) -> None:
+        result = self._accept("evt")
+        paths.events_dir().mkdir(parents=True)
+        paths.queue_entry_dir(result.internal_sequence).rename(
+            paths.event_service_dir("evt")
+        )
+        displaced = paths.service_dir() / "displaced-events"
+        paths.events_dir().rename(displaced)
+        paths.events_dir().symlink_to(displaced, target_is_directory=True)
+
+        with self.assertRaisesRegex(ValueError, "missing or unsafe"):
+            status.read_current_record("evt")
+        with self.assertRaisesRegex(ValueError, "missing or unsafe"):
+            status.update_current_record("evt", warnings=["unsafe"])
+        records, errors = status.scan_current_records()
+
+        self.assertEqual(records, [])
+        self.assertEqual([name for name, _ in errors], ["<events>"])
+        self.assertIn("unsafe service directory ancestry", errors[0][1])
+
+    def test_replaced_queue_ancestor_is_rejected_for_all_record_access(self) -> None:
+        result = self._accept("evt")
+        displaced = paths.service_dir() / "displaced-queue"
+        paths.queue_dir().rename(displaced)
+        paths.queue_dir().symlink_to(displaced, target_is_directory=True)
+
+        with self.assertRaisesRegex(ValueError, "missing or unsafe"):
+            status.read_status(result.internal_sequence)
+        with self.assertRaisesRegex(ValueError, "missing or unsafe"):
+            status.update_status(result.internal_sequence, warnings=["unsafe"])
+        records, errors = status.scan_queue_records()
+
+        self.assertEqual(records, [])
+        self.assertEqual([name for name, _ in errors], ["<queue>"])
+        self.assertIn("unsafe service directory ancestry", errors[0][1])
 
     def test_manifest_identity_and_schema_are_exact(self) -> None:
         cases = (
