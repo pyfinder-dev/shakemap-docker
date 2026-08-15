@@ -8,7 +8,7 @@ SCRIPTS := scripts
 .PHONY: build start verify-image verify-deployment test
 
 build:
-	$(SCRIPTS)/build-shakemap-docker.sh --tag $(IMAGE)
+	$(SCRIPTS)/build-shakemap-docker.sh
 
 start:
 	$(SCRIPTS)/start-shakemap-docker.sh --name $(CONTAINER) --runtime $(RUNTIME) --port $(PORT) --image $(IMAGE)

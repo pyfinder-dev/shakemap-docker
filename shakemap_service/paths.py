@@ -128,7 +128,7 @@ def event_manifest_file(event_id: str) -> Path:
 
 
 def event_archive_dir(event_id: str) -> Path:
-    """Return the archive namespace only; archival is a later milestone."""
+    """Return the archive namespace only; archival is not implemented."""
     return archive_dir() / event_id
 
 

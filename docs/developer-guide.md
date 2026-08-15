@@ -9,7 +9,7 @@ source /Users/savas/my-codes/eew/pyfinder-dev/.venv/bin/activate
 Run host tests:
 
 ```bash
-for file in tests/test_*.py; do python "$file" || exit; done
+python -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
 Verification is separated into:

@@ -233,8 +233,8 @@ def get_config() -> dict:
             "state": "not_ready",
             "reason": "managed calculation execution is disabled",
         },
-        "service_root": settings.service_root,
-        "shakemap_modules": settings.shakemap_modules,
+        "service_root": settings.shared_service_root,
+        "shakemap_modules": list(settings.module_plan),
         "managed_execution": {
             "enabled": False,
             "reason": "effective ShakeMap configuration resolution is not implemented",
@@ -388,8 +388,8 @@ def healthz() -> dict:
         "infrastructure": infrastructure,
         "data": data,
         "configuration": {
-            "modules": settings.shakemap_modules,
-            "service_root": settings.service_root,
+            "modules": list(settings.module_plan),
+            "service_root": settings.shared_service_root,
             "default": "global",
             "resolution_state": "not_implemented",
         },

@@ -18,10 +18,9 @@ set -euo pipefail
 
 # [1/7] Read environment with defaults
 RUNTIME_ROOT="${RUNTIME_ROOT:-/home/sysop/runtime}"
-SERVICE_ROOT="${SERVICE_ROOT:-${RUNTIME_ROOT}/shakemap}"
+SERVICE_ROOT="${RUNTIME_ROOT}/shakemap"
 REQUIRE_MOUNT="${SHAKEMAP_REQUIRE_MOUNT:-0}"
 PORT="${SHAKEMAP_PORT:-9010}"
-MODULES="${SHAKEMAP_MODULES:-select assemble model contour mapping stations gridxml}"
 
 # [2/7] Log environment
 echo "[entrypoint] Starting ShakeMap Docker service..."
@@ -29,7 +28,6 @@ echo "[entrypoint] RUNTIME_ROOT            = ${RUNTIME_ROOT}"
 echo "[entrypoint] SERVICE_ROOT            = ${SERVICE_ROOT}"
 echo "[entrypoint] SHAKEMAP_PORT           = ${PORT}"
 echo "[entrypoint] SHAKEMAP_REQUIRE_MOUNT  = ${REQUIRE_MOUNT}"
-echo "[entrypoint] SHAKEMAP_MODULES        = ${MODULES}"
 
 # [3/7] Ensure runtime root exists
 echo "[entrypoint] [3/7] Ensuring runtime root exists"

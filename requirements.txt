@@ -1,9 +1,5 @@
-# ShakeMap service Python dependencies
-# These are installed in the Docker image (see Dockerfile).
-# This file serves as the canonical dependency declaration for the repo.
-fastapi
-uvicorn[standard]
-python-multipart
+# Install the standard project package and its declared runtime dependencies.
+-e .
 
 # Test dependencies (not installed in Docker image)
 # httpx2 is required by starlette.testclient (used by fastapi.testclient).

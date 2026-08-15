@@ -2,7 +2,7 @@
 
 | Script | Responsibility |
 |---|---|
-| `build-shakemap-docker.sh` | Resolve and build one immutable upstream ShakeMap release. |
+| `build-shakemap-docker.sh` | Build the declared release as an untagged candidate, verify it by identity, and then promote the canonical image tag. |
 | `manage-shakemap-data.sh` | Inspect, validate, or provision missing global VS30/topography assets. |
 | `prepare-shakemap-verification-data.py` | Prepare or validate a release-matched fixed verification package. |
 | `start-shakemap-docker.sh` | Start the stable service with isolated state and a read-only data mount. |
@@ -15,7 +15,16 @@ may take time. `manage-shakemap-data.sh provision` reuses a valid existing asset
 and installs only a missing one. It never replaces an invalid or unexpected
 existing asset.
 
-Activate the project Python environment before running the helper:
+Install the standard project package in the project environment before running
+the build helper. The helper checks this prerequisite and never installs it:
+
+```bash
+source /path/to/project/.venv/bin/activate
+python -m pip install -e .
+./scripts/build-shakemap-docker.sh
+```
+
+Keep that environment active before running the data helper:
 
 ```bash
 source /path/to/project/.venv/bin/activate

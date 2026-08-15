@@ -188,7 +188,7 @@ class ContractedDestinationTests(unittest.TestCase):
                 allow_download=False,
             )
 
-    def test_stage2_installs_only_vs30_and_topography(self) -> None:
+    def test_installs_only_vs30_and_topography(self) -> None:
         result = self.provision()
         self.assertEqual(set(result), {"global_assets"})
         self.assertEqual(set(result["global_assets"]), {"vs30", "topography"})

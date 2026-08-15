@@ -3,27 +3,22 @@
 from __future__ import annotations
 
 import argparse
-import json
 import re
 import subprocess
 import sys
-import urllib.error
-import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterable, Sequence
 
 
 OFFICIAL_REPOSITORY_URL = "https://code.usgs.gov/ghsc/esi/shakemap.git"
-OFFICIAL_RELEASES_URL = (
-    "https://code.usgs.gov/api/v4/projects/ghsc%2Fesi%2Fshakemap/releases"
-    "?per_page=100"
-)
 _STABLE_TAG_RE = re.compile(r"^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 _FULL_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+_DECLARATION_RE = re.compile(r"^([A-Z][A-Z0-9_]*)=([^\s#]+)$")
 
 
 class ReleaseResolutionError(RuntimeError):
-    """Raised when official metadata cannot yield one immutable release."""
+    """Raised when the declared release cannot be resolved to one immutable source identity."""
 
 
 @dataclass(frozen=True)
@@ -56,45 +51,6 @@ def validate_full_commit(commit: str) -> str:
             "ShakeMap source commit must be a full 40-character hexadecimal commit"
         )
     return commit.lower()
-
-
-def select_latest_stable_release(metadata: object) -> str:
-    """Select the highest final semver tag from GitLab release metadata.
-
-    Well-formed non-final tags are excluded. Structurally malformed metadata and
-    two different tags representing the same semantic version fail closed.
-    """
-    if not isinstance(metadata, list):
-        raise ReleaseResolutionError("Official release metadata is not a JSON list")
-
-    stable: dict[tuple[int, int, int], str] = {}
-    for index, item in enumerate(metadata):
-        if not isinstance(item, dict):
-            raise ReleaseResolutionError(f"Release metadata entry {index} is not an object")
-        tag = item.get("tag_name")
-        if not isinstance(tag, str) or not tag.strip():
-            raise ReleaseResolutionError(
-                f"Release metadata entry {index} has no unambiguous tag_name"
-            )
-        tag = tag.strip()
-        if item.get("upcoming_release") is True:
-            continue
-        try:
-            version = stable_version(tag)
-        except ReleaseResolutionError:
-            # Development, alpha, beta, RC, and unrelated release tags are not
-            # candidates. They can coexist with stable official releases.
-            continue
-        previous = stable.get(version)
-        if previous is not None and previous != tag:
-            raise ReleaseResolutionError(
-                f"Ambiguous official releases for {version}: {previous!r} and {tag!r}"
-            )
-        stable[version] = tag
-
-    if not stable:
-        raise ReleaseResolutionError("Official metadata contains no final stable release")
-    return stable[max(stable)]
 
 
 def resolve_tag_commit_from_ls_remote(tag: str, output: str) -> str:
@@ -133,22 +89,6 @@ def resolve_tag_commit_from_ls_remote(tag: str, output: str) -> str:
     return peeled[0] if peeled else direct[0]
 
 
-def fetch_release_metadata(url: str = OFFICIAL_RELEASES_URL) -> object:
-    request = urllib.request.Request(
-        url,
-        headers={"Accept": "application/json", "User-Agent": "shakemap-docker-build/1"},
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            payload = response.read()
-    except (OSError, urllib.error.URLError) as exc:
-        raise ReleaseResolutionError(f"Could not read official release metadata: {exc}") from exc
-    try:
-        return json.loads(payload)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ReleaseResolutionError("Official release metadata is not valid JSON") from exc
-
-
 def query_official_tag(tag: str, repository_url: str = OFFICIAL_REPOSITORY_URL) -> str:
     stable_version(tag)
     command = [
@@ -162,17 +102,46 @@ def query_official_tag(tag: str, repository_url: str = OFFICIAL_REPOSITORY_URL) 
     return resolve_tag_commit_from_ls_remote(tag, result.stdout)
 
 
-def resolve_latest_official_release() -> ResolvedRelease:
-    """Resolve metadata and tag exactly once for this build invocation."""
-    tag = select_latest_stable_release(fetch_release_metadata())
-    commit = query_official_tag(tag)
-    return ResolvedRelease(tag=tag, commit=commit)
-
-
 def resolve_official_release_tag(tag: str) -> ResolvedRelease:
     """Resolve one requested official stable tag to its exact upstream commit."""
     stable_version(tag)
     return ResolvedRelease(tag=tag, commit=query_official_tag(tag))
+
+
+def load_declared_release_tag(path: Path) -> str:
+    """Read the single supported ShakeMap tag from a repository declaration."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise ReleaseResolutionError(f"Could not read release declaration {path}: {exc}") from exc
+
+    declarations: dict[str, str] = {}
+    for number, raw_line in enumerate(lines, start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = _DECLARATION_RE.fullmatch(line)
+        if match is None:
+            raise ReleaseResolutionError(
+                f"Malformed release declaration at {path}:{number}"
+            )
+        name, value = match.groups()
+        if name in declarations:
+            raise ReleaseResolutionError(f"Duplicate release declaration: {name}")
+        declarations[name] = value
+
+    tag = declarations.get("SHAKEMAP_RELEASE_TAG")
+    if tag is None:
+        raise ReleaseResolutionError(
+            f"Release declaration {path} has no SHAKEMAP_RELEASE_TAG"
+        )
+    stable_version(tag)
+    return tag
+
+
+def resolve_declared_release(path: Path) -> ResolvedRelease:
+    """Resolve the repository-declared official tag to an immutable commit."""
+    return resolve_official_release_tag(load_declared_release_tag(path))
 
 
 def _print_lines(values: Iterable[str]) -> None:
@@ -187,7 +156,7 @@ def _parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     resolve = subparsers.add_parser("resolve")
-    resolve.add_argument("--release-tag")
+    resolve.add_argument("--versions-file", type=Path, required=True)
 
     return parser
 
@@ -196,10 +165,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         if args.command == "resolve":
-            if args.release_tag:
-                release = resolve_official_release_tag(args.release_tag)
-            else:
-                release = resolve_latest_official_release()
+            release = resolve_declared_release(args.versions_file)
             _print_lines([release.tag, release.commit, release.repository_url])
             return 0
 

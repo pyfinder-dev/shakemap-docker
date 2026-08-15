@@ -9,6 +9,8 @@ implemented.
 ## Supported workflow
 
 ```bash
+source /path/to/project/.venv/bin/activate
+python -m pip install -e .
 ./scripts/build-shakemap-docker.sh
 ./scripts/manage-shakemap-data.sh inspect
 ./scripts/manage-shakemap-data.sh validate
@@ -17,13 +19,25 @@ curl -fsS http://localhost:9010/config
 curl -fsS http://localhost:9010/healthz
 ```
 
+The build reads only `SHAKEMAP_RELEASE_TAG` from `VERSIONS.env`. It creates an
+untagged candidate, runs image-internal checks against that image identity, and
+assigns `shakemap-docker:latest` only after those checks pass. The active
+project environment must already provide the packaged `shake-in-docker`
+command; the helper never installs or changes host packages.
+
+Image verification covers the installed ShakeMap release, STREC
+`moment_tensors.db`, Slab2 grids, Natural Earth mapping support, and immutable
+regional configuration seeds. Global VS30 and topography remain external.
+This is image-installation evidence only, not deployment or calculation
+readiness.
+
 `inspect` is cheap and read-only. It checks presence/readability and parses only
 small directory entries. `validate` is also read-only, but hashes the two large
 pinned global assets. `provision` reuses valid assets and may download or import
 only a missing asset. An invalid, incomplete, or unexpected existing asset is
 left unchanged and reported with corrective action.
 
-Activate the project Python environment before running the data helper.
+Keep the project Python environment active when running host helpers.
 
 ## Runtime data contract
 

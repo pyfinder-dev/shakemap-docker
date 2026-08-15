@@ -47,7 +47,7 @@ class SubmissionResult:
 
 
 def validate_inputs(file_names: list[str]) -> list[str]:
-    """Retain the current file-input boundary without implementing Milestone 4."""
+    """Retain the current file-input boundary without recalculation handling."""
     errors: list[str] = []
     names = set(file_names)
     if REQUIRED_EVENT_FILE not in names:
@@ -55,7 +55,7 @@ def validate_inputs(file_names: list[str]) -> list[str]:
     if not ACCEPTED_STATION_FILENAMES & names:
         accepted = ", ".join(sorted(ACCEPTED_STATION_FILENAMES))
         errors.append(
-            "The current pre-Milestone-4 file request requires one station file; "
+            "The current file request requires one station file; "
             f"accepted filenames: {accepted}"
         )
     unsupported = sorted(names - ALL_ACCEPTED_FILENAMES)

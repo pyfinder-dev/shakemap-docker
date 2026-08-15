@@ -9,7 +9,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from shakemap_service import main
+from shakemap_service import main, paths
+from shakemap_service.config import Settings
 
 
 class DisabledApplicationStartupTests(unittest.TestCase):
@@ -36,7 +37,11 @@ class DisabledApplicationStartupTests(unittest.TestCase):
                     )
 
             with (
-                patch.object(main.settings, "service_root", str(service_root)),
+                patch.object(
+                    paths,
+                    "settings",
+                    Settings(runtime_root=str(service_root.parent)),
+                ),
                 patch.object(
                     main,
                     "recover_interrupted_events",

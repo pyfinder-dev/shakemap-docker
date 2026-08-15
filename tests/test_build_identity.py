@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import stat
 import subprocess
@@ -74,6 +75,18 @@ def identity_manifest() -> dict:
                     "database_sha256": "a" * 64,
                     "database_is_installed_distribution_file": True,
                 },
+                "slab2": {
+                    "version": "Slab2",
+                    "source_url": "https://example.test/slab2.zip",
+                    "source_archive_path": "/opt/shakemap-support/slab2/source.zip",
+                    "source_archive_sha256": "1" * 64,
+                    "source_manifest_path": "/opt/shakemap-support/slab2.json",
+                    "source_manifest_sha256": "2" * 64,
+                    "installed_files_manifest_path": "/opt/shakemap-support/slab2/installed-files.json",
+                    "installed_files_manifest_sha256": "3" * 64,
+                    "slabs_dir": "/opt/shakemap-support/slab2/slabs",
+                    "file_count": 108,
+                },
             },
             "built_at_utc": "2026-07-22T12:00:00Z",
         },
@@ -89,7 +102,6 @@ def make_support(root: Path) -> tuple[Path, Path, Path, Path]:
         path.parent.mkdir(parents=True, exist_ok=True)
         data = f"natural-earth-{index}\n".encode()
         path.write_bytes(data)
-        import hashlib
         records.append({
             "source_path": f"source-{index}",
             "target_path": relative,
@@ -110,6 +122,50 @@ def make_support(root: Path) -> tuple[Path, Path, Path, Path]:
     link = root / "strec-link.db"
     link.symlink_to(database)
     return manifest, cartopy, database, link
+
+
+def make_slab2_support(root: Path) -> tuple[Path, Path]:
+    support = root / "slab2-support"
+    slabs = support / "slabs"
+    slabs.mkdir(parents=True, exist_ok=True)
+    records = []
+    for index in range(2):
+        path = slabs / f"grid-{index}.grd"
+        data = f"slab2-{index}\n".encode()
+        path.write_bytes(data)
+        records.append(
+            {
+                "path": path.name,
+                "size": len(data),
+                "sha256": hashlib.sha256(data).hexdigest(),
+            }
+        )
+    archive = support / "source.zip"
+    archive.write_bytes(b"slab2 archive fixture\n")
+    inventory = support / "installed-files.json"
+    inventory.write_text(
+        json.dumps({"schema_version": 1, "files": records}),
+        encoding="utf-8",
+    )
+    manifest = root / "slab2.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "dataset": "USGS Slab2 grid collection",
+                "version": "Slab2",
+                "url": "https://example.test/slab2.zip",
+                "archive": {
+                    "size": archive.stat().st_size,
+                    "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+                },
+                "file_count": len(records),
+                "target_subdirectory": "slabs",
+            }
+        ),
+        encoding="utf-8",
+    )
+    return manifest, support
 
 
 def make_mapping_compatibility(root: Path, version: str) -> Path:
@@ -276,6 +332,7 @@ class BuildIdentityTests(unittest.TestCase):
         dependencies.write_text("example==1.0\n", encoding="utf-8")
         output = self.root / "written.json"
         natural_manifest, cartopy, strec_database, strec_link = make_support(self.root / "support-api")
+        slab2_manifest, slab2_support = make_slab2_support(self.root / "support-api")
         mapping_compatibility = make_mapping_compatibility(self.root / "support-api", "1.2.3")
         class FakeStrec:
             version = "2.3.14"
@@ -297,6 +354,8 @@ class BuildIdentityTests(unittest.TestCase):
                 build_timestamp_utc="2026-07-22T12:00:00Z",
                 natural_earth_manifest=natural_manifest,
                 cartopy_data_dir=cartopy,
+                slab2_manifest=slab2_manifest,
+                slab2_support_dir=slab2_support,
                 mapping_compatibility_record=mapping_compatibility,
                 strec_database_link=strec_link,
             )
@@ -319,6 +378,7 @@ class BuildIdentityTests(unittest.TestCase):
                 encoding="utf-8",
             )
         natural_manifest, cartopy, strec_database, strec_link = make_support(metadata_root)
+        slab2_manifest, slab2_support = make_slab2_support(metadata_root)
         strec_record = metadata_root / "usgs_strec-2.3.14.dist-info" / "RECORD"
         strec_record.write_text("strec/data/moment_tensors.db,,\n", encoding="utf-8")
         dependencies = self.root / "cli-dependencies.txt"
@@ -342,6 +402,8 @@ class BuildIdentityTests(unittest.TestCase):
                 "--build-timestamp-utc", "2026-07-22T12:00:00Z",
                 "--natural-earth-manifest", str(natural_manifest),
                 "--cartopy-data-dir", str(cartopy),
+                "--slab2-manifest", str(slab2_manifest),
+                "--slab2-support-dir", str(slab2_support),
                 "--mapping-compatibility-record", str(mapping_compatibility),
                 "--strec-database-link", str(strec_link),
             ],

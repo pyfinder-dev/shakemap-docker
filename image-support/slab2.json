@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "dataset": "USGS Slab2 grid collection",
+  "version": "Slab2",
+  "url": "https://apps.usgs.gov/shakemap_geodata/slabs/slab2.zip",
+  "archive": {
+    "size": 12028579,
+    "sha256": "2258004fd3d8467e894a1bdb3cd4224a40bd3c876b4ec2e35617f265c7047360",
+    "checksum_authority": "project-verified download pin; USGS publishes no checksum alongside the file"
+  },
+  "file_count": 108,
+  "target_subdirectory": "slabs",
+  "purpose": "Image-resident Slab2 grids used by STREC in the supported native ShakeMap setup",
+  "source_information": "https://www.usgs.gov/programs/earthquake-hazards/science/slab2-comprehensive-subduction-zone-geometry-model"
+}

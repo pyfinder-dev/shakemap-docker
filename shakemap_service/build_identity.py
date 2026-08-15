@@ -105,6 +105,7 @@ def validate_build_identity(data: Any) -> dict:
 
     natural_earth = _require_mapping(support.get("natural_earth"), "support.natural_earth")
     strec = _require_mapping(support.get("strec"), "support.strec")
+    slab2 = _require_mapping(support.get("slab2"), "support.slab2")
     if natural_earth.get("tag") != "v5.1.2":
         raise BuildIdentityError("unsupported Natural Earth tag")
     if _FULL_COMMIT_RE.fullmatch(_require_string(natural_earth.get("commit"), "natural_earth.commit")) is None:
@@ -122,6 +123,23 @@ def validate_build_identity(data: Any) -> dict:
             raise BuildIdentityError(f"{field} is not a SHA-256 digest")
     if not isinstance(strec.get("database_size"), int) or strec["database_size"] <= 0:
         raise BuildIdentityError("strec.database_size must be positive")
+    if slab2.get("version") != "Slab2":
+        raise BuildIdentityError("unsupported Slab2 image support version")
+    if not isinstance(slab2.get("file_count"), int) or slab2["file_count"] < 1:
+        raise BuildIdentityError("slab2.file_count must be positive")
+    for field in (
+        "source_url",
+        "source_archive_path",
+        "source_archive_sha256",
+        "source_manifest_path",
+        "source_manifest_sha256",
+        "installed_files_manifest_path",
+        "installed_files_manifest_sha256",
+        "slabs_dir",
+    ):
+        value = _require_string(slab2.get(field), f"slab2.{field}")
+        if field.endswith("sha256") and _SHA256_RE.fullmatch(value) is None:
+            raise BuildIdentityError(f"{field} is not a SHA-256 digest")
 
     _require_string(image.get("built_at_utc"), "built_at_utc")
     return root
@@ -304,6 +322,8 @@ def write_build_identity(
     build_timestamp_utc: str,
     natural_earth_manifest: Path,
     cartopy_data_dir: Path,
+    slab2_manifest: Path,
+    slab2_support_dir: Path,
     mapping_compatibility_record: Path,
     strec_database_link: Path = Path("/opt/shakemap-support/strec/moment_tensors.db"),
 ) -> dict:
@@ -343,6 +363,42 @@ def write_build_identity(
         path = cartopy_data_dir / record["target_path"]
         if not path.is_file() or path.stat().st_size != record["size"] or _sha256(path) != record["sha256"]:
             raise BuildIdentityError(f"Natural Earth support file failed verification: {path}")
+
+    try:
+        slab2_source = json.loads(slab2_manifest.read_text(encoding="utf-8"))
+        slab2_inventory_path = slab2_support_dir / "installed-files.json"
+        slab2_inventory = json.loads(slab2_inventory_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise BuildIdentityError(f"Slab2 support metadata is unreadable: {exc}") from exc
+    slab2_archive = slab2_support_dir / "source.zip"
+    slab2_grids = slab2_support_dir / "slabs"
+    if (
+        slab2_source.get("schema_version") != 1
+        or slab2_source.get("version") != "Slab2"
+        or slab2_source.get("target_subdirectory") != "slabs"
+        or slab2_inventory.get("schema_version") != 1
+        or not slab2_archive.is_file()
+        or slab2_archive.stat().st_size != slab2_source.get("archive", {}).get("size")
+        or _sha256(slab2_archive) != slab2_source.get("archive", {}).get("sha256")
+        or not slab2_grids.is_dir()
+    ):
+        raise BuildIdentityError("Slab2 image support does not match its source manifest")
+    slab2_records = slab2_inventory.get("files")
+    if (
+        not isinstance(slab2_records, list)
+        or len(slab2_records) != slab2_source.get("file_count")
+    ):
+        raise BuildIdentityError("Slab2 installed-file inventory has the wrong file count")
+    for record in slab2_records:
+        relative = Path(record.get("path", ""))
+        path = slab2_grids / relative
+        if (
+            relative.name != str(relative)
+            or not path.is_file()
+            or path.stat().st_size != record.get("size")
+            or _sha256(path) != record.get("sha256")
+        ):
+            raise BuildIdentityError(f"Slab2 support file failed verification: {path}")
 
     strec_dist = importlib.metadata.distribution("usgs-strec")
     strec_database = next(
@@ -389,6 +445,18 @@ def write_build_identity(
                     "database_sha256": _sha256(strec_database),
                     "database_is_installed_distribution_file": True,
                 },
+                "slab2": {
+                    "version": slab2_source["version"],
+                    "source_url": slab2_source["url"],
+                    "source_archive_path": str(slab2_archive),
+                    "source_archive_sha256": _sha256(slab2_archive),
+                    "source_manifest_path": str(slab2_manifest),
+                    "source_manifest_sha256": _sha256(slab2_manifest),
+                    "installed_files_manifest_path": str(slab2_inventory_path),
+                    "installed_files_manifest_sha256": _sha256(slab2_inventory_path),
+                    "slabs_dir": str(slab2_grids),
+                    "file_count": len(slab2_records),
+                },
             },
             "built_at_utc": build_timestamp_utc,
         },
@@ -412,6 +480,8 @@ def _parser() -> argparse.ArgumentParser:
     writer.add_argument("--build-timestamp-utc", required=True)
     writer.add_argument("--natural-earth-manifest", type=Path, required=True)
     writer.add_argument("--cartopy-data-dir", type=Path, required=True)
+    writer.add_argument("--slab2-manifest", type=Path, required=True)
+    writer.add_argument("--slab2-support-dir", type=Path, required=True)
     writer.add_argument("--mapping-compatibility-record", type=Path, required=True)
     writer.add_argument(
         "--strec-database-link",
@@ -443,6 +513,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             build_timestamp_utc=args.build_timestamp_utc,
             natural_earth_manifest=args.natural_earth_manifest,
             cartopy_data_dir=args.cartopy_data_dir,
+            slab2_manifest=args.slab2_manifest,
+            slab2_support_dir=args.slab2_support_dir,
             mapping_compatibility_record=args.mapping_compatibility_record,
             strec_database_link=args.strec_database_link,
         )

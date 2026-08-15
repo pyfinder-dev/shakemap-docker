@@ -86,7 +86,7 @@ def materialize_calculation(record: RequestStatus) -> Path:
     if target.exists():
         raise CalculationExistsError(
             f"calculation already exists and was preserved: {target}; "
-            "recalculation archival is not implemented in this milestone"
+            "recalculation archival is not implemented"
         )
 
     temporary = Path(tempfile.mkdtemp(
@@ -115,7 +115,7 @@ def materialize_calculation(record: RequestStatus) -> Path:
             "software_identity": service_identity(),
             "success_gate": {
                 "implemented": False,
-                "reason": "authoritative operational success semantics are Milestone 5",
+                "reason": "authoritative operational success semantics are not implemented",
             },
         }
         write_json_atomic(temporary / "metadata.json", metadata)
@@ -176,10 +176,10 @@ def run_shake_for_event(record: RequestStatus) -> str:
     """Execute directly in products/<event_id>/current without publication copy.
 
     The public worker remains disabled. If this internal function is invoked,
-    native exit zero is deliberately not promoted to SUCCESS before Milestone 5
-    defines and verifies the authoritative operational gate.
+    native exit zero is deliberately not promoted to SUCCESS before the
+    authoritative operational gate is implemented and verified.
     """
-    modules = record.module_plan or settings.shakemap_modules.split()
+    modules = settings.module_plan
     record = update_status(record.sequence, module_plan=list(modules))
 
     try:
@@ -247,7 +247,7 @@ def run_shake_for_event(record: RequestStatus) -> str:
 
     transition_to_failed(
         record.sequence,
-        "Native execution exited zero, but the Milestone 5 operational "
+        "Native execution exited zero, but the operational "
         "success gate is not implemented; outputs were preserved",
         code="success_gate_not_implemented",
         current_child=child,

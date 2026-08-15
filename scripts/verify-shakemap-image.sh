@@ -22,6 +22,11 @@ check() {
 check test "$(id -u)" = 1000
 check test "$(id -g)" = 1000
 check command -v shake
+check command -v sm_profile
+check command -v shake-in-docker
+check bash -n /app/entrypoint.sh
+check sm_profile --help
+check shake-in-docker --help
 
 IDENTITY_RESULT="$(python - <<'PY'
 import hashlib
@@ -34,6 +39,7 @@ from shakemap_service.build_identity import (
     BUILD_IDENTITY_SCHEMA_VERSION,
     validate_build_identity,
 )
+from shakemap_service.release import load_declared_release_tag
 
 errors = []
 path = pathlib.Path('/opt/shakemap-build/identity.json')
@@ -51,6 +57,9 @@ try:
         errors.append('ShakeMap version mismatch')
     if importlib.metadata.version('shakemap-modules') != image['installed']['shakemap_modules_distribution_version']:
         errors.append('module version mismatch')
+    declared = load_declared_release_tag(pathlib.Path('/opt/shakemap-build/VERSIONS.env'))
+    if image['upstream']['release_tag'] != declared:
+        errors.append('installed release differs from VERSIONS.env')
     support = image['support']
     ne_manifest_path = pathlib.Path(support['natural_earth']['manifest_path'])
     ne_manifest = json.loads(ne_manifest_path.read_text())
@@ -68,6 +77,24 @@ try:
         errors.append('STREC support is not a link to the installed database')
     if database.stat().st_size != strec['database_size'] or hashlib.sha256(database.read_bytes()).hexdigest() != strec['database_sha256']:
         errors.append('STREC database identity mismatch')
+    slab2 = support['slab2']
+    slab_manifest_path = pathlib.Path(slab2['source_manifest_path'])
+    slab_inventory_path = pathlib.Path(slab2['installed_files_manifest_path'])
+    slab_archive_path = pathlib.Path(slab2['source_archive_path'])
+    slab_root = pathlib.Path(slab2['slabs_dir'])
+    if hashlib.sha256(slab_manifest_path.read_bytes()).hexdigest() != slab2['source_manifest_sha256']:
+        errors.append('Slab2 source manifest digest mismatch')
+    if hashlib.sha256(slab_inventory_path.read_bytes()).hexdigest() != slab2['installed_files_manifest_sha256']:
+        errors.append('Slab2 installed-file manifest digest mismatch')
+    if hashlib.sha256(slab_archive_path.read_bytes()).hexdigest() != slab2['source_archive_sha256']:
+        errors.append('Slab2 source archive digest mismatch')
+    inventory = json.loads(slab_inventory_path.read_text())
+    if len(inventory.get('files', [])) != slab2['file_count']:
+        errors.append('Slab2 installed-file count mismatch')
+    for record in inventory.get('files', []):
+        item = slab_root / record['path']
+        if not item.is_file() or item.stat().st_size != record['size'] or hashlib.sha256(item.read_bytes()).hexdigest() != record['sha256']:
+            errors.append(f'Slab2 file mismatch: {item}')
 except Exception as exc:
     errors.append(f'{type(exc).__name__}: {exc}')
 print('OK' if not errors else ' | '.join(errors))
@@ -92,6 +119,17 @@ print('OK' if all(root in path.parents and path.is_file() for path in paths) els
 PY
 )"
 check test "${CARTOPY_RESULT}" = OK
+
+SEED_RESULT="$(python - <<'PY'
+import pathlib
+
+root = pathlib.Path('/opt/shakemap-seeds/regional')
+required = {'gmpe_sets.conf', 'model.conf', 'modules.conf', 'products.conf', 'select.conf'}
+folders = [path for path in root.iterdir() if path.is_dir() and not path.name.startswith('.')]
+print('OK' if folders and all(required <= {item.name for item in folder.iterdir()} for folder in folders) else 'INVALID')
+PY
+)"
+check test "${SEED_RESULT}" = OK
 
 MODULE_RESULT="$(python - <<'PY'
 from shakemap_modules.coremods.sm_select import SelectModule
@@ -139,6 +177,10 @@ if [[ "${MAPPING_STACK_RESULT}" != "OK" ]]; then echo "${MAPPING_STACK_RESULT}" 
 
 check test -x /app/scripts/verify-shakemap-image.sh
 check test "$(find /app/scripts -maxdepth 1 -type f | wc -l | tr -d ' ')" = 1
+check test ! -e /opt/shakemap-support/global/vs30/global_vs30.grd
+check test ! -e /opt/shakemap-support/global/topo/topo_30sec.grd
+check test ! -e /home/sysop/runtime/shakemap/data/global/vs30/global_vs30.grd
+check test ! -e /home/sysop/runtime/shakemap/data/global/topo/topo_30sec.grd
 
 echo "Container-internal image verification: ${PASS} passed, ${FAIL} failed"
 echo "This result does not establish running-service deployment readiness."

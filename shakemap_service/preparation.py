@@ -13,36 +13,26 @@ import sys
 import urllib.request
 import uuid
 import xml.etree.ElementTree as ET
+from importlib.resources import files
 from pathlib import Path
 from typing import Any, Iterable
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
-GLOBAL_ASSETS = {
-    "vs30": {
-        "label": "global Vs30 grid",
-        "relative": "global/vs30/global_vs30.grd",
-        "url": "https://apps.usgs.gov/shakemap_geodata/vs30/global_vs30.grd",
-        "size": 610189275,
-        "sha256": "b07944c5be332c5a261777d23b3390fe8d5638f25b388b82f5dc1e98c6356011",
-        "checksum_authority": (
-            "project-verified download pin; USGS publishes no checksum "
-            "alongside the file"
-        ),
-    },
-    "topography": {
-        "label": "global topography grid",
-        "relative": "global/topo/topo_30sec.grd",
-        "url": "https://apps.usgs.gov/shakemap_geodata/topo/topo_30sec.grd",
-        "size": 249661705,
-        "sha256": "3aa02a77d56d656deae9bf4539afdb3ce1dd1b7057a67a5c7bdd0573fc97bd4c",
-        "checksum_authority": (
-            "project-verified download pin; USGS publishes no checksum "
-            "alongside the file"
-        ),
-    },
-}
+
+def load_global_assets() -> dict[str, dict[str, Any]]:
+    resource = files("shakemap_service").joinpath("data/global-assets.json")
+    manifest = json.loads(resource.read_text(encoding="utf-8"))
+    if manifest.get("schema_version") != 1:
+        raise RuntimeError("unsupported global scientific-data manifest schema")
+    assets = manifest.get("assets")
+    if not isinstance(assets, dict) or set(assets) != {"vs30", "topography"}:
+        raise RuntimeError("global scientific-data manifest must define Vs30 and topography")
+    return assets
+
+
+GLOBAL_ASSETS = load_global_assets()
 
 class DataProvisioningError(RuntimeError):
     """Raised when an explicit data operation cannot complete safely."""
