@@ -18,7 +18,7 @@ PROJECT_DIR = Path(__file__).resolve().parent.parent
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
-from shakemap_service import build_identity, main, release, runner
+from shakemap_service import build_identity, main, release
 
 
 COMMIT_A = "a" * 40
@@ -311,7 +311,7 @@ class BuildIdentityTests(unittest.TestCase):
         self.assertEqual(unavailable["invalid_fields"], [])
         self.assertEqual(unavailable["source"], "unavailable")
 
-    def test_config_health_and_runner_use_shared_identity_loader(self) -> None:
+    def test_config_and_health_use_shared_identity_loader(self) -> None:
         config_response = main.get_config()
         health_response = main.healthz()
         self.assertEqual(config_response["identity"], health_response["identity"])
@@ -324,8 +324,6 @@ class BuildIdentityTests(unittest.TestCase):
             health_response["data"]["summary"]["validation_state"],
             "not_evaluated",
         )
-
-        self.assertEqual(runner.service_identity(), main.get_config()["identity"])
 
     def test_writer_api_validates_and_writes_manifest(self) -> None:
         dependencies = self.root / "dependencies.txt"

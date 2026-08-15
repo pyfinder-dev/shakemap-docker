@@ -34,12 +34,24 @@ def shakemap_data_dir() -> Path:
     return service_root() / "data"
 
 
+def inputs_dir() -> Path:
+    return shakemap_data_dir() / "inputs"
+
+
+def event_input_dir(event_id: str) -> Path:
+    return inputs_dir() / event_id
+
+
 def events_dir() -> Path:
     return service_dir() / "events"
 
 
 def archive_dir() -> Path:
     return service_dir() / "archive"
+
+
+def queue_dir() -> Path:
+    return service_dir() / "queue"
 
 
 def queue_entry_name(sequence: int) -> str:
@@ -60,7 +72,7 @@ def parse_queue_entry_name(name: str) -> int:
 
 
 def queue_entry_dir(sequence: int) -> Path:
-    return events_dir() / queue_entry_name(sequence)
+    return queue_dir() / queue_entry_name(sequence)
 
 
 def queue_status_file(sequence: int) -> Path:
@@ -71,32 +83,24 @@ def queue_request_dir(sequence: int) -> Path:
     return queue_entry_dir(sequence) / "request"
 
 
-def queue_claim_lock_file(sequence: int) -> Path:
-    return queue_entry_dir(sequence) / "claim.lock"
-
-
 def queue_sequence_file() -> Path:
-    return events_dir() / ".next-sequence"
-
-
-def queue_sequence_lock_file() -> Path:
-    return events_dir() / ".sequence.lock"
+    return queue_dir() / ".next-sequence"
 
 
 def event_products_dir(event_id: str) -> Path:
     return products_dir() / event_id
 
 
+def event_service_dir(event_id: str) -> Path:
+    return events_dir() / event_id
+
+
 def event_request_dir(event_id: str) -> Path:
-    return event_products_dir(event_id) / "request"
-
-
-def event_effective_dir(event_id: str) -> Path:
-    return event_products_dir(event_id) / "effective"
+    return event_service_dir(event_id) / "request"
 
 
 def event_profile_dir(event_id: str) -> Path:
-    return event_products_dir(event_id) / "profile"
+    return event_service_dir(event_id) / "profile"
 
 
 def event_current_dir(event_id: str) -> Path:
@@ -108,28 +112,44 @@ def event_native_products_dir(event_id: str) -> Path:
 
 
 def event_logs_dir(event_id: str) -> Path:
-    return event_products_dir(event_id) / "logs"
+    return event_service_dir(event_id) / "logs"
 
 
 def event_log_file(event_id: str) -> Path:
-    return event_logs_dir(event_id) / "execution.log"
+    return event_logs_dir(event_id) / "shake.log"
+
+
+def event_service_log_file(event_id: str) -> Path:
+    return event_logs_dir(event_id) / "service.log"
 
 
 def event_status_file(event_id: str) -> Path:
-    return event_products_dir(event_id) / "status.json"
+    return event_service_dir(event_id) / "status.json"
 
 
-def event_metadata_file(event_id: str) -> Path:
-    return event_products_dir(event_id) / "metadata.json"
+def event_provenance_file(event_id: str) -> Path:
+    return event_service_dir(event_id) / "provenance.json"
 
 
 def event_manifest_file(event_id: str) -> Path:
-    return event_products_dir(event_id) / "product-manifest.json"
+    return event_service_dir(event_id) / "product-manifest.json"
 
 
-def event_archive_dir(event_id: str) -> Path:
-    """Return the archive namespace only; archival is not implemented."""
-    return archive_dir() / event_id
+def event_archive_dir(event_id: str, utc_timestamp: str) -> Path:
+    """Construct a retained-calculation path without performing archive I/O."""
+    return archive_dir() / f"{event_id}-{utc_timestamp}"
+
+
+def shared_service_root() -> Path:
+    return Path(settings.shared_service_root)
+
+
+def shared_event_input_dir(event_id: str) -> Path:
+    return shared_service_root() / "data" / "inputs" / event_id
+
+
+def shared_event_native_products_dir(event_id: str) -> Path:
+    return shared_service_root() / "products" / event_id / "current" / "products"
 
 
 def vs30_dir() -> Path:
@@ -169,6 +189,8 @@ def all_service_dirs() -> list[Path]:
         products_dir(),
         logs_dir(),
         shakemap_data_dir(),
+        inputs_dir(),
+        queue_dir(),
         events_dir(),
         archive_dir(),
     ]

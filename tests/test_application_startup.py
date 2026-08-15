@@ -9,20 +9,20 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from shakemap_service import main, paths
+from shakemap_service import main, paths, worker
 from shakemap_service.config import Settings
 
 
 class DisabledApplicationStartupTests(unittest.TestCase):
-    def test_startup_does_not_recover_start_worker_or_change_records(self) -> None:
+    def test_startup_does_not_start_worker_or_change_records(self) -> None:
         with tempfile.TemporaryDirectory(prefix="inert_startup_") as temporary:
             service_root = Path(temporary) / "shakemap"
-            fixture = service_root / ".service/events/00000000000000000001/status.json"
+            fixture = service_root / ".service/queue/00000000000000000001/status.json"
             fixture.parent.mkdir(parents=True)
             fixture.write_bytes(
                 b'{"event_id":"fixture","status":"RUNNING","opaque":"preserve"}\n'
             )
-            queue_fixture = service_root / ".service/events/.next-sequence"
+            queue_fixture = service_root / ".service/queue/.next-sequence"
             queue_fixture.write_bytes(b"00000000000000000002\n")
             before = {
                 fixture: fixture.read_bytes(),
@@ -43,20 +43,20 @@ class DisabledApplicationStartupTests(unittest.TestCase):
                     Settings(runtime_root=str(service_root.parent)),
                 ),
                 patch.object(
-                    main,
-                    "recover_interrupted_events",
-                    side_effect=AssertionError("startup recovery was invoked"),
-                ) as recovery,
+                    worker,
+                    "run_worker_cycle",
+                    side_effect=AssertionError("worker cycle was invoked"),
+                ) as worker_cycle,
                 patch.object(
-                    main.threading,
-                    "Thread",
-                    side_effect=AssertionError("worker thread was constructed"),
-                ) as thread,
+                    worker,
+                    "execute_shakemap",
+                    side_effect=AssertionError("native worker was invoked"),
+                ) as native_worker,
             ):
                 asyncio.run(exercise_lifespan())
 
-            recovery.assert_not_called()
-            thread.assert_not_called()
+            worker_cycle.assert_not_called()
+            native_worker.assert_not_called()
             self.assertEqual(
                 {path: path.read_bytes() for path in before},
                 before,
