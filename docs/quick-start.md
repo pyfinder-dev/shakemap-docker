@@ -28,5 +28,4 @@ The data tree is mounted read-only. The APIs will report liveness and data
 evidence, but overall readiness remains false because managed execution is
 disabled.
 
-Host helpers require Python 3.10 or newer. Override the executable with
-`SHAKEMAP_HOST_PYTHON=/path/to/python3` when necessary.
+Activate the project Python environment before running host data helpers.

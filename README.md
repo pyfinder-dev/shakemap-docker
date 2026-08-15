@@ -18,12 +18,12 @@ curl -fsS http://localhost:9010/healthz
 ```
 
 `inspect` is cheap and read-only. It checks presence/readability and parses only
-small manifests. `validate` is also read-only, but hashes the large pinned
-global assets. `provision` is the only data-manager action that may download,
-import, or replace an invalid asset; an invalid prior asset is preserved.
+small directory entries. `validate` is also read-only, but hashes the two large
+pinned global assets. `provision` reuses valid assets and may download or import
+only a missing asset. An invalid, incomplete, or unexpected existing asset is
+left unchanged and reported with corrective action.
 
-Host helpers require Python 3.10 or newer. Set `SHAKEMAP_HOST_PYTHON` when the
-appropriate interpreter is not named `python3`.
+Activate the project Python environment before running the data helper.
 
 ## Runtime data contract
 
@@ -33,13 +33,12 @@ External data lives below `runtime/shakemap/data/`:
 global/
   vs30/global_vs30.grd
   topo/topo_30sec.grd
-  strec/
-    slab2-manifest.json
-    slabs/
 regional/
 test/<resolved-version>/
 ```
 
+Stage 2 manages only the displayed global VS30 and topography files. Other
+small support data belongs to image build or finalization, not this helper.
 Manual placement remains supported. For a separate state directory using an
 existing data tree:
 

@@ -20,8 +20,10 @@ large hashes and native reads. Run:
 ./scripts/manage-shakemap-data.sh validate --runtime /path/to/runtime
 ```
 
-Validation errors name the path and mismatch. Use explicit `provision` with a
-manual source or permitted download only when you intend to modify data.
+Validation errors name the asset, path, problem, and corrective action.
+`provision` will not replace an invalid or unexpected existing asset. Review it,
+then move or remove it explicitly before installing the pinned asset, or correct
+the existing file manually and rerun validation.
 
 ## Overall readiness remains false
 

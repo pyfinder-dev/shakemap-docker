@@ -3,7 +3,7 @@
 | Script | Responsibility |
 |---|---|
 | `build-shakemap-docker.sh` | Resolve and build one immutable upstream ShakeMap release. |
-| `manage-shakemap-data.sh` | Inspect, fully validate, or explicitly provision external datasets. |
+| `manage-shakemap-data.sh` | Inspect, validate, or provision missing global VS30/topography assets. |
 | `prepare-shakemap-verification-data.py` | Prepare or validate a release-matched fixed verification package. |
 | `start-shakemap-docker.sh` | Start the stable service with isolated state and a read-only data mount. |
 | `verify-shakemap-image.sh` | Verify installed image identity, imports, and immutable support data. |
@@ -11,13 +11,15 @@
 
 `manage-shakemap-data.sh inspect` is cheap and read-only.
 `manage-shakemap-data.sh validate` performs full pinned checksum validation and
-may take time. `manage-shakemap-data.sh provision` is the only action here that
-may alter scientific data.
+may take time. `manage-shakemap-data.sh provision` reuses a valid existing asset
+and installs only a missing one. It never replaces an invalid or unexpected
+existing asset.
 
-Host-side Python helpers require Python 3.10 or newer:
+Activate the project Python environment before running the helper:
 
 ```bash
-SHAKEMAP_HOST_PYTHON=/path/to/python3 ./scripts/manage-shakemap-data.sh inspect
+source /path/to/project/.venv/bin/activate
+./scripts/manage-shakemap-data.sh inspect
 ```
 
 The start helper accepts `--data DIR` for an existing exact data tree. It mounts

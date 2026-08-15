@@ -26,13 +26,11 @@ class DataInventoryTests(unittest.TestCase):
             root = Path(temporary)
             vs30 = root / "global/vs30/global_vs30.grd"
             topo = root / "global/topo/topo_30sec.grd"
-            slabs = root / "global/strec/slabs"
             regional = root / "regional/local"
-            for directory in (vs30.parent, topo.parent, slabs, regional):
+            for directory in (vs30.parent, topo.parent, regional):
                 directory.mkdir(parents=True)
             vs30.write_bytes(b"vs30 fixture")
             topo.write_bytes(b"topography fixture")
-            (slabs / "fixture.grd").write_bytes(b"slab fixture")
             before = snapshot(root)
 
             with patch.object(
@@ -43,6 +41,9 @@ class DataInventoryTests(unittest.TestCase):
                 result = preparation.inspect_data_assets(root)
 
             self.assertEqual(snapshot(root), before)
+            self.assertEqual(
+                set(result["assets"]), {"global_vs30", "global_topography"}
+            )
             self.assertTrue(
                 all(
                     asset["present"] and asset["readable"]

@@ -10,12 +10,9 @@ import os
 import re
 import shutil
 import sys
-import tempfile
 import urllib.request
 import uuid
-import zipfile
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -47,19 +44,6 @@ GLOBAL_ASSETS = {
     },
 }
 
-SLAB2 = {
-    "label": "Slab2 archive",
-    "url": "https://apps.usgs.gov/shakemap_geodata/slabs/slab2.zip",
-    "size": 12028579,
-    "sha256": "2258004fd3d8467e894a1bdb3cd4224a40bd3c876b4ec2e35617f265c7047360",
-    "checksum_authority": (
-        "project-verified download pin; USGS publishes no checksum alongside "
-        "the file"
-    ),
-    "file_count": 108,
-}
-
-
 class DataProvisioningError(RuntimeError):
     """Raised when an explicit data operation cannot complete safely."""
 
@@ -71,7 +55,6 @@ def inspect_data_assets(data_root: Path) -> dict[str, Any]:
     for name, path, expected_kind in (
         ("global_vs30", root / "global/vs30/global_vs30.grd", "file"),
         ("global_topography", root / "global/topo/topo_30sec.grd", "file"),
-        ("strec_slabs", root / "global/strec/slabs", "directory"),
     ):
         present = path.is_file() if expected_kind == "file" else path.is_dir()
         assets[name] = {
@@ -127,24 +110,6 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def atomic_json(path: Path, value: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    handle, temporary_text = tempfile.mkstemp(
-        prefix=f".{path.name}.", dir=path.parent
-    )
-    temporary = Path(temporary_text)
-    try:
-        with os.fdopen(handle, "w", encoding="utf-8") as stream:
-            json.dump(value, stream, indent=2, sort_keys=True)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-    except Exception:
-        temporary.unlink(missing_ok=True)
-        raise
-
-
 def file_record(
     path: Path, *, source: dict[str, Any] | None = None
 ) -> dict[str, Any]:
@@ -168,9 +133,13 @@ def file_record(
 def validate_pinned_file(
     path: Path, spec: dict[str, Any]
 ) -> tuple[bool, str]:
-    if not path.is_file():
-        return False, "missing"
     try:
+        if path.is_symlink():
+            return False, "unexpected symbolic link"
+        if path.exists() and not path.is_file():
+            return False, "unexpected non-file path"
+        if not path.is_file():
+            return False, "missing"
         if path.stat().st_size != spec["size"]:
             return False, "size mismatch"
         with path.open("rb") as stream:
@@ -199,7 +168,7 @@ def provision_file(
     source: Path | None,
     allow_download: bool,
 ) -> dict[str, Any]:
-    """Validate then atomically install one pinned file at its target."""
+    """Validate or install one missing pinned file without replacing a target."""
     label = str(spec.get("label", target.name))
     valid, reason = validate_pinned_file(target, spec)
     if valid:
@@ -209,14 +178,28 @@ def provision_file(
             **file_record(target, source=spec),
         }
 
-    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists() or target.is_symlink():
+        raise DataProvisioningError(
+            f"{label}: existing asset at {target} failed validation ({reason}); "
+            "it was left unchanged. Move or remove it explicitly after review, "
+            "then rerun provisioning"
+        )
+
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise DataProvisioningError(
+            f"{label}: could not prepare the parent of missing asset {target}: "
+            f"{exc}; correct the target path and directory permissions, then retry"
+        ) from exc
     temporary = target.with_name(f".{target.name}.install-{uuid.uuid4().hex}")
     try:
         if source is not None:
             if not source.is_file():
                 raise DataProvisioningError(
                     f"{label}: manual source is missing at {source}; supply a "
-                    "readable source file or allow download"
+                    "readable repository-pinned source file, or omit the "
+                    "source option to allow download"
                 )
             try:
                 shutil.copyfile(source, temporary)
@@ -237,190 +220,43 @@ def provision_file(
             action = "downloaded"
         else:
             raise DataProvisioningError(
-                f"{label}: target {target} is {reason}; supply a valid manual "
-                "source or rerun with download enabled"
+                f"{label}: asset is missing at {target}; supply the "
+                "repository-pinned manual source or rerun with download enabled"
             )
 
-        replacement_valid, replacement_reason = validate_pinned_file(
-            temporary, spec
-        )
-        if not replacement_valid:
+        candidate_valid, candidate_reason = validate_pinned_file(temporary, spec)
+        if not candidate_valid:
             raise DataProvisioningError(
-                f"{label}: replacement for {target} is invalid "
-                f"({replacement_reason}); obtain the pinned asset and retry"
+                f"{label}: candidate for missing asset at {target} failed "
+                f"identity validation ({candidate_reason}); obtain the "
+                "repository-pinned asset and retry"
             )
 
-        preserved = None
-        if target.exists():
-            preserved = target.with_name(
-                f"{target.name}.invalid-"
-                f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
-            )
-            if preserved.exists():
-                preserved = target.with_name(
-                    f"{preserved.name}-{uuid.uuid4().hex[:8]}"
-                )
-            shutil.copyfile(target, preserved)
-        os.replace(temporary, target)
+        try:
+            os.link(temporary, target)
+        except FileExistsError as exc:
+            raise DataProvisioningError(
+                f"{label}: an asset appeared at {target} during provisioning; "
+                "it was left unchanged. Inspect or validate it, then rerun"
+            ) from exc
+        except OSError as exc:
+            raise DataProvisioningError(
+                f"{label}: could not install the validated missing asset at "
+                f"{target}: {exc}; correct the target directory permissions or "
+                "place the pinned file manually, then retry"
+            ) from exc
+        temporary.unlink()
         return {
             "action": action,
-            "previous_validation": reason,
-            "preserved_invalid_path": str(preserved) if preserved else None,
+            "validation": "valid pinned file",
             **file_record(target, source=spec),
         }
     except Exception:
-        temporary.unlink(missing_ok=True)
-        raise
-
-
-def validate_slab_directory(
-    root: Path,
-) -> tuple[bool, str, dict[str, Any] | None]:
-    manifest_path = root.parent / "slab2-manifest.json"
-    if not root.is_dir() or not manifest_path.is_file():
-        return False, "missing slab directory or manifest", None
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if manifest.get("source", {}).get("sha256") != SLAB2["sha256"]:
-            return False, "slab source identity differs", manifest
-        records = manifest["files"]
-        if len(records) != SLAB2["file_count"]:
-            return False, "slab file count differs", manifest
-        for record in records:
-            relative = Path(record["path"])
-            if relative.name != record["path"]:
-                return False, f"unsafe slab manifest path: {record['path']}", manifest
-            path = root / relative
-            if (
-                not path.is_file()
-                or path.stat().st_size != record["size"]
-                or sha256(path) != record["sha256"]
-            ):
-                return False, f"slab file invalid: {record['path']}", manifest
-    except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
-        return False, f"slab manifest unreadable: {exc}", None
-    return True, "valid extracted Slab2 package", manifest
-
-
-def provision_slabs(
-    data_root: Path, source: Path | None, allow_download: bool
-) -> dict[str, Any]:
-    """Validate and install Slab2 below ``global/strec/slabs``."""
-    strec_root = data_root / "global/strec"
-    target = strec_root / "slabs"
-    valid, reason, manifest = validate_slab_directory(target)
-    if valid:
-        return {"action": "reused", "validation": reason, "manifest": manifest}
-
-    strec_root.mkdir(parents=True, exist_ok=True)
-    archive = strec_root / f".slab2-{uuid.uuid4().hex}.zip"
-    temporary = strec_root / f".slabs-install-{uuid.uuid4().hex}"
-    manifest_temporary: Path | None = None
-    try:
-        if source is not None:
-            if not source.is_file():
-                raise DataProvisioningError(
-                    f"Slab2 archive: manual source is missing at {source}; "
-                    "supply a readable slab2.zip or allow download"
-                )
-            try:
-                shutil.copyfile(source, archive)
-            except OSError as exc:
-                raise DataProvisioningError(
-                    f"Slab2 archive: could not import {source} for target "
-                    f"{target}: {exc}; correct source permissions or choose "
-                    "another archive"
-                ) from exc
-            action = "imported"
-        elif allow_download:
-            try:
-                download(SLAB2["url"], archive)
-            except OSError as exc:
-                raise DataProvisioningError(
-                    f"Slab2 archive: download for target {target} failed from "
-                    f"{SLAB2['url']}: {exc}; retry or supply a manual archive"
-                ) from exc
-            action = "downloaded"
-        else:
-            raise DataProvisioningError(
-                f"Slab2 slabs: target {target} is {reason}; supply a valid "
-                "slab2.zip or rerun with download enabled"
-            )
-
-        if (
-            archive.stat().st_size != SLAB2["size"]
-            or sha256(archive) != SLAB2["sha256"]
-        ):
-            raise DataProvisioningError(
-                f"Slab2 archive: source for {target} does not match the pinned "
-                "asset; obtain the supported archive and retry"
-            )
-
-        temporary.mkdir()
         try:
-            with zipfile.ZipFile(archive) as bundle:
-                names = bundle.namelist()
-                if (
-                    len(names) != SLAB2["file_count"]
-                    or any(Path(name).name != name for name in names)
-                ):
-                    raise DataProvisioningError(
-                        f"Slab2 archive: source for {target} has an unexpected "
-                        "or unsafe layout; obtain the supported archive and "
-                        "retry"
-                    )
-                bundle.extractall(temporary)
-        except zipfile.BadZipFile as exc:
-            raise DataProvisioningError(
-                f"Slab2 archive: source for {target} is not a readable ZIP: "
-                f"{exc}; obtain the supported archive and retry"
-            ) from exc
-
-        records = [
-            {
-                "path": path.name,
-                "size": path.stat().st_size,
-                "sha256": sha256(path),
-            }
-            for path in sorted(temporary.iterdir())
-            if path.is_file()
-        ]
-        new_manifest = {
-            "schema_version": 1,
-            "provisioned_at_utc": datetime.now(timezone.utc)
-            .replace(microsecond=0)
-            .isoformat(),
-            "source": SLAB2,
-            "files": records,
-        }
-        manifest_temporary = strec_root / (
-            f".slab2-manifest-install-{uuid.uuid4().hex}.json"
-        )
-        atomic_json(manifest_temporary, new_manifest)
-
-        preserved = None
-        if target.exists():
-            preserved = strec_root / (
-                "slabs.invalid-"
-                f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-"
-                f"{uuid.uuid4().hex[:8]}"
-            )
-            os.replace(target, preserved)
-        os.replace(temporary, target)
-        os.replace(manifest_temporary, strec_root / "slab2-manifest.json")
-        manifest_temporary = None
-        return {
-            "action": action,
-            "previous_validation": reason,
-            "preserved_invalid_path": str(preserved) if preserved else None,
-            "manifest": new_manifest,
-        }
-    finally:
-        archive.unlink(missing_ok=True)
-        if temporary.exists():
-            shutil.rmtree(temporary)
-        if manifest_temporary is not None:
-            manifest_temporary.unlink(missing_ok=True)
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 def validate_pinned_global_assets(data_root: Path) -> dict[str, Any]:
@@ -436,32 +272,20 @@ def validate_pinned_global_assets(data_root: Path) -> dict[str, Any]:
             "corrective_action": (
                 None
                 if valid
-                else "provision the pinned asset or place a valid manual copy "
-                "at this path"
+                else (
+                    "provision the missing pinned asset or place a valid manual "
+                    "copy at this path"
+                    if reason == "missing"
+                    else "review the existing asset, then move or remove it "
+                    "explicitly before provisioning the pinned asset"
+                )
             ),
         }
 
-    slab_path = data_root / "global/strec/slabs"
-    slab_valid, slab_reason, manifest = validate_slab_directory(slab_path)
-    pinned_integrity_valid = (
-        all(item["valid"] for item in assets.values()) and slab_valid
-    )
     return {
         "validation_scope": "pinned_content_integrity",
         "global_assets": assets,
-        "slabs": {
-            "path": str(slab_path),
-            "valid": slab_valid,
-            "reason": slab_reason,
-            "manifest": manifest,
-            "corrective_action": (
-                None
-                if slab_valid
-                else "provision the pinned Slab2 archive or place a valid "
-                "slab tree and manifest at this path"
-            ),
-        },
-        "pinned_integrity_valid": pinned_integrity_valid,
+        "pinned_integrity_valid": all(item["valid"] for item in assets.values()),
     }
 
 
@@ -470,7 +294,6 @@ def provision_global_data(
     *,
     vs30_source: Path | None,
     topo_source: Path | None,
-    slab_source: Path | None,
     allow_download: bool,
 ) -> dict[str, Any]:
     """Explicitly provision pinned global data at contracted destinations."""
@@ -484,10 +307,7 @@ def provision_global_data(
         )
         for name, spec in GLOBAL_ASSETS.items()
     }
-    return {
-        "global_assets": assets,
-        "slabs": provision_slabs(data_root, slab_source, allow_download),
-    }
+    return {"global_assets": assets}
 
 
 def validate_composed_image(
@@ -824,14 +644,13 @@ def parser() -> argparse.ArgumentParser:
     inspect = commands.add_parser("inspect")
     inspect.add_argument("--data-root", type=Path, default=default_data)
 
-    validate = commands.add_parser("validate-pinned-global")
+    validate = commands.add_parser("validate")
     validate.add_argument("--data-root", type=Path, default=default_data)
 
-    provision = commands.add_parser("provision-global")
+    provision = commands.add_parser("provision")
     provision.add_argument("--data-root", type=Path, default=default_data)
     provision.add_argument("--vs30-source", type=Path)
     provision.add_argument("--topo-source", type=Path)
-    provision.add_argument("--slab-source", type=Path)
     provision.add_argument("--no-download", action="store_true")
     return root
 
@@ -842,15 +661,14 @@ def main(argv: Iterable[str] | None = None) -> int:
         if args.command == "inspect":
             value = inspect_data_assets(args.data_root)
             result = 0
-        elif args.command == "validate-pinned-global":
+        elif args.command == "validate":
             value = validate_pinned_global_assets(args.data_root)
             result = 0 if value["pinned_integrity_valid"] else 1
-        elif args.command == "provision-global":
+        elif args.command == "provision":
             value = provision_global_data(
                 args.data_root,
                 vs30_source=args.vs30_source,
                 topo_source=args.topo_source,
-                slab_source=args.slab_source,
                 allow_download=not args.no_download,
             )
             result = 0
@@ -858,7 +676,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             return 2
         print(json.dumps(value, indent=2, sort_keys=True))
         return result
-    except (OSError, DataProvisioningError, zipfile.BadZipFile) as exc:
+    except (OSError, DataProvisioningError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 

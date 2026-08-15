@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Focused tests for explicit, contracted-path data provisioning."""
+"""Focused tests for missing-only Stage 2 global-data provisioning."""
 
 from __future__ import annotations
 
 import hashlib
 import tempfile
 import unittest
-import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -47,29 +46,43 @@ class FileProvisioningTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
-    def test_valid_existing_file_is_reused_without_download(self) -> None:
+    def test_valid_existing_file_is_reused_without_download_or_mutation(self) -> None:
         target = self.root / self.spec["relative"]
         target.parent.mkdir(parents=True)
         target.write_bytes(HDF)
-        with patch.object(
-            preparation, "download", side_effect=AssertionError("download called")
+        before = target.stat()
+        with (
+            patch.object(
+                preparation, "download", side_effect=AssertionError("download called")
+            ),
+            patch.object(
+                preparation.os, "link", side_effect=AssertionError("install called")
+            ),
         ):
             result = preparation.provision_file(target, self.spec, None, True)
+        after = target.stat()
         self.assertEqual(result["action"], "reused")
         self.assertEqual(target.read_bytes(), HDF)
+        self.assertEqual(
+            (after.st_ino, after.st_mtime_ns),
+            (before.st_ino, before.st_mtime_ns),
+        )
 
-    def test_manual_import_is_an_atomic_sibling_install(self) -> None:
+    def test_manual_import_installs_only_a_missing_target(self) -> None:
         source = self.root / "manual.grd"
         source.write_bytes(HDF)
         target = self.root / self.spec["relative"]
         result = preparation.provision_file(target, self.spec, source, False)
         self.assertEqual(result["action"], "imported")
+        self.assertEqual(result["path"], str(target))
+        self.assertEqual(result["size"], len(HDF))
         self.assertEqual(target.read_bytes(), HDF)
+        self.assertEqual(source.read_bytes(), HDF)
         self.assertEqual(list(target.parent.glob(".global_vs30.grd.install-*")), [])
 
-    def test_mocked_download_is_an_atomic_sibling_install(self) -> None:
+    def test_download_installs_only_after_identity_validation(self) -> None:
         target = self.root / self.spec["relative"]
-        destinations = []
+        destinations: list[Path] = []
 
         def fake_download(_url: str, destination: Path) -> None:
             destinations.append(destination)
@@ -82,31 +95,61 @@ class FileProvisioningTests(unittest.TestCase):
         self.assertEqual(target.read_bytes(), HDF)
         self.assertFalse(destinations[0].exists())
 
-    def test_invalid_replacement_cannot_corrupt_existing_target(self) -> None:
-        target = self.root / self.spec["relative"]
-        target.parent.mkdir(parents=True)
-        target.write_bytes(b"operator-invalid-but-preserved")
+    def test_invalid_candidate_leaves_missing_target_absent(self) -> None:
         source = self.root / "bad-source.grd"
-        source.write_bytes(b"also-invalid")
-        before = target.read_bytes()
+        source.write_bytes(b"invalid")
+        target = self.root / self.spec["relative"]
         with self.assertRaisesRegex(
-            preparation.DataProvisioningError, "replacement.*invalid"
+            preparation.DataProvisioningError,
+            "test grid: candidate for missing asset.*identity validation.*pinned asset",
         ):
             preparation.provision_file(target, self.spec, source, False)
-        self.assertEqual(target.read_bytes(), before)
+        self.assertFalse(target.exists())
+        self.assertEqual(list(target.parent.glob(".*.install-*")), [])
 
-    def test_valid_replacement_preserves_invalid_operator_file(self) -> None:
+    def test_invalid_existing_file_fails_actionably_without_mutation(self) -> None:
         target = self.root / self.spec["relative"]
         target.parent.mkdir(parents=True)
         target.write_bytes(b"operator-invalid")
         source = self.root / "valid-source.grd"
         source.write_bytes(HDF)
-        result = preparation.provision_file(target, self.spec, source, False)
-        self.assertEqual(target.read_bytes(), HDF)
-        self.assertEqual(
-            Path(result["preserved_invalid_path"]).read_bytes(),
-            b"operator-invalid",
-        )
+        before = snapshot(self.root)
+        with self.assertRaisesRegex(
+            preparation.DataProvisioningError,
+            rf"test grid: existing asset at {target} failed validation .*left unchanged.*Move or remove",
+        ):
+            preparation.provision_file(target, self.spec, source, False)
+        self.assertEqual(snapshot(self.root), before)
+
+    def test_unexpected_existing_directory_fails_without_mutation(self) -> None:
+        target = self.root / self.spec["relative"]
+        target.mkdir(parents=True)
+        marker = target / "operator-file"
+        marker.write_bytes(b"preserve")
+        before = snapshot(self.root)
+        with self.assertRaisesRegex(
+            preparation.DataProvisioningError, "existing asset.*left unchanged"
+        ):
+            preparation.provision_file(target, self.spec, None, True)
+        self.assertEqual(snapshot(self.root), before)
+
+    def test_asset_appearing_during_install_is_never_replaced(self) -> None:
+        source = self.root / "valid-source.grd"
+        source.write_bytes(HDF)
+        target = self.root / self.spec["relative"]
+
+        def operator_publish(_candidate: Path, destination: Path) -> None:
+            Path(destination).write_bytes(b"operator-race-winner")
+            raise FileExistsError(destination)
+
+        with patch.object(preparation.os, "link", side_effect=operator_publish):
+            with self.assertRaisesRegex(
+                preparation.DataProvisioningError,
+                "asset appeared.*left unchanged.*Inspect or validate",
+            ):
+                preparation.provision_file(target, self.spec, source, False)
+        self.assertEqual(target.read_bytes(), b"operator-race-winner")
+        self.assertEqual(list(target.parent.glob(".*.install-*")), [])
 
 
 class ContractedDestinationTests(unittest.TestCase):
@@ -132,40 +175,23 @@ class ContractedDestinationTests(unittest.TestCase):
         self.topo_source = self.root / "topo.grd"
         self.vs30_source.write_bytes(self.vs30_bytes)
         self.topo_source.write_bytes(self.topo_bytes)
-        self.slab_source = self.root / "slab2.zip"
-        with zipfile.ZipFile(self.slab_source, "w") as bundle:
-            for suffix in ("dep", "dip", "str", "unc"):
-                bundle.writestr(
-                    f"tst_slab2_{suffix}_01.01.01.grd",
-                    HDF + suffix.encode(),
-                )
-        self.slab_spec = {
-            "label": "Slab2 archive",
-            "url": "https://example.test/slab2.zip",
-            "size": self.slab_source.stat().st_size,
-            "sha256": preparation.sha256(self.slab_source),
-            "checksum_authority": "test",
-            "file_count": 4,
-        }
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
     def provision(self) -> dict:
-        with (
-            patch.object(preparation, "GLOBAL_ASSETS", self.assets),
-            patch.object(preparation, "SLAB2", self.slab_spec),
-        ):
+        with patch.object(preparation, "GLOBAL_ASSETS", self.assets):
             return preparation.provision_global_data(
                 self.data_root,
                 vs30_source=self.vs30_source,
                 topo_source=self.topo_source,
-                slab_source=self.slab_source,
                 allow_download=False,
             )
 
-    def test_global_assets_and_slabs_use_only_contracted_paths(self) -> None:
+    def test_stage2_installs_only_vs30_and_topography(self) -> None:
         result = self.provision()
+        self.assertEqual(set(result), {"global_assets"})
+        self.assertEqual(set(result["global_assets"]), {"vs30", "topography"})
         self.assertEqual(result["global_assets"]["vs30"]["action"], "imported")
         self.assertEqual(
             (self.data_root / "global/vs30/global_vs30.grd").read_bytes(),
@@ -175,66 +201,79 @@ class ContractedDestinationTests(unittest.TestCase):
             (self.data_root / "global/topo/topo_30sec.grd").read_bytes(),
             self.topo_bytes,
         )
-        self.assertTrue((self.data_root / "global/strec/slabs").is_dir())
-        self.assertTrue(
-            (self.data_root / "global/strec/slab2-manifest.json").is_file()
+        self.assertEqual(
+            set(snapshot(self.data_root)),
+            {
+                "global",
+                "global/topo",
+                "global/topo/topo_30sec.grd",
+                "global/vs30",
+                "global/vs30/global_vs30.grd",
+            },
         )
-        all_paths = set(snapshot(self.root))
-        for forbidden in (
-            "incoming",
-            ".service/work",
-            ".service/preparation",
-            "events",
-            "work",
-            "archive",
-            "preparation",
-        ):
-            self.assertFalse(
-                any(part == forbidden for path in all_paths for part in path.split("/"))
-            )
 
-    def test_validation_is_read_only_and_reuses_valid_assets(self) -> None:
+    def test_inspection_and_validation_are_read_only(self) -> None:
         self.provision()
         before = snapshot(self.data_root)
         with (
             patch.object(preparation, "GLOBAL_ASSETS", self.assets),
-            patch.object(preparation, "SLAB2", self.slab_spec),
+            patch.object(
+                preparation,
+                "sha256",
+                side_effect=AssertionError("inspection hashed an asset"),
+            ),
         ):
+            inspection = preparation.inspect_data_assets(self.data_root)
+        self.assertEqual(
+            set(inspection["assets"]), {"global_vs30", "global_topography"}
+        )
+        with patch.object(preparation, "GLOBAL_ASSETS", self.assets):
             validation = preparation.validate_pinned_global_assets(self.data_root)
+        self.assertTrue(validation["pinned_integrity_valid"])
+        self.assertEqual(set(validation["global_assets"]), {"vs30", "topography"})
+        self.assertEqual(snapshot(self.data_root), before)
+
+    def test_valid_assets_are_reused_without_mutation(self) -> None:
+        self.provision()
+        before = snapshot(self.data_root)
+        with (
+            patch.object(preparation, "GLOBAL_ASSETS", self.assets),
+            patch.object(
+                preparation, "download", side_effect=AssertionError("download called")
+            ),
+        ):
             second = preparation.provision_global_data(
                 self.data_root,
                 vs30_source=None,
                 topo_source=None,
-                slab_source=None,
-                allow_download=False,
+                allow_download=True,
             )
-        self.assertEqual(
-            validation["validation_scope"], "pinned_content_integrity"
-        )
-        self.assertTrue(validation["pinned_integrity_valid"])
         self.assertEqual(second["global_assets"]["vs30"]["action"], "reused")
         self.assertEqual(second["global_assets"]["topography"]["action"], "reused")
-        self.assertEqual(second["slabs"]["action"], "reused")
         self.assertEqual(snapshot(self.data_root), before)
 
-    def test_invalid_slab_archive_does_not_change_existing_tree(self) -> None:
-        self.provision()
-        before = snapshot(self.data_root)
-        bad_archive = self.root / "bad-slab2.zip"
-        with zipfile.ZipFile(bad_archive, "w") as bundle:
-            bundle.writestr("../unsafe.grd", HDF)
-        bad_spec = {
-            **self.slab_spec,
-            "size": bad_archive.stat().st_size,
-            "sha256": preparation.sha256(bad_archive),
-            "file_count": 1,
-        }
-        with patch.object(preparation, "SLAB2", bad_spec):
-            with self.assertRaises(preparation.DataProvisioningError):
-                preparation.provision_slabs(
-                    self.data_root, bad_archive, allow_download=False
+    def test_invalid_existing_asset_blocks_provisioning_without_mutation(self) -> None:
+        target = self.data_root / self.assets["vs30"]["relative"]
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b"operator-invalid")
+        before = snapshot(self.root)
+        with patch.object(preparation, "GLOBAL_ASSETS", self.assets):
+            validation = preparation.validate_pinned_global_assets(self.data_root)
+            invalid = validation["global_assets"]["vs30"]
+            self.assertEqual(invalid["path"], str(target))
+            self.assertEqual(invalid["reason"], "size mismatch")
+            self.assertIn("move or remove", invalid["corrective_action"])
+            with self.assertRaisesRegex(
+                preparation.DataProvisioningError,
+                "global Vs30 grid.*size mismatch.*left unchanged.*Move or remove",
+            ):
+                preparation.provision_global_data(
+                    self.data_root,
+                    vs30_source=self.vs30_source,
+                    topo_source=self.topo_source,
+                    allow_download=False,
                 )
-        self.assertEqual(snapshot(self.data_root), before)
+        self.assertEqual(snapshot(self.root), before)
 
 
 class SurfaceTests(unittest.TestCase):
@@ -250,25 +289,32 @@ class SurfaceTests(unittest.TestCase):
         ):
             self.assertFalse(hasattr(preparation, name), name)
         choices = preparation.parser()._subparsers._group_actions[0].choices
+        self.assertEqual(set(choices), {"inspect", "validate", "provision"})
+        provision_options = {
+            option
+            for action in choices["provision"]._actions
+            for option in action.option_strings
+        }
         self.assertEqual(
-            set(choices),
+            provision_options,
             {
-                "inspect",
-                "validate-pinned-global",
-                "provision-global",
+                "-h",
+                "--help",
+                "--data-root",
+                "--vs30-source",
+                "--topo-source",
+                "--no-download",
             },
         )
-        self.assertNotIn("container-prepare", choices)
-        self.assertNotIn("validate-record", choices)
 
-    def test_supported_source_has_no_persistent_workspace_or_docker_call(self) -> None:
+    def test_data_module_and_helper_have_no_replacement_or_docker_path(self) -> None:
         project = Path(__file__).resolve().parents[1]
         module = (project / "shakemap_service/preparation.py").read_text(
             encoding="utf-8"
         )
-        script = (project / "scripts/configure-shakemap.sh").read_text(
-            encoding="utf-8"
-        )
+        helper_path = project / "scripts/manage-shakemap-data.sh"
+        helper = helper_path.read_text(encoding="utf-8")
+        self.assertFalse((project / "scripts/configure-shakemap.sh").exists())
         for forbidden in (
             ".service/preparation",
             ".service/work",
@@ -276,11 +322,14 @@ class SurfaceTests(unittest.TestCase):
             "validate-record",
             "docker run",
             "subprocess.run",
+            "os.replace",
         ):
             self.assertNotIn(forbidden, module)
-        self.assertIn("provision-global", script)
-        self.assertNotIn("docker ", script)
-        self.assertNotIn("--image", script)
+        for forbidden in ("docker ", "--image", "replace"):
+            self.assertNotIn(forbidden, helper.lower())
+        self.assertNotIn("activate)", helper.lower())
+        self.assertIn("inspect|validate|provision", helper)
+        self.assertIn('-m shakemap_service.preparation "${ACTION}"', helper)
 
 
 if __name__ == "__main__":
