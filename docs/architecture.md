@@ -14,6 +14,5 @@ The system has four deliberately separate concerns:
 
 The `shakemap_service.preparation` module exposes the narrow read-only
 inventory used by the disabled API, explicit pinned global-data
-validation/provisioning, and retained native-product readers. It does not
-create or depend on persistent preparation state or a retained verification
-workspace.
+validation/provisioning. It does not create or depend on persistent
+preparation state or a retained verification workspace.

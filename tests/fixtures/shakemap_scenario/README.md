@@ -1,8 +1,9 @@
 # ShakeMap verification scenario
 
-This directory is the fixed client request used by the isolated native
-ShakeMap integration check. Its public event identity and classification are
-both `SCENARIO`. It is compatible with ShakeMap `v4.4.9` at commit
+This directory is the fixed client request used by the canonical-container
+ShakeMap calculation check. Its embedded native identity and classification
+are both `SCENARIO`; the managed check supplies its own public event IDs. The
+fixture is compatible with ShakeMap `v4.4.9` at commit
 `8923f1ff6e82fc866d928a33d1e19e45f276db52`.
 
 The source is the official release-matched USGS South Napa test event
@@ -26,8 +27,9 @@ The immutable source files are:
 
 No finite rupture is supplied. This scenario deliberately exercises the
 release's point-source path. No event-specific configuration is supplied;
-scientific configuration and data come from the separately prepared external
-verification package.
+the managed check selects `global` and uses mounted global VS30 and topography
+plus image support. It does not use the separate California verification
+package.
 
 ## Integrity
 
@@ -36,17 +38,20 @@ The installed SHA-256 values are:
 - `event.xml`: `2877da340be53de959821883357759ac403d950248cc94270e282ddfca753931`
 - `event_dat.xml`: `672979a942a676fecee2a7225c0acecfcde5f5abd97bec1f252673a617c98054`
 
-Run `python scripts/prepare-shakemap-verification-data.py validate` to validate
-the external package, then use its `run-native` command to test actual
-ShakeMap acceptance. Host-side XML and manifest checks establish structure and
-provenance only; they do not establish native acceptance.
+The California verification package can be validated separately with
+`python scripts/prepare-shakemap-verification-data.py validate`; it is not an
+input to the canonical-container calculation check. Host-side XML and manifest
+checks establish structure and provenance only.
+They do not establish native acceptance.
 
 ## Scope
 
-A successful isolated run shows that this request and its versioned external
-package execute the explicit module order `select assemble model contour
-mapping stations gridxml` in the exact compatible image. It does not prove
-queue or REST behavior, authoritative service `SUCCESS`, final product
-validation, global or named-region coverage, prediction-only support, or
-production readiness. Station observations are optional in upstream ShakeMap;
-their presence here is representative, not a public input requirement.
+The canonical-container check runs the explicit native module order `select
+assemble model contour mapping stations gridxml`. It verifies an isolated
+managed calculation reaches service `SUCCESS` after real native execution and
+generic required-product checks, with complete manifest, provenance, and log
+evidence. It also verifies different-ID native concurrency and same-ID
+scheduler serialization. It does not prove REST or host CLI behavior,
+deployment readiness, scientific correctness, or general global or regional
+coverage. Station observations are optional in upstream ShakeMap; their
+presence here is representative, not a public input requirement.

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import importlib.util
+import io
 import json
 import tempfile
 import unittest
@@ -125,6 +127,32 @@ class PreparationBehaviorTests(unittest.TestCase):
         self.assertIn("## Exact sources", readme)
         self.assertIn("https://example.test/commit/", readme)
         self.assertIn("https://example.test/archive.whl", readme)
+        self.assertIn("\n## Validate\n", readme)
+        removed_command = "-".join(("run", "native"))
+        removed_manifest_field = "_".join(
+            ("native", "validation", "command")
+        )
+        self.assertIn("validation_command", manifest)
+        self.assertNotIn(removed_command, readme)
+        self.assertNotIn(removed_manifest_field, manifest)
+
+    def test_schema_two_manifest_accepts_historical_extra_field(self) -> None:
+        destination = self.root / "prepared"
+        helper.prepare_package(self.definition, destination, self.source_dir)
+        manifest_path = destination / "package-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        historical_field = "_".join(("native", "validation", "command"))
+        manifest[historical_field] = "retained historical metadata"
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+        validated = helper.validate_package(self.definition, destination)
+
+        self.assertEqual(
+            validated[historical_field], "retained historical metadata"
+        )
 
     def test_checksum_verified_download_mode(self) -> None:
         destination = self.root / "downloaded"
@@ -253,6 +281,20 @@ class TrackedDefinitionTests(unittest.TestCase):
             "uniform vs30 is not used",
         ]:
             self.assertIn(phrase, limitations)
+
+
+class CommandSurfaceTests(unittest.TestCase):
+    def test_parser_exposes_package_operations_only(self) -> None:
+        help_text = helper.build_parser().format_help()
+        for command in ("list-sources", "prepare", "validate"):
+            self.assertIn(command, help_text)
+
+        removed_command = "-".join(("run", "native"))
+        self.assertNotIn(removed_command, help_text)
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as context:
+                helper.build_parser().parse_args([removed_command])
+        self.assertEqual(context.exception.code, 2)
 
 
 if __name__ == "__main__":

@@ -55,7 +55,7 @@
     }
   ],
   "generated_files": [
-    {"target_path":"README.md","purpose":"Human preparation, validation, execution, provenance, and limitation guide"},
+    {"target_path":"README.md","purpose":"Human preparation, validation, provenance, and limitations guide"},
     {"target_path":"package-manifest.json","purpose":"Installed package provenance and integrity manifest"}
   ],
   "limitations": [

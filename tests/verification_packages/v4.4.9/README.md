@@ -16,4 +16,4 @@ does not test subduction selection.
 The prepared directory receives its own `README.md` and
 `package-manifest.json` with retrieval time, exact source URLs, installed
 paths, transformations, checksums, sizes, licensing, coverage, compatibility,
-validation commands, and limitations.
+the validation command, and limitations.

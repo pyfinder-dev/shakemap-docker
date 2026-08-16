@@ -11,7 +11,7 @@ from unittest import mock
 
 from fastapi.testclient import TestClient
 
-from shakemap_service import cli, directory_access, main, paths, runner, worker
+from shakemap_service import cli, directory_access, main, paths, worker
 from shakemap_service.config import Settings
 from shakemap_service.request_validation import (
     validate_configuration_name,
@@ -213,13 +213,6 @@ class RuntimePathTests(unittest.TestCase):
     def test_public_client_remains_disabled(self) -> None:
         with contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(cli.main([]), 2)
-
-    def test_managed_native_entry_points_are_inert(self) -> None:
-        with self.assertRaisesRegex(runner.ShakeError, "materialization is disabled"):
-            runner.materialize_calculation(object())
-        with self.assertRaisesRegex(runner.ShakeError, "execution is disabled"):
-            runner.run_shake_for_event(object())
-        self.assertFalse(paths.products_dir().exists())
 
 if __name__ == "__main__":
     unittest.main()

@@ -1127,17 +1127,3 @@ def scan_current_records() -> tuple[list[CalculationRecord], list[tuple[str, str
             fcntl.flock(events_handle.descriptor, fcntl.LOCK_UN)
     finally:
         events_handle.close()
-
-
-def records_for_event(event_id: str) -> list[CalculationRecord]:
-    validate_event_id(event_id)
-    records, _ = scan_queue_records()
-    return [record for record in records if record.event_id == event_id]
-
-
-def latest_status_for_event(event_id: str) -> Optional[CalculationRecord]:
-    current = read_current_record(event_id)
-    if current is not None:
-        return current
-    records = records_for_event(event_id)
-    return records[-1] if records else None

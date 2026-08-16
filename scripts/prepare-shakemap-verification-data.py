@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare, validate, and exercise release-matched ShakeMap verification data."""
+"""Prepare and validate release-matched ShakeMap verification data."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ import hashlib
 import json
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
 import urllib.request
@@ -21,8 +20,6 @@ from typing import Any, Iterable
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFINITION_ROOT = PROJECT_ROOT / "tests" / "verification_packages"
-FIXTURE_ROOT = PROJECT_ROOT / "tests" / "fixtures" / "shakemap_scenario"
-DEFAULT_IMAGE = "shakemap-docker:latest"
 MODULE_PLAN = [
     "select",
     "assemble",
@@ -32,8 +29,6 @@ MODULE_PLAN = [
     "stations",
     "gridxml",
 ]
-IMAGE_STREC_DB = "/opt/shakemap-support/strec/moment_tensors.db"
-IMAGE_CARTOPY_DIR = "/opt/shakemap-support/cartopy"
 
 
 class VerificationDataError(RuntimeError):
@@ -251,7 +246,7 @@ def validate_package(
         "## Contents and size",
         "## Exact sources",
         "## Prepare or import",
-        "## Validate and run",
+        "## Validate",
         "## Licensing",
         "## Limitations",
         "package-manifest.json",
@@ -283,7 +278,6 @@ def validate_package(
         "compressed_archive_bytes",
         "installed_payload_bytes",
         "validation_command",
-        "native_validation_command",
         "limitations",
     }
     missing_manifest = sorted(required_manifest_fields - manifest.keys())
@@ -497,24 +491,14 @@ The helper never overwrites an existing valid package and never deletes an
 invalid operator directory. Use `--destination` for an isolated alternate
 location.
 
-## Validate and run
+## Validate
 
 ```bash
 python scripts/prepare-shakemap-verification-data.py validate
-python scripts/prepare-shakemap-verification-data.py run-native
 ```
 
-`run-native` creates a collision-resistant QA container, disables its network,
-mounts this package read-only, writes the event workspace, native stdout,
-stderr, exact command, module evidence, and output inventory beneath
-`runtime/shakemap/logs/native-verification/`, then removes only the temporary
-container. Repeat the command for a fresh retained run. Inspect
-`native.stdout.log`, `native.stderr.log`, `command.json`,
-`output-inventory.json`, and `events/SCENARIO/current/products/`.
-
-Removing an individual retained run directory is optional and safe only after
-confirming its exact path. Do not remove the stable image, stable container,
-normal runtime, or prepared package as part of verification.
+Validation checks the package metadata and every checksum-pinned installed
+file. It does not run ShakeMap.
 
 ## Licensing
 
@@ -643,10 +627,6 @@ def prepare_package(
                 "python scripts/prepare-shakemap-verification-data.py validate "
                 f"--destination {destination}"
             ),
-            "native_validation_command": (
-                "python scripts/prepare-shakemap-verification-data.py run-native "
-                f"--destination {destination}"
-            ),
             "limitations": definition["limitations"],
         }
         (temporary / "package-manifest.json").write_text(
@@ -739,238 +719,6 @@ def migrate_known_legacy_package(
         raise
 
 
-def inspect_image(image: str, definition: dict[str, Any]) -> dict[str, Any]:
-    command = ["docker", "image", "inspect", image]
-    try:
-        result = subprocess.run(command, text=True, capture_output=True, check=False)
-    except OSError as exc:
-        raise VerificationDataError(f"cannot invoke Docker: {exc}") from exc
-    if result.returncode != 0:
-        raise VerificationDataError(
-            f"cannot inspect image {image}: {result.stderr.strip()}"
-        )
-    try:
-        objects = json.loads(result.stdout)
-        inspected = objects[0]
-        labels = inspected["Config"]["Labels"] or {}
-    except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
-        raise VerificationDataError(f"unexpected Docker image inspection for {image}") from exc
-    compatibility = definition["compatibility"]
-    expected = {
-        "org.usgs.shakemap.release": compatibility["shakemap_release_tag"],
-        "org.usgs.shakemap.commit": compatibility["shakemap_source_commit"],
-        "org.usgs.shakemap.version": compatibility["shakemap_version"],
-    }
-    mismatches = {
-        key: {"expected": value, "actual": labels.get(key)}
-        for key, value in expected.items()
-        if labels.get(key) != value
-    }
-    if mismatches:
-        raise VerificationDataError(
-            f"image {image} is incompatible with the prepared package: {mismatches}"
-        )
-    return {"image": image, "image_id": inspected.get("Id"), "labels": labels}
-
-
-def copy_fixture(output: Path) -> None:
-    manifest = load_json(FIXTURE_ROOT / "request-manifest.json")
-    current = output / "events" / "SCENARIO" / "current"
-    current.mkdir(parents=True, exist_ok=True)
-    for entry in manifest["files"]:
-        source = FIXTURE_ROOT / entry["installed_name"]
-        verify_file(
-            source,
-            entry["installed_size"],
-            entry["installed_sha256"],
-            "tracked request fixture",
-        )
-        shutil.copyfile(source, current / entry["installed_name"])
-
-
-def write_runtime_profiles(output: Path, package_root: Path) -> None:
-    profile_dir = output / "home" / ".shakemap"
-    strec_dir = output / "home" / ".strec"
-    private_install = output / "install"
-    profile_dir.mkdir(parents=True, exist_ok=True)
-    strec_dir.mkdir(parents=True, exist_ok=True)
-    (private_install / "data").mkdir(parents=True, exist_ok=True)
-    (private_install / "logs").mkdir(parents=True, exist_ok=True)
-    shutil.copytree(package_root / "config", private_install / "config")
-    for data_name in ("layers", "mapping", "vs30"):
-        os.symlink(
-            f"/verification/install/data/{data_name}",
-            private_install / "data" / data_name,
-        )
-    profiles = """profile = verification
-
-[profiles]
-    [[verification]]
-        install_path = /verification/run/install
-        data_path = /verification/run/events
-"""
-    (profile_dir / "profiles.conf").write_text(profiles, encoding="utf-8")
-    slabs = output / "home" / ".strec" / "slabs"
-    slabs.mkdir(parents=True, exist_ok=True)
-    strec = f"""[DATA]
-folder = /opt/shakemap-support/strec
-slabfolder = /verification/run/home/.strec/slabs
-dbfile = {IMAGE_STREC_DB}
-longest_axis = 3556.9858168964675
-
-[CONSTANTS]
-minradial_disthist = 0.01
-maxradial_disthist = 1.0
-minradial_distcomp = 0.5
-maxradial_distcomp = 1.0
-step_distcomp = 0.1
-depth_rangecomp = 10
-minno_comp = 3
-default_szdip = 17
-dstrike_interf = 30
-ddip_interf = 30
-dlambda = 60
-ddepth_interf = 20
-ddepth_intra = 10
-"""
-    (strec_dir / "config.ini").write_text(strec, encoding="utf-8")
-    for relative in ["tmp", "cache", "home/.config/matplotlib"]:
-        (output / relative).mkdir(parents=True, exist_ok=True)
-
-
-def inventory_tree(root: Path) -> list[dict[str, Any]]:
-    return [
-        {
-            "path": path.relative_to(root).as_posix(),
-            "size": path.stat().st_size,
-            "sha256": sha256_path(path),
-        }
-        for path in sorted(root.rglob("*"))
-        if path.is_file()
-    ]
-
-
-def run_native(
-    definition: dict[str, Any], destination: Path, image: str,
-    output: Path | None = None
-) -> tuple[int, Path]:
-    destination = destination.resolve()
-    package_manifest = validate_package(definition, destination)
-    image_identity = inspect_image(image, definition)
-    if output is None:
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        run_id = f"{stamp}-{uuid.uuid4().hex[:10]}"
-        output = (
-            PROJECT_ROOT
-            / "runtime"
-            / "shakemap"
-            / "logs"
-            / "native-verification"
-            / run_id
-        )
-    output = output.resolve()
-    if output.exists():
-        raise DestinationError(f"native verification output already exists: {output}")
-    output.mkdir(parents=True)
-    copy_fixture(output)
-    write_runtime_profiles(output, destination)
-
-    container_name = f"shakemap-verification-{uuid.uuid4().hex[:12]}"
-    native_command = (
-        "shake SCENARIO select assemble -c "
-        "'Release-matched verification scenario' "
-        "model contour mapping stations gridxml"
-    )
-    docker_command = [
-        "docker",
-        "run",
-        "--rm",
-        "--name",
-        container_name,
-        "--network",
-        "none",
-        "-e",
-        "HOME=/verification/run/home",
-        "-e",
-        f"CARTOPY_DATA_DIR={IMAGE_CARTOPY_DIR}",
-        "-e",
-        "XDG_CACHE_HOME=/verification/run/cache",
-        "-e",
-        "MPLCONFIGDIR=/verification/run/home/.config/matplotlib",
-        "-e",
-        "TMPDIR=/verification/run/tmp",
-        "-v",
-        f"{destination}:/verification/install:ro",
-        "-v",
-        f"{output}:/verification/run",
-        "--entrypoint",
-        "/bin/sh",
-        image,
-        "-lc",
-        native_command,
-    ]
-    started = utc_now()
-    try:
-        result = subprocess.run(
-            docker_command, text=True, capture_output=True, check=False
-        )
-    except OSError as exc:
-        raise VerificationDataError(f"cannot invoke Docker: {exc}") from exc
-    finished = utc_now()
-    (output / "native.stdout.log").write_text(result.stdout, encoding="utf-8")
-    (output / "native.stderr.log").write_text(result.stderr, encoding="utf-8")
-    event_root = output / "events" / "SCENARIO"
-    inventory = inventory_tree(event_root)
-    (output / "output-inventory.json").write_text(
-        json.dumps(inventory, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
-    running = [
-        line.rsplit(" ", 1)[-1]
-        for line in result.stderr.splitlines()
-        if ";shake.main;Running command " in line
-    ]
-    finished_modules = [
-        line.split("Finished running command ", 1)[1].split(":", 1)[0]
-        for line in result.stderr.splitlines()
-        if ";shake.main;Finished running command " in line
-    ]
-    evidence = {
-        "schema_version": 2,
-        "started_at_utc": started,
-        "finished_at_utc": finished,
-        "image": image_identity,
-        "package": {
-            "path": str(destination),
-            "package_id": package_manifest["package_id"],
-            "prepared_at_utc": package_manifest["prepared_at_utc"],
-        },
-        "container_name": container_name,
-        "network": "none",
-        "image_cartopy_data_dir": IMAGE_CARTOPY_DIR,
-        "image_strec_database": IMAGE_STREC_DB,
-        "package_mount": "/verification/install:ro",
-        "output_mount": "/verification/run",
-        "native_command": native_command,
-        "module_plan": MODULE_PLAN,
-        "observed_running_order": running,
-        "observed_finished_order": finished_modules,
-        "exit_code": result.returncode,
-        "module_plan_completed": (
-            result.returncode == 0
-            and running == MODULE_PLAN
-            and finished_modules == MODULE_PLAN
-        ),
-        "output_file_count": len(inventory),
-        "limitations": definition["limitations"],
-    }
-    (output / "command.json").write_text(
-        json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
-    if not evidence["module_plan_completed"]:
-        return 1, output
-    return 0, output
-
-
 def add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--definition",
@@ -1011,13 +759,6 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(validate_parser)
     validate_parser.add_argument("--destination", type=Path)
 
-    run_parser = subparsers.add_parser(
-        "run-native", help="Run the full native plan in an isolated offline container"
-    )
-    add_common(run_parser)
-    run_parser.add_argument("--destination", type=Path)
-    run_parser.add_argument("--image", default=DEFAULT_IMAGE)
-    run_parser.add_argument("--output", type=Path)
     return parser
 
 
@@ -1058,13 +799,6 @@ def main(argv: Iterable[str] | None = None) -> int:
                 f"commit: {manifest['compatibility']['shakemap_source_commit']}"
             )
             return 0
-        if args.command == "run-native":
-            code, output = run_native(
-                definition, destination, args.image, args.output
-            )
-            print(f"native verification output retained at: {output}")
-            print("complete module plan passed" if code == 0 else "complete module plan failed")
-            return code
         raise VerificationDataError(f"unsupported command: {args.command}")
     except VerificationDataError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

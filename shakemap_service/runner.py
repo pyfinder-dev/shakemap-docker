@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Raw ShakeMap subprocess and disabled managed-execution boundaries."""
+"""Native ShakeMap subprocess execution."""
 from __future__ import annotations
 
 import subprocess
@@ -9,10 +9,6 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from .config import settings
-
-
-class ShakeError(RuntimeError):
-    pass
 
 
 @dataclass
@@ -31,11 +27,6 @@ def _now_iso() -> str:
         .isoformat(timespec="microseconds")
         .replace("+00:00", "Z")
     )
-
-
-def materialize_calculation(record: object) -> Path:
-    """Reject native-tree materialization while queue execution is disabled."""
-    raise ShakeError("calculation materialization is disabled")
 
 
 def run_shake(
@@ -81,8 +72,3 @@ def run_shake(
         started_at=started_at,
         completed_at=completed_at,
     )
-
-
-def run_shake_for_event(record: object) -> str:
-    """Reject native execution while the service worker is disabled."""
-    raise ShakeError("native calculation execution is disabled")
