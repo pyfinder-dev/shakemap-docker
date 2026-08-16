@@ -139,6 +139,14 @@ class RecalculationRecoveryTests(unittest.TestCase):
                     self.assertEqual(current.internal_sequence, sequence)
                     self.assertEqual(current.status, "FAILED")
                     self.assertEqual(current.failure["code"], "interrupted_recalculation")
+                    self.assertEqual(
+                        current.failure["phase"],
+                        current.progress["phase"],
+                    )
+                    self.assertEqual(
+                        current.progress["phase"],
+                        "preceding_tree_disposition",
+                    )
                     self.assertFalse(paths.queue_entry_dir(sequence).exists())
                     self.assertFalse(
                         (paths.event_service_dir("evt") / recalculation.TRANSACTION_FILE).exists()
@@ -392,6 +400,12 @@ class RecalculationRecoveryTests(unittest.TestCase):
             queue_record.failure["code"],
             "interrupted_without_transaction",
         )
+        self.assertEqual(queue_record.failure["phase"], queue_record.progress["phase"])
+        self.assertEqual(
+            queue_record.progress["phase"],
+            "preceding_tree_disposition",
+        )
+        self.assertIsNone(queue_record.progress["current_module"])
         self.assertIn("not retried", queue_record.failure["message"])
 
         current = accept_request(
@@ -415,6 +429,14 @@ class RecalculationRecoveryTests(unittest.TestCase):
         self.assertEqual(
             current_record.failure["code"],
             "interrupted_without_transaction",
+        )
+        self.assertEqual(
+            current_record.failure["phase"],
+            current_record.progress["phase"],
+        )
+        self.assertEqual(
+            current_record.progress["phase"],
+            "preceding_tree_disposition",
         )
 
     def test_stale_running_helper_delegates_matching_journal(self) -> None:

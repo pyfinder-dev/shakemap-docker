@@ -64,12 +64,20 @@ class PrivateRequestCleanupError(RuntimeError):
     """The unpublished request tree could not be completely removed."""
 
 
+class InputValidationError(ValueError):
+    """A request or caller input failed validation before acceptance."""
+
+
 class InputPublicationError(RuntimeError):
     """A caller upload could not be safely published before acceptance."""
 
     def __init__(self, message: str, *, retain_private_tree: bool = False) -> None:
         super().__init__(message)
         self._retain_private_tree = retain_private_tree
+
+
+class InputSnapshotError(RuntimeError):
+    """Caller input could not be read into a complete private snapshot."""
 
 
 def _write_bytes_sync(
@@ -363,7 +371,7 @@ def _existing_regular_file(
         return False
     if not stat.S_ISREG(details.st_mode):
         raise ValueError(
-            f"upload destination exists but is not a safe regular file: {target}"
+            f"upload destination {target.name!r} exists but is not a safe regular file"
         )
     return True
 
@@ -686,7 +694,8 @@ def _snapshot_inputs(
     names = _safe_regular_names(input_directory, input_guard)
     if REQUIRED_EVENT_FILE not in names:
         raise ValueError(
-            f"a readable regular {REQUIRED_EVENT_FILE} is required in {input_directory}"
+            f"a readable regular {REQUIRED_EVENT_FILE} is required in the "
+            "canonical event input directory"
         )
     request_descriptor: Optional[int] = None
     if private_guard is None:
@@ -947,10 +956,13 @@ def accept_request(
     overwrite: bool = True,
 ) -> SubmissionResult:
     """Publish caller uploads and durably accept one immutable queue snapshot."""
-    event_id = validate_event_id(event_id)
-    configuration = validate_configuration_name(configuration)
-    overwrite = validate_overwrite(overwrite)
-    prepared_uploads = _validated_uploads(uploads)
+    try:
+        event_id = validate_event_id(event_id)
+        configuration = validate_configuration_name(configuration)
+        overwrite = validate_overwrite(overwrite)
+        prepared_uploads = _validated_uploads(uploads)
+    except ValueError as exc:
+        raise InputValidationError(str(exc)) from exc
 
     input_directory = paths.event_input_dir(event_id)
     try:
@@ -959,9 +971,12 @@ def accept_request(
             create=bool(prepared_uploads),
         )
     except FileNotFoundError as exc:
-        raise ValueError(
-            f"canonical input directory does not exist and no uploads were supplied: "
-            f"{input_directory}"
+        raise InputValidationError(
+            "canonical event input directory does not exist and no uploads were supplied"
+        ) from exc
+    except OSError as exc:
+        raise InputSnapshotError(
+            "canonical event input directory could not be opened safely"
         ) from exc
     input_locked = False
     try:
@@ -969,14 +984,26 @@ def accept_request(
         # immutable snapshot; other event directories use independent locks.
         fcntl.flock(input_guard.descriptor, fcntl.LOCK_EX)
         input_locked = True
-        existing_names = _safe_regular_names(input_directory, input_guard)
-        replacement_by_name = {
-            upload.basename: _existing_regular_file(
-                input_directory / upload.basename,
-                input_guard,
-            )
-            for upload in prepared_uploads
-        }
+        try:
+            existing_names = _safe_regular_names(input_directory, input_guard)
+        except OSError as exc:
+            raise InputSnapshotError(
+                "canonical event input directory could not be read safely"
+            ) from exc
+        try:
+            replacement_by_name = {
+                upload.basename: _existing_regular_file(
+                    input_directory / upload.basename,
+                    input_guard,
+                )
+                for upload in prepared_uploads
+            }
+        except ValueError as exc:
+            raise InputValidationError(str(exc)) from exc
+        except OSError as exc:
+            raise InputValidationError(
+                "caller upload destinations could not be inspected safely"
+            ) from exc
         warnings: list[str] = []
         queue_root = paths.queue_dir()
         queue_guard = _open_service_directory(queue_root, create=True)
@@ -1056,12 +1083,19 @@ def accept_request(
                     elif prepared_uploads:
                         input_mode = "upload"
 
-                    manifest_files = _snapshot_inputs(
-                        input_directory,
-                        temporary / "request",
-                        input_guard,
-                        private_guard,
-                    )
+                    try:
+                        manifest_files = _snapshot_inputs(
+                            input_directory,
+                            temporary / "request",
+                            input_guard,
+                            private_guard,
+                        )
+                    except ValueError as exc:
+                        raise InputValidationError(str(exc)) from exc
+                    except OSError as exc:
+                        raise InputSnapshotError(
+                            "caller input files could not be snapshotted completely"
+                        ) from exc
                     fcntl.flock(input_guard.descriptor, fcntl.LOCK_UN)
                     input_locked = False
                     record = _publish_queue_entry(

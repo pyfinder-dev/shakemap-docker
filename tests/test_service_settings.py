@@ -5,7 +5,7 @@ from __future__ import annotations
 import dataclasses
 import unittest
 
-from shakemap_service.config import MODULE_PLAN, Settings
+from shakemap_service.config import DEFAULT_CONFIGURATION, MODULE_PLAN, Settings
 
 
 class ServiceSettingsTests(unittest.TestCase):
@@ -16,6 +16,7 @@ class ServiceSettingsTests(unittest.TestCase):
             ("select", "assemble", "model", "contour", "mapping", "stations", "gridxml"),
         )
         self.assertEqual(settings.module_plan, MODULE_PLAN)
+        self.assertEqual(DEFAULT_CONFIGURATION, "global")
         self.assertEqual(settings.required_products, ())
         with self.assertRaises(dataclasses.FrozenInstanceError):
             settings.max_concurrent = 2  # type: ignore[misc]

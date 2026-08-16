@@ -296,8 +296,20 @@ class SchedulerTests(unittest.TestCase):
             returned_record.failure["code"],
             "scheduler_callback_incomplete",
         )
+        self.assertEqual(
+            returned_record.failure["phase"],
+            returned_record.progress["phase"],
+        )
+        self.assertEqual(
+            returned_record.progress["phase"],
+            "preceding_tree_disposition",
+        )
         self.assertEqual(raised_record.status, "FAILED")
         self.assertEqual(raised_record.failure["code"], "scheduler_callback_failed")
+        self.assertEqual(
+            raised_record.failure["phase"],
+            raised_record.progress["phase"],
+        )
         self.assertIn("injected callback failure", raised_record.failure["message"])
         self.assertEqual(scheduler.active_count, 0)
         self.assertEqual(scheduler.errors, ())
@@ -461,6 +473,10 @@ class SchedulerTests(unittest.TestCase):
             current.failure["code"],
             "scheduler_callback_incomplete",
         )
+        self.assertEqual(current.failure["phase"], current.progress["phase"])
+        self.assertEqual(current.progress["phase"], "preceding_tree_disposition")
+        self.assertIsNone(current.progress["current_module"])
+        self.assertEqual(current.progress["completed_modules"], [])
         self.assertFalse(
             (
                 paths.event_service_dir("prepared")
@@ -787,6 +803,8 @@ class SchedulerTests(unittest.TestCase):
             current.failure["code"],
             "scheduler_callback_incomplete",
         )
+        self.assertEqual(current.failure["phase"], current.progress["phase"])
+        self.assertEqual(current.progress["phase"], "preceding_tree_disposition")
 
 
 if __name__ == "__main__":

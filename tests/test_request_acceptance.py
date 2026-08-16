@@ -417,11 +417,14 @@ class RequestAcceptanceTests(unittest.TestCase):
             "_copy_regular_file",
             side_effect=OSError("injected copy failure"),
         ):
-            with self.assertRaisesRegex(OSError, "injected copy failure"):
+            with self.assertRaises(submission.InputSnapshotError) as raised:
                 accept_request(
                     "evt",
                     [Upload("event.xml", io.BytesIO(b"published event"))],
                 )
+
+        self.assertIsInstance(raised.exception.__cause__, OSError)
+        self.assertIn("injected copy failure", str(raised.exception.__cause__))
 
         self.assertEqual((directory / "event.xml").read_bytes(), b"published event")
         self.assertEqual((directory / "manual.bin").read_bytes(), b"manual")

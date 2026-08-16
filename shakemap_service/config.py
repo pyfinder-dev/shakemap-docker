@@ -18,6 +18,8 @@ MODULE_PLAN = (
     "gridxml",
 )
 
+DEFAULT_CONFIGURATION = "global"
+
 
 def _positive_integer(value: str, name: str) -> int:
     try:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import stat
 import uuid
 from dataclasses import asdict, dataclass
@@ -46,6 +47,21 @@ class RunningRecordRecoveryResult(str, Enum):
 
 
 TERMINAL_STATES = frozenset({LifecycleState.SUCCESS, LifecycleState.FAILED})
+
+OPERATIONAL_PHASES = frozenset(
+    {
+        "preceding_tree_disposition",
+        "calculation_preparation",
+        "native_execution",
+        "product_validation",
+        "record_finalization",
+    }
+)
+
+_RFC3339_UTC_RE = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T"
+    r"[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?Z$"
+)
 
 _ALLOWED_TRANSITIONS = {
     LifecycleState.QUEUED: frozenset({LifecycleState.RUNNING}),
@@ -170,14 +186,12 @@ def _validate_optional_text(value: object, label: str) -> None:
 def _validate_timestamp(value: object, label: str, *, required: bool) -> None:
     if value is None and not required:
         return
-    if not isinstance(value, str) or not value.endswith("Z"):
+    if not isinstance(value, str) or _RFC3339_UTC_RE.fullmatch(value) is None:
         raise ValueError(f"{label} must be an RFC 3339 UTC timestamp ending in Z")
     try:
-        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+        datetime.fromisoformat(value[:-1])
     except ValueError as exc:
         raise ValueError(f"{label} is not a valid timestamp") from exc
-    if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
-        raise ValueError(f"{label} must use UTC")
 
 
 def _validate_record(
@@ -247,7 +261,16 @@ def _validate_record(
         "progress",
     )
     _validate_optional_text(progress["phase"], "progress.phase")
-    _validate_optional_text(progress["phase_started_at"], "progress.phase_started_at")
+    if (
+        progress["phase"] is not None
+        and progress["phase"] not in OPERATIONAL_PHASES
+    ):
+        raise ValueError("progress.phase is not an approved operational phase")
+    _validate_timestamp(
+        progress["phase_started_at"],
+        "progress.phase_started_at",
+        required=False,
+    )
     _validate_optional_text(progress["current_module"], "progress.current_module")
     if not isinstance(progress["module_plan"], list) or not all(
         isinstance(item, str) for item in progress["module_plan"]
@@ -331,6 +354,15 @@ def _validate_record(
             for value in (record.native_outcome, record.service_outcome, record.failure)
         ):
             raise ValueError("QUEUED records cannot contain execution outcomes")
+    else:
+        if progress["phase"] is None or progress["phase_started_at"] is None:
+            raise ValueError(
+                f"{state.value} records require an operational phase and start timestamp"
+            )
+    if state == LifecycleState.FAILED:
+        failure_phase = record.failure.get("phase")
+        if failure_phase != progress["phase"]:
+            raise ValueError("FAILED record phase and failure.phase must match")
 
     shared_paths = _require_exact_keys(
         record.shared_paths,
@@ -550,6 +582,37 @@ def read_current_record(event_id: str) -> Optional[CalculationRecord]:
     )
 
 
+def read_archived_record(
+    service_directory: Path,
+    *,
+    expected_event_id: str,
+) -> Optional[CalculationRecord]:
+    """Read one retained service record with its calculation identity checked."""
+    validate_event_id(expected_event_id)
+    service_directory = Path(service_directory)
+    if (
+        service_directory.name != "service"
+        or service_directory.parent.parent != paths.archive_dir()
+    ):
+        raise ValueError("archived service record path is invalid")
+    access = _open_record_directory(
+        service_directory,
+        exclusive=False,
+    )
+    if access is None:
+        return None
+    try:
+        record = _load_record_from_directory(
+            access,
+            expected_sequence=None,
+            expected_event_id=expected_event_id,
+        )
+        _load_request_manifest_identity(access, record)
+        return record
+    finally:
+        access.close()
+
+
 _UNSET = object()
 
 
@@ -647,8 +710,24 @@ def _transition_record_directory(
                 f"invalid lifecycle transition {source.value} -> {target.value}"
             )
         record.status = target.value
+        if progress is not _UNSET:
+            record.progress = progress  # type: ignore[assignment]
         if target == LifecycleState.RUNNING:
-            record.timestamps["started_at"] = _now_iso()
+            started_at = _now_iso()
+            record.timestamps["started_at"] = started_at
+            if not isinstance(record.progress, dict):
+                raise ValueError("progress must be an object")
+            initial_progress = dict(record.progress)
+            initial_progress.update(
+                {
+                    "phase": "preceding_tree_disposition",
+                    "phase_started_at": started_at,
+                    "current_module": None,
+                    "completed_modules": [],
+                }
+            )
+            record.progress = initial_progress
+        completed_at: object = _UNSET
         if target in TERMINAL_STATES:
             completed_at = (
                 _now_iso()
@@ -661,14 +740,24 @@ def _transition_record_directory(
                 required=True,
             )
             record.timestamps["completed_at"] = completed_at
-        if progress is not _UNSET:
-            record.progress = progress  # type: ignore[assignment]
         if native_outcome is not _UNSET:
             record.native_outcome = native_outcome  # type: ignore[assignment]
         if service_outcome is not _UNSET:
             record.service_outcome = service_outcome  # type: ignore[assignment]
         if failure is not _UNSET:
             record.failure = failure  # type: ignore[assignment]
+        if target == LifecycleState.FAILED and isinstance(record.failure, dict):
+            normalized_failure = dict(record.failure)
+            failed_phase = normalized_failure.get("phase")
+            recorded_phase = record.progress.get("phase")
+            if failed_phase is None:
+                normalized_failure["phase"] = recorded_phase
+            elif failed_phase != recorded_phase:
+                failed_progress = dict(record.progress)
+                failed_progress["phase"] = failed_phase
+                failed_progress["phase_started_at"] = completed_at
+                record.progress = failed_progress
+            record.failure = normalized_failure
         if shared_paths is not _UNSET:
             record.shared_paths = shared_paths  # type: ignore[assignment]
         _replace_record_in_directory(
@@ -846,10 +935,19 @@ def fail_matching_running_record_if_child_absent(
             else:
                 return RunningRecordRecoveryResult.BLOCKING_CHILD_PRESENT
 
+            completed_at = _now_iso()
             record.status = LifecycleState.FAILED.value
-            record.failure = failure
+            record.failure = dict(failure)
+            failed_phase = record.failure.get("phase")
+            if failed_phase is None:
+                record.failure["phase"] = record.progress["phase"]
+            elif failed_phase != record.progress["phase"]:
+                failed_progress = dict(record.progress)
+                failed_progress["phase"] = failed_phase
+                failed_progress["phase_started_at"] = completed_at
+                record.progress = failed_progress
             record.service_outcome = {"completed": True, "successful": False}
-            record.timestamps["completed_at"] = _now_iso()
+            record.timestamps["completed_at"] = completed_at
             _replace_record_in_directory(
                 access,
                 record,

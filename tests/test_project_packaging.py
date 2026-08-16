@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host tests for package metadata and the disabled REST-client foundation."""
+"""Host tests for package metadata and the REST-client boundary."""
 from __future__ import annotations
 
 import contextlib
@@ -25,21 +25,26 @@ class ProjectPackagingTests(unittest.TestCase):
         )
         self.assertIn("data/*.json", metadata["tool"]["setuptools"]["package-data"]["shakemap_service"])
 
-    def test_command_is_disabled_without_direct_runtime_or_native_access(self) -> None:
-        error = io.StringIO()
-        with contextlib.redirect_stderr(error):
-            result = cli.main([])
-        self.assertEqual(result, 2)
-        self.assertIn("REST operations are not implemented", error.getvalue())
+    def test_command_has_no_direct_runtime_or_native_access(self) -> None:
         source = (PROJECT_DIR / "shakemap_service/cli.py").read_text(encoding="utf-8")
-        for forbidden in ("subprocess", "docker run", "from .runner", "from .paths"):
+        for forbidden in (
+            "subprocess",
+            "docker run",
+            "from .runner",
+            "from .paths",
+            "from .status",
+        ):
             self.assertNotIn(forbidden, source)
 
-    def test_command_help_does_not_claim_unimplemented_operations(self) -> None:
+    def test_command_help_describes_all_public_operations(self) -> None:
         output = io.StringIO()
         with contextlib.redirect_stdout(output), self.assertRaisesRegex(SystemExit, "0"):
             cli.main(["--help"])
-        self.assertIn("Public client operations are not enabled", output.getvalue())
+        self.assertIn(
+            "{health,config,configurations,submit,list,queue,status,products}",
+            output.getvalue(),
+        )
+        self.assertIn("--url", output.getvalue())
 
 
 if __name__ == "__main__":

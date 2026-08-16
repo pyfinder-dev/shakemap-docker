@@ -140,8 +140,20 @@ class LifecycleRecordTests(unittest.TestCase):
 
         self.assertEqual(running.status, "RUNNING")
         self.assertIsNotNone(running.timestamps["started_at"])
+        self.assertEqual(
+            running.progress["phase"],
+            "preceding_tree_disposition",
+        )
+        self.assertEqual(
+            running.progress["phase_started_at"],
+            running.timestamps["started_at"],
+        )
+        self.assertIsNone(running.progress["current_module"])
+        self.assertEqual(running.progress["completed_modules"], [])
         self.assertEqual(failed.status, "FAILED")
         self.assertIsNotNone(failed.timestamps["completed_at"])
+        self.assertEqual(failed.progress["phase"], running.progress["phase"])
+        self.assertEqual(failed.failure["phase"], running.progress["phase"])
         self.assertEqual(status.read_status(result.internal_sequence).status, "FAILED")
         for target in LifecycleState:
             with self.subTest(target=target):
@@ -218,6 +230,126 @@ class LifecycleRecordTests(unittest.TestCase):
             with self.subTest(field=field):
                 with self.assertRaisesRegex(ValueError, "dedicated operations"):
                     status.update_status(result.internal_sequence, **{field: value})
+
+    def test_operational_phase_and_timestamp_validation_is_strict_and_atomic(
+        self,
+    ) -> None:
+        valid_timestamps = (
+            "2026-08-16T10:20:00Z",
+            "2026-08-16T10:20:00.1Z",
+            "2026-08-16T10:20:00.123456789Z",
+        )
+        invalid_timestamps = (
+            "20260816T102000Z",
+            "2026-08-16 10:20:00Z",
+            "2026-08-16T10:20Z",
+            "2026-08-16T10:20:00+00:00",
+            "2026-08-16T10:20:00.Z",
+            "2026-02-30T10:20:00Z",
+            "2026-08-16T24:20:00Z",
+            "2026-08-16T10:60:00Z",
+            "2026-08-16T10:20:60Z",
+        )
+        for index, value in enumerate(valid_timestamps, start=1):
+            with self.subTest(valid=value):
+                accepted = self._accept(f"valid-{index}")
+                target = paths.queue_status_file(accepted.internal_sequence)
+                payload = json.loads(target.read_text(encoding="utf-8"))
+                payload["timestamps"]["submitted_at"] = value
+                target.write_text(json.dumps(payload), encoding="utf-8")
+                self.assertEqual(
+                    status.read_status(accepted.internal_sequence)
+                    .timestamps["submitted_at"],
+                    value,
+                )
+
+        for index, value in enumerate(invalid_timestamps, start=1):
+            with self.subTest(invalid=value):
+                accepted = self._accept(f"invalid-{index}")
+                target = paths.queue_status_file(accepted.internal_sequence)
+                payload = json.loads(target.read_text(encoding="utf-8"))
+                payload["timestamps"]["submitted_at"] = value
+                target.write_text(json.dumps(payload), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "timestamp"):
+                    status.read_status(accepted.internal_sequence)
+
+        running = self._accept("phase-time")
+        status.transition_to_running(running.internal_sequence)
+        target = paths.queue_status_file(running.internal_sequence)
+        payload = json.loads(target.read_text(encoding="utf-8"))
+        payload["progress"]["phase_started_at"] = "2026-08-16T10:20Z"
+        target.write_text(json.dumps(payload), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "phase_started_at"):
+            status.read_status(running.internal_sequence)
+
+        atomic = self._accept("atomic-phase")
+        status.transition_to_running(atomic.internal_sequence)
+        target = paths.queue_status_file(atomic.internal_sequence)
+        preceding = target.read_bytes()
+        record = status.read_status(atomic.internal_sequence)
+        progress = dict(record.progress)
+        progress["phase"] = "invented_native_progress"
+        with self.assertRaisesRegex(ValueError, "operational phase"):
+            status.update_status(atomic.internal_sequence, progress=progress)
+        self.assertEqual(target.read_bytes(), preceding)
+
+    def test_terminal_phase_override_is_atomic_and_consistent(self) -> None:
+        accepted = self._accept("failed-phase")
+        status.transition_to_running(accepted.internal_sequence)
+        terminal_at = "2026-08-16T10:21:00.000000Z"
+
+        failed = status._transition_record_directory(
+            paths.queue_entry_dir(accepted.internal_sequence),
+            LifecycleState.FAILED,
+            expected_sequence=accepted.internal_sequence,
+            expected_event_id=None,
+            missing_message="fixture missing",
+            failure={
+                "phase": "record_finalization",
+                "code": "recording_failed",
+                "message": "fixture",
+            },
+            service_outcome={"completed": True, "successful": False},
+            terminal_timestamp=terminal_at,
+        )
+
+        self.assertEqual(failed.progress["phase"], "record_finalization")
+        self.assertEqual(failed.failure["phase"], "record_finalization")
+        self.assertEqual(failed.progress["phase_started_at"], terminal_at)
+        self.assertEqual(failed.timestamps["completed_at"], terminal_at)
+
+        successful = self._accept("successful-phase")
+        status.transition_to_running(successful.internal_sequence)
+        paths.events_dir().mkdir(parents=True, exist_ok=True)
+        paths.queue_entry_dir(successful.internal_sequence).rename(
+            paths.event_service_dir("successful-phase")
+        )
+        current = status.read_current_record("successful-phase")
+        progress = dict(current.progress)
+        progress.update(
+            phase="record_finalization",
+            phase_started_at="2026-08-16T10:22:00Z",
+        )
+        current = status.update_current_record(
+            "successful-phase",
+            progress=progress,
+        )
+        terminal = status._transition_current_record_terminal(
+            current.event_id,
+            current.internal_sequence,
+            LifecycleState.SUCCESS,
+            terminal_timestamp="2026-08-16T10:23:00Z",
+            native_outcome={"started": True, "exit_code": 0, "signal": None},
+            service_outcome={"completed": True, "successful": True},
+            failure=None,
+            shared_paths=current.shared_paths,
+        )
+        self.assertEqual(terminal.status, "SUCCESS")
+        self.assertEqual(terminal.progress["phase"], "record_finalization")
+        self.assertEqual(
+            terminal.progress["phase_started_at"],
+            "2026-08-16T10:22:00Z",
+        )
 
     def test_atomic_write_failure_preserves_preceding_json(self) -> None:
         result = self._accept()

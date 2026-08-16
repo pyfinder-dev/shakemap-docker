@@ -314,15 +314,14 @@ class BuildIdentityTests(unittest.TestCase):
     def test_config_and_health_use_shared_identity_loader(self) -> None:
         config_response = main.get_config()
         health_response = main.healthz()
-        self.assertEqual(config_response["identity"], health_response["identity"])
         self.assertEqual(config_response["identity"]["deployment"]["image_id"], IMAGE_ID)
-        self.assertEqual(config_response["response_schema_version"], "1.0")
-        self.assertEqual(health_response["response_schema_version"], "1.0")
-        self.assertFalse(config_response["managed_execution_readiness"]["ready"])
-        self.assertFalse(health_response["managed_execution_readiness"]["ready"])
+        self.assertEqual(config_response["shakemap_version"], "4.4.10")
+        self.assertEqual(health_response["shakemap_version"], "4.4.10")
+        self.assertEqual(config_response["readiness"]["ready"], False)
+        self.assertEqual(health_response["ready"], False)
         self.assertEqual(
-            health_response["data"]["summary"]["validation_state"],
-            "not_evaluated",
+            config_response["readiness"]["reason"],
+            health_response["reason"],
         )
 
     def test_writer_api_validates_and_writes_manifest(self) -> None:

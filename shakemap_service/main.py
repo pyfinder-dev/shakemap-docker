@@ -1,35 +1,40 @@
 # -*- coding: utf-8 -*-
-"""ShakeMap service -- FastAPI application.
+"""Public REST views over ShakeMap service identity and durable state.
 
-Provides:
-  - ``GET /healthz`` -- comprehensive health and readiness.
-  - ``GET /config`` -- active configuration inspection.
-  - ``GET /config/profiles`` -- ShakeMap profiles listing.
-  - ``POST /events/submit`` -- event submission and staging.
-  - ``GET /events`` -- event discovery with filtering.
-  - ``GET /events/{event_id}`` -- single event detail.
-  - ``GET /events/{event_id}/products`` -- event products listing.
-  - ``GET /queue`` -- current queue state.
-
-Managed execution is disabled. Application startup is therefore inert: it
-does not recover queue records or start the calculation worker.
-
-Health reports process liveness, infrastructure, external data inspection, and
-managed-calculation readiness as separate concerns.
+Application startup has no recovery, scheduling, or calculation side effects.
 """
 from __future__ import annotations
 
-import os
-import shutil
+import logging
+import math
 from contextlib import asynccontextmanager
+from urllib.parse import quote
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from python_multipart.exceptions import MultipartParseError
+from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import FormData, UploadFile
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.formparsers import MultiPartException
 
-from .config import settings
-from . import paths
-from .build_identity import service_identity
-from .preparation import inspect_data_assets
+from . import paths, service_information, submission
+from .public_views import (
+    DurableStateError,
+    UnknownEventError,
+    build_current_product_summary,
+    build_event_detail,
+    build_operational_views,
+)
+from .service_information import (
+    ServiceInformationError,
+    build_config_response,
+    build_configurations_response,
+    build_health_response,
+)
+
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -41,223 +46,315 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="ShakeMap Service", version="0.1.0", lifespan=lifespan)
 
 
-# ------------------------------------------------------------------
-# Internal helpers
-# ------------------------------------------------------------------
+SUBMISSION_OPENAPI = {
+    "requestBody": {
+        "required": True,
+        "content": {
+            "multipart/form-data": {
+                "schema": {
+                    "type": "object",
+                    "required": ["event_id"],
+                    "properties": {
+                        "event_id": {"type": "string"},
+                        "configuration": {
+                            "type": "string",
+                            "default": "global",
+                        },
+                        "overwrite": {
+                            "type": "string",
+                            "enum": ["true", "false"],
+                            "default": "true",
+                        },
+                        "files": {
+                            "type": "array",
+                            "items": {"type": "string", "format": "binary"},
+                        },
+                    },
+                }
+            }
+        },
+    }
+}
 
-def _data_inspection() -> dict:
-    """Return cheap external-data presence/readability evidence."""
-    return inspect_data_assets(paths.shakemap_data_dir())
 
-
-def _disabled_calculation_response() -> JSONResponse:
+def _service_unavailable_response(reason: str) -> JSONResponse:
     return JSONResponse(
         status_code=503,
         content={
-            "detail": "Managed calculation operations are not enabled",
-            "reason": "the public calculation interface and native worker are disabled",
-            "status": "not_ready",
+            "error": "service_unavailable",
+            "message": reason,
+            "details": [],
         },
     )
 
 
-def _compute_blocking_reasons(
-    shake_cli_available: bool,
-    dir_checks: dict,
-) -> list[str]:
-    """Compute infrastructure blockers without treating data as readiness."""
-    reasons: list[str] = []
-
-    for name, info in dir_checks.items():
-        if not info.get("exists"):
-            reasons.append(f"Directory {name}/ does not exist")
-        elif info.get("required_access") == "read" and not info.get("readable"):
-            reasons.append(f"Directory {name}/ is not readable")
-        elif info.get("required_access") == "write" and not info.get("writable"):
-            reasons.append(f"Directory {name}/ is not writable")
-
-    if not shake_cli_available:
-        reasons.append("ShakeMap CLI (shake) not found on PATH")
-
-    reasons.append(
-        "Managed calculation execution is disabled because effective "
-        "ShakeMap configuration resolution is not implemented"
-    )
-    return reasons
-
-
-def _compute_next_action(blocking_reasons: list[str]) -> str:
-    """Compute the recommended next action based on blocking reasons."""
-    if not blocking_reasons:
-        return ""
-
-    for reason in blocking_reasons:
-        if "not writable" in reason.lower():
-            return "Fix host directory permissions: chown -R 1000:1000 <host-runtime-dir>"
-        if "does not exist" in reason.lower() and "directory" in reason.lower():
-            return "Restart the container to recreate service directories"
-        if "shake" in reason.lower() and "path" in reason.lower():
-            return "Rebuild the Docker image -- ShakeMap may not be installed correctly"
-
-    return (
-        "Implement and validate effective ShakeMap configuration resolution "
-        "before enabling managed calculations"
+def _service_information_error_response(error: ServiceInformationError) -> JSONResponse:
+    logger.error("Service information unavailable: %s", error)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "service_failure",
+            "message": "Service information is unavailable",
+            "details": [],
+        },
     )
 
 
-# ------------------------------------------------------------------
-# GET /config -- active ShakeMap configuration inspection
-# ------------------------------------------------------------------
+def _durable_state_error_response(error: DurableStateError) -> JSONResponse:
+    for problem in error.problems:
+        logger.error(
+            "Malformed durable %s record %s: %s",
+            problem.source,
+            problem.entry,
+            problem.message,
+        )
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "service_failure",
+            "message": "Durable calculation state is malformed",
+            "details": [
+                {
+                    "source": problem.source,
+                    "entry": problem.entry,
+                    "message": "record is malformed or unsafe",
+                }
+                for problem in error.problems
+            ],
+        },
+    )
+
+
+def _unknown_event_response(event_id: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=404,
+        content={
+            "error": "request_rejected",
+            "message": f"Unknown event_id: {event_id}",
+            "details": [],
+        },
+    )
+
+
+def _request_rejected_response(error: Exception) -> JSONResponse:
+    logger.warning("Submission request rejected: %s", error)
+    if isinstance(error, submission.InputPublicationError):
+        message = "Caller uploads could not be published safely"
+    elif isinstance(error, submission.InputSnapshotError):
+        message = "Caller inputs could not be snapshotted completely"
+    else:
+        message = str(error) or "The submission request is invalid"
+        private_root = str(paths.service_root())
+        if private_root and private_root in message:
+            message = "Caller input storage is unsafe or unavailable"
+    return JSONResponse(
+        status_code=400,
+        content={
+            "error": "request_rejected",
+            "message": message,
+            "details": [],
+        },
+    )
+
+
+def _submission_failure_response(error: Exception) -> JSONResponse:
+    logger.exception("Submission failed before acknowledgement: %s", error)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "service_failure",
+            "message": "Submission could not be completed safely",
+            "details": [],
+        },
+    )
+
+
+def _single_text_field(
+    fields: dict[str, list[object]],
+    name: str,
+    *,
+    required: bool,
+    default: str | None = None,
+) -> str:
+    values = fields.get(name, [])
+    if not values:
+        if required:
+            raise ValueError(f"exactly one text {name} field is required")
+        if default is None:
+            raise ValueError(f"no default is defined for {name}")
+        return default
+    if len(values) != 1 or not isinstance(values[0], str):
+        raise ValueError(f"exactly one text {name} field is allowed")
+    return values[0]
+
+
+def _submission_form_values(
+    form: FormData,
+) -> tuple[str, str, bool, list[submission.Upload]]:
+    allowed = {"event_id", "configuration", "overwrite", "files"}
+    fields: dict[str, list[object]] = {}
+    for name, value in form.multi_items():
+        if name not in allowed:
+            raise ValueError(f"unexpected multipart field: {name!r}")
+        fields.setdefault(name, []).append(value)
+
+    event_id = _single_text_field(fields, "event_id", required=True)
+    configuration = _single_text_field(
+        fields,
+        "configuration",
+        required=False,
+        default="global",
+    )
+    overwrite_text = _single_text_field(
+        fields,
+        "overwrite",
+        required=False,
+        default="true",
+    )
+    if overwrite_text not in {"true", "false"}:
+        raise ValueError("overwrite must be exactly 'true' or 'false'")
+
+    uploads: list[submission.Upload] = []
+    for value in fields.get("files", []):
+        if not isinstance(value, UploadFile):
+            raise ValueError("every files field must be a file upload")
+        uploads.append(submission.Upload(value.filename, value.file))
+    return event_id, configuration, overwrite_text == "true", uploads
+
 
 @app.get("/config")
-def get_config() -> dict:
-    """Return identity, configured data paths, and honest capability state."""
-    identity = service_identity()
-    data = _data_inspection()
+def get_config():
+    """Return effective service identity and operational settings."""
+    try:
+        return build_config_response()
+    except ServiceInformationError as exc:
+        return _service_information_error_response(exc)
 
-    return {
-        "response_schema_version": "1.0",
-        "identity": identity,
-        "data": data,
-        "configurations": data["configurations"],
-        "default_configuration": "global",
-        "configuration_resolution": {
-            "implemented": False,
-            "state": "not_implemented",
-            "reason": "effective ShakeMap configuration resolution is not implemented",
+
+@app.get("/configurations")
+def get_configurations():
+    """Return discovered configuration directory names."""
+    try:
+        return build_configurations_response()
+    except ServiceInformationError as exc:
+        return _service_information_error_response(exc)
+
+
+@app.post("/events", openapi_extra=SUBMISSION_OPENAPI)
+async def submit_event_endpoint(request: Request) -> JSONResponse:
+    """Validate, snapshot, and durably acknowledge one multipart submission."""
+    try:
+        readiness = service_information.read_readiness()
+        ready = readiness["ready"]
+        reason = readiness["reason"]
+        if not isinstance(ready, bool):
+            raise ServiceInformationError("recorded readiness is not boolean")
+        if ready and reason is not None:
+            raise ServiceInformationError("ready state has a non-null reason")
+        if not ready and (not isinstance(reason, str) or not reason):
+            raise ServiceInformationError("not-ready state has no reason")
+    except ServiceInformationError as exc:
+        return _service_information_error_response(exc)
+    except Exception:
+        logger.exception("Recorded readiness is unavailable")
+        return _service_information_error_response(
+            ServiceInformationError("recorded readiness is unavailable")
+        )
+
+    if not ready:
+        return _service_unavailable_response(reason)
+
+    media_type = request.headers.get("content-type", "").split(";", 1)[0]
+    if media_type.strip().lower() != "multipart/form-data":
+        return _request_rejected_response(
+            ValueError("Content-Type must be multipart/form-data")
+        )
+
+    try:
+        form = await request.form(
+            max_files=math.inf,
+            max_fields=math.inf,
+            max_part_size=math.inf,
+        )
+    except (StarletteHTTPException, MultiPartException, MultipartParseError):
+        return _request_rejected_response(ValueError("Malformed multipart request"))
+    except OSError:
+        return _request_rejected_response(
+            ValueError("Caller uploads could not be received safely")
+        )
+    except Exception as exc:
+        return _submission_failure_response(exc)
+
+    accepted = None
+    try:
+        try:
+            event_id, configuration, overwrite, uploads = _submission_form_values(form)
+        except ValueError as exc:
+            return _request_rejected_response(exc)
+        except Exception as exc:
+            return _submission_failure_response(exc)
+        try:
+            accepted = await run_in_threadpool(
+                submission.accept_request,
+                event_id,
+                uploads,
+                configuration=configuration,
+                overwrite=overwrite,
+            )
+        except (
+            submission.InputValidationError,
+            submission.InputPublicationError,
+            submission.InputSnapshotError,
+        ) as exc:
+            return _request_rejected_response(exc)
+        except Exception as exc:
+            return _submission_failure_response(exc)
+    finally:
+        try:
+            await form.close()
+        except Exception:
+            logger.exception("Multipart form cleanup failed")
+
+    encoded_event_id = quote(accepted.event_id, safe="")
+    return JSONResponse(
+        status_code=202,
+        content={
+            "event_id": accepted.event_id,
+            "internal_sequence": accepted.internal_sequence,
+            "status": "QUEUED",
+            "job_completed": False,
+            "products_ready": False,
+            "status_url": f"/events/{encoded_event_id}",
+            "products_url": f"/events/{encoded_event_id}/products",
+            "shared_input_path": accepted.shared_input_path,
+            "shared_products_path": accepted.shared_products_path,
+            "requested_configuration": accepted.requested_configuration,
+            "overwrite": accepted.overwrite,
+            "warnings": list(accepted.warnings),
         },
-        "managed_execution_readiness": {
-            "ready": False,
-            "state": "disabled",
-            "reason": "effective ShakeMap configuration resolution is not implemented",
-        },
-        "overall_readiness": {
-            "ready": False,
-            "state": "not_ready",
-            "reason": "managed calculation execution is disabled",
-        },
-        "service_root": settings.shared_service_root,
-        "shakemap_modules": list(settings.module_plan),
-        "managed_execution": {
-            "enabled": False,
-            "reason": "effective ShakeMap configuration resolution is not implemented",
-        },
-    }
+    )
 
-
-# ------------------------------------------------------------------
-# GET /config/profiles -- list existing profiles
-# ------------------------------------------------------------------
-
-@app.get("/config/profiles")
-def get_config_profiles() -> dict:
-    """List discovered configuration names without claiming validation."""
-    data = _data_inspection()
-    return {
-        "response_schema_version": "1.0",
-        "active_profile": None,
-        "shared_mutable_profile_supported": False,
-        "default_configuration": "global",
-        "configurations": data["configurations"],
-        "resolution_implemented": False,
-    }
-
-
-
-@app.post("/events/submit")
-async def submit_event_endpoint() -> JSONResponse:
-    """Reject this legacy route; no public request-acceptance path is exposed."""
-    return _disabled_calculation_response()
-
-
-# ------------------------------------------------------------------
-# GET /healthz -- comprehensive health and readiness
-# ------------------------------------------------------------------
 
 @app.get("/healthz")
-def healthz() -> dict:
-    """Report liveness, infrastructure, data evidence, and readiness separately."""
-    dir_checks: dict[str, dict[str, object]] = {}
-    for d in paths.all_service_dirs():
-        exists = d.is_dir()
-        required_access = "read" if d == paths.shakemap_data_dir() else "write"
-        readable = os.access(d, os.R_OK) if exists else False
-        writable = os.access(d, os.W_OK) if exists else False
-        dir_checks[d.name] = {
-            "exists": exists,
-            "readable": readable,
-            "writable": writable,
-            "required_access": required_access,
-        }
-    directories_ready = all(
-        value["exists"]
-        and (
-            value["readable"]
-            if value["required_access"] == "read"
-            else value["writable"]
-        )
-        for value in dir_checks.values()
-    )
-    shake_cli_available = shutil.which("shake") is not None
-    infrastructure_passed = directories_ready and shake_cli_available
-    infrastructure = {
-        "passed": infrastructure_passed,
-        "service_root": str(paths.service_root()),
-        "directories": dir_checks,
-        "shake_cli_available": shake_cli_available,
-        "shake_cli_verification": "PATH presence only in this request",
-    }
-    identity = service_identity()
-    data = _data_inspection()
-    status = "live"
-    blocking_reasons = _compute_blocking_reasons(
-        shake_cli_available=shake_cli_available,
-        dir_checks=dir_checks,
-    )
-    return {
-        "response_schema_version": "1.0",
-        "identity": identity,
-        "status": status,
-        "process_liveness": {
-            "live": True,
-            "state": "live",
-            "reason": "the HTTP process is responding",
-        },
-        "managed_execution_readiness": {
-            "ready": False,
-            "state": "disabled",
-            "reason": "effective ShakeMap configuration resolution is not implemented",
-        },
-        "overall_readiness": {
-            "ready": False,
-            "state": "not_ready",
-            "reason": "managed calculation execution is disabled",
-        },
-        "blocking_reasons": blocking_reasons,
-        "next_action": _compute_next_action(blocking_reasons),
-        "infrastructure": infrastructure,
-        "data": data,
-        "configuration": {
-            "modules": list(settings.module_plan),
-            "service_root": settings.shared_service_root,
-            "default": "global",
-            "resolution_state": "not_implemented",
-        },
-        "managed_execution": {
-            "enabled": False,
-            "reason": "effective ShakeMap configuration resolution is not implemented",
-        },
-    }
+def healthz():
+    """Return recorded readiness and installed ShakeMap version."""
+    try:
+        return build_health_response()
+    except ServiceInformationError as exc:
+        return _service_information_error_response(exc)
 
 
 # ------------------------------------------------------------------
-# GET /events -- event discovery with filtering
+# GET /events -- current and queued calculations
 # ------------------------------------------------------------------
 
 @app.get("/events")
-def list_events() -> JSONResponse:
-    """Return the disabled calculation response."""
-    return _disabled_calculation_response()
+def list_events():
+    """Return the sequence-ordered operational calculation collection."""
+    try:
+        return build_operational_views().events
+    except DurableStateError as exc:
+        return _durable_state_error_response(exc)
 
 
 # ------------------------------------------------------------------
@@ -265,9 +362,14 @@ def list_events() -> JSONResponse:
 # ------------------------------------------------------------------
 
 @app.get("/events/{event_id}")
-def get_event(event_id: str) -> JSONResponse:
-    """Return the disabled calculation response."""
-    return _disabled_calculation_response()
+def get_event(event_id: str):
+    """Return current, waiting, and retained records for one event identity."""
+    try:
+        return build_event_detail(event_id)
+    except UnknownEventError:
+        return _unknown_event_response(event_id)
+    except DurableStateError as exc:
+        return _durable_state_error_response(exc)
 
 
 # ------------------------------------------------------------------
@@ -275,9 +377,14 @@ def get_event(event_id: str) -> JSONResponse:
 # ------------------------------------------------------------------
 
 @app.get("/events/{event_id}/products")
-def get_event_products(event_id: str) -> JSONResponse:
-    """Return the disabled calculation response."""
-    return _disabled_calculation_response()
+def get_event_products(event_id: str):
+    """Return the current service-owned product-manifest summary."""
+    try:
+        return build_current_product_summary(event_id)
+    except UnknownEventError:
+        return _unknown_event_response(event_id)
+    except DurableStateError as exc:
+        return _durable_state_error_response(exc)
 
 
 # ------------------------------------------------------------------
@@ -285,6 +392,9 @@ def get_event_products(event_id: str) -> JSONResponse:
 # ------------------------------------------------------------------
 
 @app.get("/queue")
-def get_queue() -> JSONResponse:
-    """Return the disabled calculation response."""
-    return _disabled_calculation_response()
+def get_queue():
+    """Return queued calculations and capacity derived from durable state."""
+    try:
+        return build_operational_views().queue
+    except DurableStateError as exc:
+        return _durable_state_error_response(exc)

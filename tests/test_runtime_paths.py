@@ -195,24 +195,25 @@ class RuntimePathTests(unittest.TestCase):
             base_environment={"M5J_TEST": "caller"},
         )
 
-    def test_calculation_routes_return_the_same_disabled_response(self) -> None:
+    def test_only_contracted_submission_route_is_registered(self) -> None:
         with TestClient(main.app) as client:
-            responses = (
-                client.post("/events/submit"),
-                client.get("/events"),
-                client.get("/events/evt"),
-                client.get("/events/evt/products"),
-                client.get("/queue"),
-            )
-        expected_body = responses[0].json()
-        for response in responses:
-            with self.subTest(response=response):
-                self.assertEqual(response.status_code, 503)
-                self.assertEqual(response.json(), expected_body)
+            legacy = client.post("/events/submit")
+            contracted = client.post("/events")
+            configurations = client.get("/configurations")
+        self.assertEqual(legacy.status_code, 405)
+        self.assertEqual(contracted.status_code, 503)
+        self.assertEqual(contracted.json()["error"], "service_unavailable")
+        self.assertEqual(configurations.status_code, 200)
+        self.assertEqual(
+            configurations.json(),
+            {"default": "global", "configurations": ["global"]},
+        )
 
-    def test_public_client_remains_disabled(self) -> None:
-        with contextlib.redirect_stderr(io.StringIO()):
+    def test_public_client_requires_an_enabled_command(self) -> None:
+        error = io.StringIO()
+        with contextlib.redirect_stderr(error):
             self.assertEqual(cli.main([]), 2)
+        self.assertIn("usage:", error.getvalue())
 
 if __name__ == "__main__":
     unittest.main()
