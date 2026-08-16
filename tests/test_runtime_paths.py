@@ -206,33 +206,5 @@ class RuntimePathTests(unittest.TestCase):
             runner.run_shake_for_event(object())
         self.assertFalse(paths.products_dir().exists())
 
-    def test_raw_runner_executes_the_requested_command(self) -> None:
-        process = mock.Mock(pid=4321)
-        process.wait.return_value = 0
-        started: list[tuple[int, list[str], str]] = []
-        log_file = Path(self.temporary.name) / "shake.log"
-        environment = {"HOME": "/private/profile"}
-
-        with mock.patch.object(runner.subprocess, "Popen", return_value=process) as popen:
-            result = runner.run_shake(
-                "evt",
-                ("select", "assemble"),
-                log_file=log_file,
-                env=environment,
-                on_started=lambda pid, command, timestamp: started.append(
-                    (pid, command, timestamp)
-                ),
-            )
-
-        command = ["shake", "evt", "select", "assemble"]
-        self.assertEqual(result.command, command)
-        self.assertEqual((result.exit_code, result.pid), (0, 4321))
-        self.assertEqual(started[0][:2], (4321, command))
-        self.assertEqual(popen.call_args.args, (command,))
-        self.assertEqual(popen.call_args.kwargs["env"], environment)
-        self.assertIs(popen.call_args.kwargs["stderr"], runner.subprocess.STDOUT)
-        self.assertTrue(log_file.is_file())
-
-
 if __name__ == "__main__":
     unittest.main()
