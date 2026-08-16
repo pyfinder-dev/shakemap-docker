@@ -623,6 +623,8 @@ def _transition_record_directory(
     native_outcome: object = _UNSET,
     service_outcome: object = _UNSET,
     failure: object = _UNSET,
+    terminal_timestamp: object = _UNSET,
+    shared_paths: object = _UNSET,
 ) -> CalculationRecord:
     if not isinstance(target, LifecycleState):
         raise ValueError("target must be a LifecycleState")
@@ -644,12 +646,21 @@ def _transition_record_directory(
             raise ValueError(
                 f"invalid lifecycle transition {source.value} -> {target.value}"
             )
-        now = _now_iso()
         record.status = target.value
         if target == LifecycleState.RUNNING:
-            record.timestamps["started_at"] = now
+            record.timestamps["started_at"] = _now_iso()
         if target in TERMINAL_STATES:
-            record.timestamps["completed_at"] = now
+            completed_at = (
+                _now_iso()
+                if terminal_timestamp is _UNSET
+                else terminal_timestamp
+            )
+            _validate_timestamp(
+                completed_at,
+                "timestamps.completed_at",
+                required=True,
+            )
+            record.timestamps["completed_at"] = completed_at
         if progress is not _UNSET:
             record.progress = progress  # type: ignore[assignment]
         if native_outcome is not _UNSET:
@@ -658,6 +669,8 @@ def _transition_record_directory(
             record.service_outcome = service_outcome  # type: ignore[assignment]
         if failure is not _UNSET:
             record.failure = failure  # type: ignore[assignment]
+        if shared_paths is not _UNSET:
+            record.shared_paths = shared_paths  # type: ignore[assignment]
         _replace_record_in_directory(
             access,
             record,
@@ -678,6 +691,8 @@ def transition_status(
     service_outcome: object = _UNSET,
     failure: object = _UNSET,
 ) -> CalculationRecord:
+    if target == LifecycleState.SUCCESS:
+        raise ValueError("SUCCESS requires calculation finalization")
     return _transition_record_directory(
         paths.queue_entry_dir(sequence),
         target,
@@ -700,6 +715,8 @@ def transition_current_record(
     service_outcome: object = _UNSET,
     failure: object = _UNSET,
 ) -> CalculationRecord:
+    if target == LifecycleState.SUCCESS:
+        raise ValueError("SUCCESS requires calculation finalization")
     validate_event_id(event_id)
     return _transition_record_directory(
         paths.event_service_dir(event_id),
@@ -711,6 +728,43 @@ def transition_current_record(
         native_outcome=native_outcome,
         service_outcome=service_outcome,
         failure=failure,
+    )
+
+
+def _transition_current_record_terminal(
+    event_id: str,
+    internal_sequence: int,
+    target: LifecycleState,
+    *,
+    terminal_timestamp: str,
+    native_outcome: Optional[dict[str, Any]],
+    service_outcome: dict[str, Any],
+    failure: Optional[dict[str, Any]],
+    shared_paths: dict[str, Optional[str]],
+) -> CalculationRecord:
+    """Write a matching current calculation's preassembled terminal record."""
+    validate_event_id(event_id)
+    if (
+        isinstance(internal_sequence, bool)
+        or not isinstance(internal_sequence, int)
+        or internal_sequence < 1
+    ):
+        raise ValueError("internal_sequence must be a positive integer")
+    if target not in TERMINAL_STATES:
+        raise ValueError("target must be a terminal LifecycleState")
+    return _transition_record_directory(
+        paths.event_service_dir(event_id),
+        target,
+        expected_sequence=internal_sequence,
+        expected_event_id=event_id,
+        missing_message=(
+            f"current calculation record for {event_id!r} does not exist"
+        ),
+        native_outcome=native_outcome,
+        service_outcome=service_outcome,
+        failure=failure,
+        terminal_timestamp=terminal_timestamp,
+        shared_paths=shared_paths,
     )
 
 

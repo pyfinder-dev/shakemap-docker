@@ -127,25 +127,68 @@ class LifecycleRecordTests(unittest.TestCase):
         self.assertIn("request manifest is malformed", errors[2][1])
         self.assertIn("20 ASCII digits", errors[3][1])
 
-    def test_allowed_success_transition_is_durable_and_terminal(self) -> None:
+    def test_running_and_failed_transitions_are_durable_and_terminal(self) -> None:
         result = self._accept()
 
         running = transition_status(result.internal_sequence, LifecycleState.RUNNING)
-        succeeded = transition_status(
+        failed = transition_status(
             result.internal_sequence,
-            LifecycleState.SUCCESS,
-            service_outcome={"completed": True, "successful": True},
+            LifecycleState.FAILED,
+            failure={"code": "test_failure", "message": "fixture"},
+            service_outcome={"completed": True, "successful": False},
         )
 
         self.assertEqual(running.status, "RUNNING")
         self.assertIsNotNone(running.timestamps["started_at"])
-        self.assertEqual(succeeded.status, "SUCCESS")
-        self.assertIsNotNone(succeeded.timestamps["completed_at"])
-        self.assertEqual(status.read_status(result.internal_sequence).status, "SUCCESS")
+        self.assertEqual(failed.status, "FAILED")
+        self.assertIsNotNone(failed.timestamps["completed_at"])
+        self.assertEqual(status.read_status(result.internal_sequence).status, "FAILED")
         for target in LifecycleState:
             with self.subTest(target=target):
-                with self.assertRaisesRegex(ValueError, "invalid lifecycle transition"):
+                with self.assertRaises(ValueError):
                     transition_status(result.internal_sequence, target)
+
+    def test_public_success_transitions_reject_before_record_mutation(self) -> None:
+        queued = self._accept("queued-success-closed")
+        transition_status(queued.internal_sequence, LifecycleState.RUNNING)
+        queued_file = paths.queue_status_file(queued.internal_sequence)
+        queued_before = queued_file.read_bytes()
+
+        with mock.patch.object(
+            status,
+            "_transition_record_directory",
+            side_effect=AssertionError("public success reached record writer"),
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "SUCCESS requires calculation finalization",
+            ):
+                transition_status(queued.internal_sequence, LifecycleState.SUCCESS)
+        self.assertEqual(queued_file.read_bytes(), queued_before)
+
+        current = self._accept("current-success-closed")
+        transition_status(current.internal_sequence, LifecycleState.RUNNING)
+        paths.events_dir().mkdir(parents=True, exist_ok=True)
+        paths.queue_entry_dir(current.internal_sequence).rename(
+            paths.event_service_dir("current-success-closed")
+        )
+        current_file = paths.event_status_file("current-success-closed")
+        current_before = current_file.read_bytes()
+
+        with mock.patch.object(
+            status,
+            "_transition_record_directory",
+            side_effect=AssertionError("public success reached record writer"),
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "SUCCESS requires calculation finalization",
+            ):
+                status.transition_current_record(
+                    "current-success-closed",
+                    LifecycleState.SUCCESS,
+                )
+        self.assertEqual(current_file.read_bytes(), current_before)
 
     def test_forbidden_transitions_and_invalid_failure_leave_status_unchanged(self) -> None:
         result = self._accept()

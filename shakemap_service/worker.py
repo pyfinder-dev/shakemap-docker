@@ -1,9 +1,13 @@
 # -*- coding: utf-8 -*-
-"""Disabled calculation-worker boundary."""
+"""Calculation-worker entry points."""
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Optional
+
+from . import calculation
+from .status import CalculationRecord
 
 
 @dataclass(frozen=True)
@@ -15,8 +19,12 @@ class WorkerResult:
     final_status: Optional[str] = None
 
 
-def execute_shakemap(record: object) -> str:
-    raise RuntimeError("native calculation execution is disabled")
+def execute_shakemap(record: CalculationRecord) -> str:
+    """Delegate one supplied calculation with a private environment copy."""
+    return calculation.execute_calculation(
+        record,
+        base_environment=dict(os.environ),
+    )
 
 
 def run_worker_cycle(execute_fn: object = None) -> WorkerResult:

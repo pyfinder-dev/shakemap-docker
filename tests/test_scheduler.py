@@ -67,11 +67,12 @@ class SchedulerTests(unittest.TestCase):
             Event().wait(0.01)
 
     @staticmethod
-    def _succeed(record: status.CalculationRecord) -> None:
+    def _complete_failed(record: status.CalculationRecord) -> None:
         status.transition_status(
             record.internal_sequence,
-            status.LifecycleState.SUCCESS,
-            service_outcome={"completed": True, "successful": True},
+            status.LifecycleState.FAILED,
+            failure={"code": "test_completion", "message": "fixture"},
+            service_outcome={"completed": True, "successful": False},
         )
 
     def _promote_failed_current(self, event_id: str) -> status.CalculationRecord:
@@ -105,7 +106,7 @@ class SchedulerTests(unittest.TestCase):
                     entered.set()
             if not release.wait(timeout=5):
                 raise AssertionError("callbacks were not released")
-            self._succeed(record)
+            self._complete_failed(record)
             with lock:
                 running -= 1
 
@@ -159,7 +160,7 @@ class SchedulerTests(unittest.TestCase):
                 release.set()
             if not release.wait(timeout=5):
                 raise AssertionError("callback was not released")
-            self._succeed(record)
+            self._complete_failed(record)
 
         scheduler = self._scheduler(callback)
         started = scheduler.tick()
@@ -200,7 +201,7 @@ class SchedulerTests(unittest.TestCase):
             entered.set()
             if not release.wait(timeout=5):
                 raise AssertionError("callback was not released")
-            self._succeed(record)
+            self._complete_failed(record)
 
         scheduler = self._scheduler(callback)
         try:
@@ -231,7 +232,7 @@ class SchedulerTests(unittest.TestCase):
         def callback(record: status.CalculationRecord) -> None:
             if not release.wait(timeout=5):
                 raise AssertionError("callback was not released")
-            self._succeed(record)
+            self._complete_failed(record)
 
         scheduler = self._scheduler(callback)
         started = scheduler.tick()
@@ -252,7 +253,7 @@ class SchedulerTests(unittest.TestCase):
         accepted = self._accept("valid")
         paths.queue_dir().joinpath("visible-debris").mkdir()
         paths.queue_dir().joinpath(".hidden-debris").mkdir()
-        scheduler = self._scheduler(self._succeed, capacity=1)
+        scheduler = self._scheduler(self._complete_failed, capacity=1)
 
         started = scheduler.tick()
 
@@ -263,7 +264,7 @@ class SchedulerTests(unittest.TestCase):
         self.assertTrue(scheduler.wait_until_idle(timeout=5))
         self.assertEqual(
             status.read_status(accepted.internal_sequence).status,
-            "SUCCESS",
+            "FAILED",
         )
 
     def test_callback_failures_do_not_stop_unrelated_work(self) -> None:
@@ -275,7 +276,7 @@ class SchedulerTests(unittest.TestCase):
             if record.internal_sequence == raised.internal_sequence:
                 raise RuntimeError("injected callback failure")
             if record.internal_sequence == succeeded.internal_sequence:
-                self._succeed(record)
+                self._complete_failed(record)
 
         scheduler = self._scheduler(callback)
 
@@ -308,12 +309,12 @@ class SchedulerTests(unittest.TestCase):
         self.assertTrue(scheduler.wait_until_idle(timeout=5))
         self.assertEqual(
             status.read_status(succeeded.internal_sequence).status,
-            "SUCCESS",
+            "FAILED",
         )
 
     def test_failed_running_transition_releases_the_unstarted_reservation(self) -> None:
         accepted = self._accept("not-started")
-        scheduler = self._scheduler(self._succeed, capacity=1)
+        scheduler = self._scheduler(self._complete_failed, capacity=1)
 
         with mock.patch.object(
             status,
@@ -360,7 +361,7 @@ class SchedulerTests(unittest.TestCase):
 
         def callback(record: status.CalculationRecord) -> None:
             if record.event_id != "same":
-                self._succeed(record)
+                self._complete_failed(record)
                 return
 
             def interrupt(position: str, kind: str, name: str) -> None:
@@ -438,7 +439,7 @@ class SchedulerTests(unittest.TestCase):
         )
         self.assertEqual(
             status.read_status(different.internal_sequence).status,
-            "SUCCESS",
+            "FAILED",
         )
         self.assertEqual(scheduler.reserved_event_ids, {"same"})
 
@@ -473,7 +474,7 @@ class SchedulerTests(unittest.TestCase):
 
         def prepare_then_return(record: status.CalculationRecord) -> None:
             if record.event_id != "unfinalized":
-                self._succeed(record)
+                self._complete_failed(record)
                 return
             recalculation.prepare_calculation(record.internal_sequence)
             (
@@ -513,7 +514,7 @@ class SchedulerTests(unittest.TestCase):
         )
         self.assertEqual(
             status.read_status(different.internal_sequence).status,
-            "SUCCESS",
+            "FAILED",
         )
         self.assertEqual(scheduler.active_count, 0)
         self.assertEqual(scheduler.reserved_event_ids, {"unfinalized"})
@@ -546,7 +547,7 @@ class SchedulerTests(unittest.TestCase):
         different = self._accept("different")
         original.shutdown()
 
-        recreated = self._scheduler(self._succeed, capacity=1)
+        recreated = self._scheduler(self._complete_failed, capacity=1)
         started = recreated.tick()
         self.assertTrue(recreated.wait_until_idle(timeout=5))
 
@@ -564,7 +565,7 @@ class SchedulerTests(unittest.TestCase):
         self.assertEqual(journal.read_bytes(), evidence)
         self.assertEqual(
             status.read_status(different.internal_sequence).status,
-            "SUCCESS",
+            "FAILED",
         )
         self.assertEqual(recreated.active_count, 0)
 
@@ -595,8 +596,9 @@ class SchedulerTests(unittest.TestCase):
             recalculation.prepare_calculation(record.internal_sequence)
             status.transition_current_record(
                 record.event_id,
-                status.LifecycleState.SUCCESS,
-                service_outcome={"completed": True, "successful": True},
+                status.LifecycleState.FAILED,
+                failure={"code": "test_completion", "message": "fixture"},
+                service_outcome={"completed": True, "successful": False},
             )
 
         recreated = self._scheduler(replace_current, capacity=1)
@@ -607,7 +609,7 @@ class SchedulerTests(unittest.TestCase):
         self.assertTrue(recreated.wait_until_idle(timeout=5))
         current = status.read_current_record("ordinary")
         self.assertEqual(current.internal_sequence, later.internal_sequence)
-        self.assertEqual(current.status, "SUCCESS")
+        self.assertEqual(current.status, "FAILED")
 
     def test_transaction_entry_types_block_without_inspection_or_mutation(self) -> None:
         symlink_target = Path(self.temporary.name) / "transaction-target"
@@ -630,7 +632,7 @@ class SchedulerTests(unittest.TestCase):
 
                 blocked = self._accept(event_id)
                 different = self._accept(different_id)
-                scheduler = self._scheduler(self._succeed, capacity=1)
+                scheduler = self._scheduler(self._complete_failed, capacity=1)
                 started = scheduler.tick()
                 self.assertTrue(scheduler.wait_until_idle(timeout=5))
 
@@ -685,7 +687,7 @@ class SchedulerTests(unittest.TestCase):
                 replacement.rename(current)
             return original_open_child(parent, name)
 
-        scheduler = self._scheduler(self._succeed, capacity=1)
+        scheduler = self._scheduler(self._complete_failed, capacity=1)
         with mock.patch.object(
             recalculation,
             "_open_child_directory",
@@ -734,7 +736,7 @@ class SchedulerTests(unittest.TestCase):
                 replacement.rename(events)
             return original_entry_details(parent, name)
 
-        scheduler = self._scheduler(self._succeed, capacity=1)
+        scheduler = self._scheduler(self._complete_failed, capacity=1)
         with mock.patch.object(
             recalculation,
             "_entry_details",

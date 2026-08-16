@@ -11,7 +11,7 @@ from unittest import mock
 
 from fastapi.testclient import TestClient
 
-from shakemap_service import cli, directory_access, main, paths, runner
+from shakemap_service import cli, directory_access, main, paths, runner, worker
 from shakemap_service.config import Settings
 from shakemap_service.request_validation import (
     validate_configuration_name,
@@ -173,12 +173,27 @@ class RuntimePathTests(unittest.TestCase):
     def test_upload_basename_preserves_posix_backslash(self) -> None:
         self.assertEqual(validate_upload_basename("native\\file.ext"), "native\\file.ext")
 
-    def test_native_worker_boundary_does_not_claim_work(self) -> None:
+    def test_native_worker_boundary_delegates_but_does_not_claim_work(self) -> None:
         result = run_worker_cycle()
         self.assertFalse(result.claimed)
         self.assertEqual(result.outcome, "worker_disabled")
-        with self.assertRaisesRegex(RuntimeError, "execution is disabled"):
-            execute_shakemap(object())
+        record = object()
+        with (
+            mock.patch.dict(os.environ, {"M5J_TEST": "caller"}, clear=True),
+            mock.patch.object(
+                worker.calculation,
+                "execute_calculation",
+                return_value="FAILED",
+            ) as delegated,
+        ):
+            self.assertEqual(execute_shakemap(record), "FAILED")
+            passed_environment = delegated.call_args.kwargs["base_environment"]
+            self.assertEqual(passed_environment, {"M5J_TEST": "caller"})
+            self.assertIsNot(passed_environment, os.environ)
+        delegated.assert_called_once_with(
+            record,
+            base_environment={"M5J_TEST": "caller"},
+        )
 
     def test_calculation_routes_return_the_same_disabled_response(self) -> None:
         with TestClient(main.app) as client:
