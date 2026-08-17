@@ -1,8 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Public REST views over ShakeMap service identity and durable state.
-
-Application startup has no recovery, scheduling, or calculation side effects.
-"""
+"""Public REST views over ShakeMap service identity and durable state."""
 from __future__ import annotations
 
 import logging
@@ -18,7 +15,7 @@ from starlette.datastructures import FormData, UploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.formparsers import MultiPartException
 
-from . import paths, service_information, submission
+from . import paths, service_information, startup_recovery, submission
 from .public_views import (
     DurableStateError,
     UnknownEventError,
@@ -39,7 +36,10 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Run without startup or shutdown side effects."""
+    """Make interrupted durable calculations truthful before serving."""
+    recovered = startup_recovery.recover_interrupted_calculations()
+    if recovered:
+        logger.info("Recovered %d interrupted calculations", len(recovered))
     yield
 
 

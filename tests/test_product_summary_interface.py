@@ -30,8 +30,13 @@ class ProductSummaryInterfaceTests(unittest.TestCase):
         paths.settings = configured
         status.settings = configured
         public_views.settings = configured
+        self.startup_recovery_patch = mock.patch.object(
+            main.startup_recovery, "recover_interrupted_calculations", return_value=()
+        )
+        self.startup_recovery_patch.start()
 
     def tearDown(self) -> None:
+        self.startup_recovery_patch.stop()
         public_views.settings = self.previous_view_settings
         status.settings = self.previous_status_settings
         paths.settings = self.previous_path_settings

@@ -268,6 +268,15 @@ class OperationalProjectionTests(unittest.TestCase):
 
 
 class RestInterfaceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.startup_recovery_patch = mock.patch.object(
+            main.startup_recovery, "recover_interrupted_calculations", return_value=()
+        )
+        self.startup_recovery_patch.start()
+
+    def tearDown(self) -> None:
+        self.startup_recovery_patch.stop()
+
     def test_malformed_durable_record_is_json_http_500(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             configured = Settings(runtime_root=temporary)
