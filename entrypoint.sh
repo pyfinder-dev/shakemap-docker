@@ -55,22 +55,22 @@ fi
 echo "[entrypoint] [5/7] Creating service directories and verifying permissions"
 
 # User-facing directories
-for dir in products logs; do
+for dir in products logs data/inputs; do
     mkdir -p "${SERVICE_ROOT}/${dir}"
 done
 
 # Internal service state directories
-for dir in .service/events .service/archive; do
+for dir in .service/events .service/archive .service/queue; do
     mkdir -p "${SERVICE_ROOT}/${dir}"
 done
 
 # Best-effort chmod -- has NO real effect on bind mounts.
-for dir in products logs .service/events .service/archive; do
+for dir in products logs data/inputs .service/events .service/archive .service/queue; do
     chmod 0755 "${SERVICE_ROOT}/${dir}" 2>/dev/null || true
 done
 
 # Verify sysop can write to all required directories.
-for dir in products logs .service/events .service/archive; do
+for dir in products logs data/inputs .service/events .service/archive .service/queue; do
     DIRPATH="${SERVICE_ROOT}/${dir}"
     if ! touch "${DIRPATH}/.writetest_$$" 2>/dev/null; then
         echo "" >&2

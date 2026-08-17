@@ -11,9 +11,9 @@ import stat
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO, Iterable, Optional
+from typing import BinaryIO, Callable, Iterable, Optional
 
-from . import paths
+from . import finalization, paths, readiness
 from .directory_access import (
     DirectoryHandle as _DirectoryGuard,
     directory_open_flags as _directory_open_flags,
@@ -78,6 +78,10 @@ class InputPublicationError(RuntimeError):
 
 class InputSnapshotError(RuntimeError):
     """Caller input could not be read into a complete private snapshot."""
+
+
+class ServiceUnavailableError(RuntimeError):
+    """Readiness closed before the request could be durably published."""
 
 
 def _write_bytes_sync(
@@ -847,6 +851,8 @@ def _publish_queue_entry(
     manifest_files: list[dict[str, object]],
     queue_guard: Optional[_DirectoryGuard] = None,
     private_guard: Optional[_DirectoryGuard] = None,
+    require_ready: bool = False,
+    readiness_reader: Callable[[], dict[str, object]] = readiness.read_readiness,
 ) -> CalculationRecord:
     root = paths.queue_dir()
     coordination_descriptor = (
@@ -854,24 +860,29 @@ def _publish_queue_entry(
         if queue_guard is None
         else queue_guard.descriptor
     )
-    fcntl.flock(coordination_descriptor, fcntl.LOCK_EX)
-    try:
-        return _publish_queue_entry_locked(
-            temporary,
-            event_id=event_id,
-            configuration=configuration,
-            overwrite=overwrite,
-            warnings=warnings,
-            input_mode=input_mode,
-            manifest_files=manifest_files,
-            root=root,
-            queue_guard=queue_guard,
-            private_guard=private_guard,
-        )
-    finally:
-        fcntl.flock(coordination_descriptor, fcntl.LOCK_UN)
-        if queue_guard is None:
-            os.close(coordination_descriptor)
+    with finalization.coordination_lock():
+        if require_ready:
+            state = readiness_reader()
+            if state.get("ready") is not True:
+                raise ServiceUnavailableError(str(state.get("reason") or "service is not ready"))
+        fcntl.flock(coordination_descriptor, fcntl.LOCK_EX)
+        try:
+            return _publish_queue_entry_locked(
+                temporary,
+                event_id=event_id,
+                configuration=configuration,
+                overwrite=overwrite,
+                warnings=warnings,
+                input_mode=input_mode,
+                manifest_files=manifest_files,
+                root=root,
+                queue_guard=queue_guard,
+                private_guard=private_guard,
+            )
+        finally:
+            fcntl.flock(coordination_descriptor, fcntl.LOCK_UN)
+            if queue_guard is None:
+                os.close(coordination_descriptor)
 
 
 def _publish_queue_entry_locked(
@@ -954,6 +965,8 @@ def accept_request(
     *,
     configuration: str = "global",
     overwrite: bool = True,
+    _require_ready: bool = False,
+    _readiness_reader: Callable[[], dict[str, object]] = readiness.read_readiness,
 ) -> SubmissionResult:
     """Publish caller uploads and durably accept one immutable queue snapshot."""
     try:
@@ -1112,6 +1125,8 @@ def accept_request(
                         manifest_files=manifest_files,
                         queue_guard=queue_guard,
                         private_guard=private_guard,
+                        require_ready=_require_ready,
+                        readiness_reader=_readiness_reader,
                     )
                 except BaseException as acceptance_error:
                     retain_private_tree = bool(
@@ -1161,4 +1176,23 @@ def accept_request(
         ),
         shared_input_path=str(paths.shared_event_input_dir(event_id)),
         shared_products_path=str(paths.shared_event_native_products_dir(event_id)),
+    )
+
+
+def accept_ready_request(
+    event_id: str,
+    uploads: Iterable[Upload] = (),
+    *,
+    configuration: str = "global",
+    overwrite: bool = True,
+    readiness_reader: Callable[[], dict[str, object]] = readiness.read_readiness,
+) -> SubmissionResult:
+    """Accept a public request only while the final publication gate is open."""
+    return accept_request(
+        event_id,
+        uploads,
+        configuration=configuration,
+        overwrite=overwrite,
+        _require_ready=True,
+        _readiness_reader=readiness_reader,
     )

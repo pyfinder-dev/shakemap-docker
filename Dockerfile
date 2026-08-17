@@ -85,6 +85,12 @@ RUN python /tmp/install-image-support.py natural-earth \
 # Repository configurations are immutable image seeds. Runtime materialization
 # and native profile placement are deliberately handled by finalization.
 COPY regional-configs /opt/shakemap-seeds/regional
+COPY tests/fixtures/shakemap_scenario/event.xml \
+     tests/fixtures/shakemap_scenario/event_dat.xml \
+     tests/fixtures/shakemap_scenario/request-manifest.json \
+     /opt/shakemap-verification/
+COPY tests/verification_packages/v4.4.9/source-manifest.json \
+     /opt/shakemap-verification/source-manifest.json
 
 # ---------- Create app directory and non-root user ----------
 # ---------- Copy service code ----------
@@ -113,6 +119,8 @@ RUN mkdir -p /opt/shakemap-build \
  && chmod -R a-w /opt/shakemap-support \
  && chmod -R a+rX /opt/shakemap-seeds \
  && chmod -R a-w /opt/shakemap-seeds \
+ && chmod -R a+rX /opt/shakemap-verification \
+ && chmod -R a-w /opt/shakemap-verification \
  && chmod 0444 /opt/shakemap-build/identity.json /opt/shakemap-build/dependencies.txt \
       /opt/shakemap-build/mapping-compatibility.json
 

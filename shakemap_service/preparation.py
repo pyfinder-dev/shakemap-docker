@@ -31,6 +31,7 @@ def load_global_assets() -> dict[str, dict[str, Any]]:
 
 
 GLOBAL_ASSETS = load_global_assets()
+STAGED_SUFFIX = ".staged"
 
 class DataProvisioningError(RuntimeError):
     """Raised when an explicit data operation cannot complete safely."""
@@ -298,6 +299,124 @@ def provision_global_data(
     return {"global_assets": assets}
 
 
+def staged_asset_path(target: Path) -> Path:
+    return target.with_name(f".{target.name}{STAGED_SUFFIX}")
+
+
+def stage_replacement_file(
+    target: Path,
+    spec: dict[str, Any],
+    source: Path | None,
+    allow_download: bool,
+) -> dict[str, Any]:
+    """Validate a replacement beside its target without changing active data."""
+    label = str(spec.get("label", target.name))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staged = staged_asset_path(target)
+    if staged.exists() and (staged.is_symlink() or not staged.is_file()):
+        raise DataProvisioningError(
+            f"{label}: staged replacement path is unsafe at {staged}; move it aside and retry"
+        )
+    temporary = target.parent / f".{target.name}.stage-{uuid.uuid4().hex}"
+    try:
+        if source is not None:
+            if not source.is_file() or source.is_symlink():
+                raise DataProvisioningError(
+                    f"{label}: replacement source is not a readable regular file: {source}"
+                )
+            shutil.copyfile(source, temporary)
+            action = "staged-import"
+        elif allow_download:
+            download(spec["url"], temporary)
+            action = "staged-download"
+        else:
+            raise DataProvisioningError(
+                f"{label}: replacement requires a source or enabled download"
+            )
+        valid, reason = validate_pinned_file(temporary, spec)
+        if not valid:
+            raise DataProvisioningError(
+                f"{label}: replacement candidate failed identity validation ({reason}); "
+                "the active asset was left unchanged"
+            )
+        os.replace(temporary, staged)
+        fsync_directory = os.open(target.parent, os.O_RDONLY)
+        try:
+            os.fsync(fsync_directory)
+        finally:
+            os.close(fsync_directory)
+        return {
+            "action": action,
+            "active_path": str(target),
+            **file_record(staged, source=spec),
+        }
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def stage_global_replacements(
+    data_root: Path,
+    *,
+    vs30_source: Path | None,
+    topo_source: Path | None,
+    allow_download: bool,
+) -> dict[str, Any]:
+    manual = {"vs30": vs30_source, "topography": topo_source}
+    selected = (
+        set(GLOBAL_ASSETS)
+        if vs30_source is None and topo_source is None
+        else {name for name, source in manual.items() if source is not None}
+    )
+    return {
+        "global_assets": {
+            name: stage_replacement_file(
+                data_root / spec["relative"],
+                spec,
+                manual[name],
+                allow_download,
+            )
+            for name, spec in GLOBAL_ASSETS.items()
+            if name in selected
+        }
+    }
+
+
+def activate_staged_global_replacements(data_root: Path) -> dict[str, Any]:
+    """Atomically activate each fully validated staged global asset."""
+    candidates: list[tuple[str, dict[str, Any], Path, Path]] = []
+    for name, spec in GLOBAL_ASSETS.items():
+        target = data_root / spec["relative"]
+        staged = staged_asset_path(target)
+        if not staged.exists():
+            continue
+        valid, reason = validate_pinned_file(staged, spec)
+        if not valid:
+            raise DataProvisioningError(
+                f"{spec['label']}: staged replacement at {staged} failed validation "
+                f"({reason}); active data was left unchanged"
+            )
+        if target.exists() and (target.is_symlink() or not target.is_file()):
+            raise DataProvisioningError(
+                f"{spec['label']}: active path is unsafe at {target}; it was left unchanged"
+            )
+        candidates.append((name, spec, target, staged))
+
+    activated: dict[str, Any] = {}
+    for name, spec, target, staged in candidates:
+        os.replace(staged, target)
+        directory = os.open(target.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+        activated[name] = {
+            "action": "activated",
+            **file_record(target, source=spec),
+        }
+    return {"global_assets": activated}
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(description=__doc__)
     commands = root.add_subparsers(dest="command", required=True)
@@ -314,6 +433,11 @@ def parser() -> argparse.ArgumentParser:
     provision.add_argument("--vs30-source", type=Path)
     provision.add_argument("--topo-source", type=Path)
     provision.add_argument("--no-download", action="store_true")
+    stage = commands.add_parser("stage")
+    stage.add_argument("--data-root", type=Path, default=default_data)
+    stage.add_argument("--vs30-source", type=Path)
+    stage.add_argument("--topo-source", type=Path)
+    stage.add_argument("--no-download", action="store_true")
     return root
 
 
@@ -328,6 +452,14 @@ def main(argv: Iterable[str] | None = None) -> int:
             result = 0 if value["pinned_integrity_valid"] else 1
         elif args.command == "provision":
             value = provision_global_data(
+                args.data_root,
+                vs30_source=args.vs30_source,
+                topo_source=args.topo_source,
+                allow_download=not args.no_download,
+            )
+            result = 0
+        elif args.command == "stage":
+            value = stage_global_replacements(
                 args.data_root,
                 vs30_source=args.vs30_source,
                 topo_source=args.topo_source,

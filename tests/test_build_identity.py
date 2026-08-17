@@ -414,70 +414,19 @@ class BuildIdentityTests(unittest.TestCase):
 
 
 class StartupHelperTests(unittest.TestCase):
-    def test_reserved_identity_environment_is_rejected_before_docker(self) -> None:
+    def test_arbitrary_environment_option_is_not_exposed(self) -> None:
         script = PROJECT_DIR / "scripts" / "start-shakemap-docker.sh"
-        for key in (
-            "SHAKEMAP_IMAGE_ID",
-            "SHAKEMAP_IMAGE_DIGEST",
-            "SHAKEMAP_BUILD_IDENTITY_FILE",
-        ):
-            for value in (key, f"{key}=attacker", f"{key} attacker", f"{key}:attacker"):
-                with self.subTest(value=value):
-                    result = subprocess.run(
-                        ["bash", str(script), "--env", value],
-                        cwd=PROJECT_DIR,
-                        capture_output=True,
-                        text=True,
-                    )
-                    self.assertNotEqual(result.returncode, 0)
-                    self.assertIn(f"reserved identity key {key}", result.stderr)
-                    self.assertNotIn("Checking Docker", result.stdout)
-
-    def test_non_reserved_environment_reaches_docker_run(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="startup_helper_") as temp:
-            root = Path(temp)
-            fakebin = root / "bin"
-            fakebin.mkdir()
-            trace = root / "docker-run.txt"
-            fake_docker = fakebin / "docker"
-            fake_docker.write_text(
-                "#!/usr/bin/env bash\n"
-                "if [[ \"$1 $2\" == \"image inspect\" ]]; then\n"
-                "  if [[ \"$*\" == *\"{{.Id}}\"* ]]; then echo 'sha256:" + "1" * 64 + "';\n"
-                "  else echo 'registry.example/shakemap@sha256:" + "2" * 64 + "'; fi\n"
-                "  exit 0\n"
-                "fi\n"
-                "if [[ \"$1 $2\" == \"container inspect\" ]]; then exit 1; fi\n"
-                "if [[ \"$1\" == \"run\" ]]; then printf '%s\\n' \"$@\" > \"$TRACE_PATH\"; echo fake-id; exit 0; fi\n"
-                "exit 0\n",
-                encoding="utf-8",
-            )
-            fake_docker.chmod(fake_docker.stat().st_mode | stat.S_IXUSR)
-            environment = os.environ.copy()
-            environment["PATH"] = os.pathsep.join((str(fakebin), environment["PATH"]))
-            environment["TRACE_PATH"] = str(trace)
-            result = subprocess.run(
-                [
-                    "bash", str(PROJECT_DIR / "scripts" / "start-shakemap-docker.sh"),
-                    "--name", "shakemap-docker-identity-qa",
-                    "--runtime", str(root / "runtime"),
-                    "--image", "shakemap-docker:test",
-                    "--env", "IDENTITY_CHECK_MARKER=present",
-                ],
-                cwd=PROJECT_DIR,
-                env=environment,
-                capture_output=True,
-                text=True,
-            )
-            self.assertEqual(result.returncode, 0, result.stderr)
-            arguments = trace.read_text(encoding="utf-8").splitlines()
-            self.assertIn(f"SHAKEMAP_IMAGE_ID={IMAGE_ID}", arguments)
-            self.assertIn(f"SHAKEMAP_IMAGE_DIGEST={IMAGE_DIGEST}", arguments)
-            self.assertIn("IDENTITY_CHECK_MARKER=present", arguments)
-            combined = result.stdout + result.stderr
-            self.assertNotIn(IMAGE_ID, combined)
-            self.assertNotIn(IMAGE_DIGEST, combined)
-            self.assertNotIn("docker run", combined)
+        result = subprocess.run(
+            ["bash", str(script), "--env", "ANY_KEY=value"],
+            cwd=PROJECT_DIR,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("unknown option: --env", result.stderr)
+        source = script.read_text(encoding="utf-8")
+        self.assertNotIn("EXTRA_ENVS", source)
+        self.assertNotIn("validate_extra_env", source)
 
 
 if __name__ == "__main__":

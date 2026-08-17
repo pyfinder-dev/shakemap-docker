@@ -434,6 +434,8 @@ class SubmissionRestTests(unittest.TestCase):
             *,
             configuration: str,
             overwrite: bool,
+            _require_ready: bool,
+            _readiness_reader: object,
         ) -> submission.SubmissionResult:
             for upload in uploads:
                 observed.append((upload.basename, upload.stream.tell()))

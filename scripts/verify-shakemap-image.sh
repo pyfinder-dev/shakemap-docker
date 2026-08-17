@@ -2,13 +2,15 @@
 # Container-internal identity consistency verification.
 set -uo pipefail
 
-if [[ $# -gt 0 ]]; then
-    if [[ "$1" == "--help" || "$1" == "-h" ]]; then
-        echo "Usage: $0"
-        echo "Verify installed software, imports, support data, and upstream identity."
-        exit 0
-    fi
-    echo "ERROR: this verifier takes no options" >&2
+MODE="image"
+if [[ $# -eq 1 && ( "$1" == "--help" || "$1" == "-h" ) ]]; then
+    echo "Usage: $0 [--deployment]"
+    echo "Verify immutable image contents or a deployment with mounted data."
+    exit 0
+elif [[ $# -eq 1 && "$1" == "--deployment" ]]; then
+    MODE="deployment"
+elif [[ $# -gt 0 ]]; then
+    echo "ERROR: unknown verifier option" >&2
     exit 2
 fi
 
@@ -175,12 +177,140 @@ PY
 check test "${MAPPING_STACK_RESULT}" = OK
 if [[ "${MAPPING_STACK_RESULT}" != "OK" ]]; then echo "${MAPPING_STACK_RESULT}" >&2; fi
 
+REQUEST_RESULT="$(python - <<'PY'
+import hashlib
+import json
+import pathlib
+import stat
+
+errors = []
+root = pathlib.Path('/opt/shakemap-verification')
+manifest_path = root / 'request-manifest.json'
+identity_path = pathlib.Path('/opt/shakemap-build/identity.json')
+try:
+    if not stat.S_ISREG(manifest_path.lstat().st_mode) or manifest_path.is_symlink():
+        raise ValueError('request manifest is not a safe regular file')
+    manifest = json.loads(manifest_path.read_text())
+    identity = json.loads(identity_path.read_text())['immutable_image']
+    if manifest.get('schema_version') != 1:
+        errors.append('request manifest schema mismatch')
+    compatibility = manifest.get('compatible_shakemap')
+    expected_compatibility = {
+        'release_tag': identity['upstream']['release_tag'],
+        'source_commit': identity['upstream']['source_commit'],
+    }
+    if compatibility != expected_compatibility:
+        errors.append('request compatibility mismatch')
+    records = manifest.get('files')
+    if not isinstance(records, list) or len(records) != 2:
+        errors.append('request inventory must contain exactly two files')
+        records = []
+    inventory = {
+        record.get('installed_name'): record
+        for record in records
+        if isinstance(record, dict)
+    }
+    if set(inventory) != {'event.xml', 'event_dat.xml'}:
+        errors.append('request inventory names mismatch')
+    for name in ('event.xml', 'event_dat.xml'):
+        record = inventory.get(name)
+        if not isinstance(record, dict):
+            continue
+        target = root / name
+        if target.parent != root or not stat.S_ISREG(target.lstat().st_mode) or target.is_symlink():
+            errors.append(f'request file is missing or unsafe: {name}')
+            continue
+        size = target.stat().st_size
+        digest = hashlib.sha256(target.read_bytes()).hexdigest()
+        if size != record.get('installed_size') or digest != record.get('installed_sha256'):
+            errors.append(f'request file identity mismatch: {name}')
+except Exception as exc:
+    errors.append(f'{type(exc).__name__}: {exc}')
+print('OK' if not errors else ' | '.join(errors))
+PY
+)"
+check test "${REQUEST_RESULT}" = OK
+if [[ "${REQUEST_RESULT}" != "OK" ]]; then echo "${REQUEST_RESULT}" >&2; fi
+
 check test -x /app/scripts/verify-shakemap-image.sh
 check test "$(find /app/scripts -maxdepth 1 -type f | wc -l | tr -d ' ')" = 1
 check test ! -e /opt/shakemap-support/global/vs30/global_vs30.grd
 check test ! -e /opt/shakemap-support/global/topo/topo_30sec.grd
-check test ! -e /home/sysop/runtime/shakemap/data/global/vs30/global_vs30.grd
-check test ! -e /home/sysop/runtime/shakemap/data/global/topo/topo_30sec.grd
+if [[ "${MODE}" == "image" ]]; then
+    check test ! -e /home/sysop/runtime/shakemap/data/global/vs30/global_vs30.grd
+    check test ! -e /home/sysop/runtime/shakemap/data/global/topo/topo_30sec.grd
+else
+    DEPLOYMENT_DATA_RESULT="$(python - <<'PY'
+import hashlib
+import importlib.metadata
+import json
+import pathlib
+
+from shakemap_service.preparation import validate_pinned_global_assets
+
+errors = []
+data_root = pathlib.Path('/home/sysop/runtime/shakemap/data')
+global_result = validate_pinned_global_assets(data_root)
+if not global_result['pinned_integrity_valid']:
+    for name, result in global_result['global_assets'].items():
+        if not result['valid']:
+            errors.append(f"global {name}: {result['reason']} at {result['path']}")
+
+try:
+    identity = json.loads(pathlib.Path('/opt/shakemap-build/identity.json').read_text())['immutable_image']
+    definition = json.loads(pathlib.Path('/opt/shakemap-verification/source-manifest.json').read_text())
+    version = identity['installed']['shakemap_distribution_version']
+    package_root = data_root / 'test' / version
+    manifest = json.loads((package_root / 'package-manifest.json').read_text())
+    compatibility = definition['compatibility']
+    expected_compatibility = {
+        'shakemap_release_tag': identity['upstream']['release_tag'],
+        'shakemap_version': version,
+        'shakemap_source_commit': identity['upstream']['source_commit'],
+        'shakemap_modules_version': identity['installed']['shakemap_modules_distribution_version'],
+        'usgs_strec_version': importlib.metadata.version('usgs-strec'),
+    }
+    if compatibility != expected_compatibility:
+        errors.append('verification definition does not match the installed release')
+    for field in ('package_id', 'compatibility', 'module_plan', 'image_dependencies'):
+        if manifest.get(field) != definition.get(field):
+            errors.append(f'verification package {field} mismatch')
+    if not (package_root / 'README.md').is_file():
+        errors.append('verification package README.md is missing')
+    expected_files = {
+        item['target_path']: item
+        for source in definition['sources']
+        for item in source['files']
+    }
+    recorded_files = {
+        item.get('installed_path'): item
+        for item in manifest.get('files', [])
+        if isinstance(item, dict)
+    }
+    if set(recorded_files) != set(expected_files):
+        errors.append('verification package file inventory mismatch')
+    resolved_root = package_root.resolve()
+    for relative, expected in expected_files.items():
+        target = package_root / relative
+        resolved = target.resolve()
+        if resolved_root not in resolved.parents or target.is_symlink() or not target.is_file():
+            errors.append(f'verification file is missing or unsafe: {relative}')
+            continue
+        digest = hashlib.sha256(target.read_bytes()).hexdigest()
+        if target.stat().st_size != expected['size'] or digest != expected['sha256']:
+            errors.append(f'verification file identity mismatch: {relative}')
+        record = recorded_files.get(relative, {})
+        if record.get('installed_size') != expected['size'] or record.get('installed_sha256') != expected['sha256']:
+            errors.append(f'verification manifest record mismatch: {relative}')
+except Exception as exc:
+    errors.append(f'{type(exc).__name__}: {exc}')
+
+print('OK' if not errors else ' | '.join(errors))
+PY
+)"
+    check test "${DEPLOYMENT_DATA_RESULT}" = OK
+    if [[ "${DEPLOYMENT_DATA_RESULT}" != "OK" ]]; then echo "${DEPLOYMENT_DATA_RESULT}" >&2; fi
+fi
 
 echo "Container-internal image verification: ${PASS} passed, ${FAIL} failed"
 echo "This result does not establish running-service deployment readiness."

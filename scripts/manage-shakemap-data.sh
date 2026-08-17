@@ -20,6 +20,7 @@ usage() {
 #   inspect             Report presence/readability without writing or hashing
 #   validate            Validate pinned identities without writing
 #   provision           Reuse valid assets or install only missing assets
+#   stage               Validate replacements without changing active assets
 #
 # Options:
 #   --runtime DIR       Mounted runtime root (default: ./runtime)
@@ -34,7 +35,7 @@ if [[ $# -eq 0 ]]; then
 fi
 
 case "$1" in
-    inspect|validate|provision) ACTION="$1"; shift ;;
+    inspect|validate|provision|stage) ACTION="$1"; shift ;;
     --help|-h) usage; exit 0 ;;
     *) echo "ERROR: unknown action: $1" >&2; usage >&2; exit 2 ;;
 esac
@@ -50,9 +51,9 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ "${ACTION}" != "provision" ]] && \
+if [[ "${ACTION}" != "provision" && "${ACTION}" != "stage" ]] && \
    [[ -n "${VS30_SOURCE}" || -n "${TOPO_SOURCE}" || "${NO_DOWNLOAD}" = "1" ]]; then
-    echo "ERROR: source and download options are valid only for provision" >&2
+    echo "ERROR: source and download options are valid only for provision or stage" >&2
     exit 2
 fi
 

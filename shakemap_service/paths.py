@@ -22,6 +22,14 @@ def service_dir() -> Path:
     return service_root() / ".service"
 
 
+def workflow_lock_file() -> Path:
+    return service_dir() / "workflow.lock"
+
+
+def bootstrap_marker_file() -> Path:
+    return service_dir() / "bootstrap-marker.json"
+
+
 def products_dir() -> Path:
     return service_root() / "products"
 

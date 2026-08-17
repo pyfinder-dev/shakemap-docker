@@ -18,6 +18,7 @@ from starlette.formparsers import MultiPartException
 
 from . import (
     paths,
+    finalization,
     readiness,
     runner,
     service_information,
@@ -51,10 +52,18 @@ _restart_required_after_incomplete_callback_drain = False
 async def _admit_ready_work(scheduler: Scheduler, stopping: asyncio.Event) -> None:
     while not stopping.is_set():
         try:
-            state = await asyncio.to_thread(readiness.read_readiness)
-            if state.get("ready") is True:
-                await asyncio.to_thread(scheduler.tick)
-            elif state.get("reason") == readiness.UNAVAILABLE:
+            def tick_if_ready() -> dict[str, object]:
+                with finalization.coordination_lock():
+                    state = readiness.read_readiness()
+                    if state.get("ready") is True:
+                        scheduler.tick()
+                    return state
+
+            state = await asyncio.to_thread(tick_if_ready)
+            if (
+                state.get("ready") is not True
+                and state.get("reason") == readiness.UNAVAILABLE
+            ):
                 logger.error("Calculation admission readiness is unavailable")
         except Exception:
             logger.exception("Calculation admission failed")
@@ -149,6 +158,7 @@ async def lifespan(app: FastAPI):
     recovered = startup_recovery.recover_interrupted_calculations()
     if recovered:
         logger.info("Recovered %d interrupted calculations", len(recovered))
+    finalization.consume_bootstrap_marker()
     runner.open_launch_gate()
     scheduler = Scheduler(worker.execute_shakemap)
     stopping = asyncio.Event()
@@ -411,11 +421,12 @@ async def submit_event_endpoint(request: Request) -> JSONResponse:
             return _submission_failure_response(exc)
         try:
             accepted = await run_in_threadpool(
-                submission.accept_request,
+                submission.accept_ready_request,
                 event_id,
                 uploads,
                 configuration=configuration,
                 overwrite=overwrite,
+                readiness_reader=service_information.read_readiness,
             )
         except (
             submission.InputValidationError,
@@ -423,6 +434,8 @@ async def submit_event_endpoint(request: Request) -> JSONResponse:
             submission.InputSnapshotError,
         ) as exc:
             return _request_rejected_response(exc)
+        except submission.ServiceUnavailableError as exc:
+            return _service_unavailable_response(str(exc))
         except Exception as exc:
             return _submission_failure_response(exc)
     finally:

@@ -10,7 +10,7 @@ from pathlib import Path
 from threading import Event, Lock, Thread
 from unittest import mock
 
-from shakemap_service import main, paths, readiness, runner, status, worker
+from shakemap_service import finalization, main, paths, readiness, runner, status, worker
 from shakemap_service.config import Settings
 from shakemap_service.scheduler import Scheduler
 from shakemap_service.submission import Upload, accept_request
@@ -146,6 +146,51 @@ class ApplicationLifecycleTests(unittest.TestCase):
             asyncio.run(main._admit_ready_work(scheduler, stopping))
 
         scheduler.tick.assert_called_once_with()
+
+    def test_finalization_waits_for_tick_and_observes_its_promotion(self) -> None:
+        accepted = self._accept("promoted")
+        readiness._record_not_ready("fixture")
+        entered = Event()
+        release = Event()
+        stopping = asyncio.Event()
+
+        class PromotingScheduler:
+            def tick(self) -> None:
+                status.transition_to_running(accepted.internal_sequence)
+                entered.set()
+                if not release.wait(5):
+                    raise AssertionError("tick was not released")
+
+        async def admit() -> None:
+            task = asyncio.create_task(
+                main._admit_ready_work(PromotingScheduler(), stopping)
+            )
+            self.assertTrue(await asyncio.to_thread(entered.wait, 5))
+            result: list[BaseException] = []
+
+            def begin() -> None:
+                try:
+                    finalization.begin()
+                except BaseException as exc:
+                    result.append(exc)
+
+            thread = Thread(target=begin)
+            thread.start()
+            self.assertTrue(thread.is_alive())
+            release.set()
+            thread.join(5)
+            stopping.set()
+            await task
+            self.assertEqual(len(result), 1)
+            self.assertIsInstance(result[0], finalization.FinalizationError)
+            self.assertIn("RUNNING", str(result[0]))
+
+        with mock.patch.object(
+            main.readiness,
+            "read_readiness",
+            return_value={"ready": True, "reason": None},
+        ):
+            asyncio.run(admit())
 
     def test_admission_loop_survives_read_and_tick_errors_with_waits(self) -> None:
         stopping = asyncio.Event()

@@ -275,6 +275,52 @@ class ContractedDestinationTests(unittest.TestCase):
                 )
         self.assertEqual(snapshot(self.root), before)
 
+    def test_single_asset_replacement_is_staged_without_touching_other_active_data(self) -> None:
+        self.provision()
+        before_topography = (self.data_root / self.assets["topography"]["relative"]).read_bytes()
+        replacement = self.root / "replacement-vs30.grd"
+        replacement.write_bytes(self.vs30_bytes)
+        with patch.object(preparation, "GLOBAL_ASSETS", self.assets):
+            result = preparation.stage_global_replacements(
+                self.data_root,
+                vs30_source=replacement,
+                topo_source=None,
+                allow_download=False,
+            )
+        self.assertEqual(set(result["global_assets"]), {"vs30"})
+        active = self.data_root / self.assets["vs30"]["relative"]
+        staged = preparation.staged_asset_path(active)
+        self.assertEqual(active.read_bytes(), self.vs30_bytes)
+        self.assertEqual(staged.read_bytes(), self.vs30_bytes)
+        self.assertEqual(
+            (self.data_root / self.assets["topography"]["relative"]).read_bytes(),
+            before_topography,
+        )
+        with patch.object(preparation, "GLOBAL_ASSETS", self.assets):
+            activated = preparation.activate_staged_global_replacements(self.data_root)
+        self.assertEqual(set(activated["global_assets"]), {"vs30"})
+        self.assertFalse(staged.exists())
+
+    def test_activation_prevalidates_all_candidates_and_preserves_active_on_failure(self) -> None:
+        self.provision()
+        active_before = {
+            name: (self.data_root / spec["relative"]).read_bytes()
+            for name, spec in self.assets.items()
+        }
+        for spec in self.assets.values():
+            target = self.data_root / spec["relative"]
+            preparation.staged_asset_path(target).write_bytes(b"invalid")
+        with patch.object(preparation, "GLOBAL_ASSETS", self.assets), self.assertRaisesRegex(
+            preparation.DataProvisioningError,
+            "staged replacement.*failed validation",
+        ):
+            preparation.activate_staged_global_replacements(self.data_root)
+        for name, spec in self.assets.items():
+            self.assertEqual(
+                (self.data_root / spec["relative"]).read_bytes(),
+                active_before[name],
+            )
+
 
 class SurfaceTests(unittest.TestCase):
     def test_removed_lifecycle_symbols_and_commands_are_absent(self) -> None:
@@ -289,7 +335,7 @@ class SurfaceTests(unittest.TestCase):
         ):
             self.assertFalse(hasattr(preparation, name), name)
         choices = preparation.parser()._subparsers._group_actions[0].choices
-        self.assertEqual(set(choices), {"inspect", "validate", "provision"})
+        self.assertEqual(set(choices), {"inspect", "validate", "provision", "stage"})
         provision_options = {
             option
             for action in choices["provision"]._actions
@@ -322,13 +368,12 @@ class SurfaceTests(unittest.TestCase):
             "validate-record",
             "docker run",
             "subprocess.run",
-            "os.replace",
         ):
             self.assertNotIn(forbidden, module)
-        for forbidden in ("docker ", "--image", "replace"):
+        for forbidden in ("docker ", "--image"):
             self.assertNotIn(forbidden, helper.lower())
         self.assertNotIn("activate)", helper.lower())
-        self.assertIn("inspect|validate|provision", helper)
+        self.assertIn("inspect|validate|provision|stage", helper)
         self.assertIn('-m shakemap_service.preparation "${ACTION}"', helper)
 
 

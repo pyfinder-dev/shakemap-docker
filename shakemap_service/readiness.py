@@ -16,6 +16,7 @@ MAX_RECORD_BYTES = 16 * 1024
 NOT_RECORDED = "deployment readiness has not been recorded"
 UNAVAILABLE = "recorded readiness is unavailable"
 MISMATCH = "recorded readiness does not match this deployment"
+FINALIZING = "deployment finalization is in progress"
 _IDENTITY_KEYS = {
     "image_id",
     "release_tag",
@@ -28,6 +29,7 @@ _FINAL_RELEASE_TAG_RE = re.compile(
     r"(0|[1-9][0-9]*)\."
     r"(0|[1-9][0-9]*)$"
 )
+_provisional_ready = False
 
 
 def _mapping(value: object, keys: set[str]) -> dict:
@@ -129,7 +131,7 @@ def _validate_record(value: object) -> dict:
     record = _mapping(value, {"schema_version", "state", "reason", "identity"})
     if type(record["schema_version"]) is not int or record["schema_version"] != 1:
         raise ValueError("unsupported readiness schema")
-    if record["state"] == "not_ready":
+    if record["state"] in {"not_ready", "finalizing"}:
         if record["identity"] is not None:
             raise ValueError("not-ready identity must be null")
         _text(record["reason"])
@@ -220,6 +222,8 @@ def _publish(record: dict) -> None:
 
 
 def _record_ready(service_identity: object) -> None:
+    global _provisional_ready
+    _provisional_ready = False
     _publish(
         {
             "schema_version": 1,
@@ -231,6 +235,8 @@ def _record_ready(service_identity: object) -> None:
 
 
 def _record_not_ready(reason: str) -> None:
+    global _provisional_ready
+    _provisional_ready = False
     _publish(
         {
             "schema_version": 1,
@@ -241,14 +247,37 @@ def _record_not_ready(reason: str) -> None:
     )
 
 
+def _record_finalizing(reason: str = FINALIZING) -> None:
+    global _provisional_ready
+    _provisional_ready = False
+    _publish(
+        {
+            "schema_version": 1,
+            "state": "finalizing",
+            "reason": _text(reason),
+            "identity": None,
+        }
+    )
+
+
+def _set_provisional_ready(value: bool) -> None:
+    global _provisional_ready
+    _provisional_ready = bool(value)
+
+
 def read_readiness(service_identity: object = None) -> dict[str, object]:
+    global _provisional_ready
     try:
         record = _read_record()
     except (OSError, UnicodeError, ValueError):
         return {"ready": False, "reason": UNAVAILABLE}
     if record is None:
         return {"ready": False, "reason": NOT_RECORDED}
-    if record["state"] == "not_ready":
+    if _provisional_ready:
+        if record["state"] == "finalizing":
+            return {"ready": True, "reason": None}
+        _provisional_ready = False
+    if record["state"] in {"not_ready", "finalizing"}:
         return {"ready": False, "reason": record["reason"]}
     try:
         if service_identity is None:

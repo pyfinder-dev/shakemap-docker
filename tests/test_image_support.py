@@ -109,6 +109,16 @@ class ImageSupportTests(unittest.TestCase):
         self.assertIn("check command -v shake", verifier)
         self.assertIn("check sm_profile --help", verifier)
         self.assertNotIn("check shake --help", verifier)
+        self.assertIn('MODE="image"', verifier)
+        self.assertIn(
+            "check test ! -e /home/sysop/runtime/shakemap/data/global/vs30/global_vs30.grd",
+            verifier,
+        )
+        self.assertIn("validate_pinned_global_assets", verifier)
+        self.assertIn("request-manifest.json", dockerfile)
+        self.assertIn("request inventory must contain exactly two files", verifier)
+        self.assertIn("request compatibility mismatch", verifier)
+        self.assertIn("request file identity mismatch", verifier)
 
 
 if __name__ == "__main__":

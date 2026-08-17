@@ -30,8 +30,10 @@ class ReadinessTests(unittest.TestCase):
         self.previous = paths.settings
         paths.settings = Settings(runtime_root=self.temporary.name)
         self.identity = service_identity()
+        readiness._set_provisional_ready(False)
 
     def tearDown(self) -> None:
+        readiness._set_provisional_ready(False)
         paths.settings = self.previous
         self.temporary.cleanup()
 
@@ -217,3 +219,17 @@ class ReadinessTests(unittest.TestCase):
                 readiness._record_not_ready("new reason")
         self.assertEqual(record.read_bytes(), before)
         self.assertEqual(list(paths.service_dir().glob(".readiness.json.*.tmp")), [])
+
+    def test_finalizing_is_fail_closed_except_for_the_current_process_overlay(self) -> None:
+        readiness._record_finalizing("validating deployment")
+        self.assertEqual(
+            readiness.read_readiness(self.identity),
+            {"ready": False, "reason": "validating deployment"},
+        )
+        readiness._set_provisional_ready(True)
+        self.assertEqual(
+            readiness.read_readiness(self.identity),
+            {"ready": True, "reason": None},
+        )
+        readiness._set_provisional_ready(False)
+        self.assertFalse(readiness.read_readiness(self.identity)["ready"])
