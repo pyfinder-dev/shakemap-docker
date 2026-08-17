@@ -537,6 +537,34 @@ class SubmissionRestTests(unittest.TestCase):
         )
         self.assertFalse(paths.queue_dir().exists())
 
+    def test_unsafe_canonical_input_directory_is_400_before_acceptance(self) -> None:
+        caller_directory = Path(self.temporary.name) / "caller-owned"
+        caller_directory.mkdir()
+        caller_directory.joinpath("event.xml").write_bytes(b"preserve")
+        paths.inputs_dir().mkdir(parents=True)
+        paths.event_input_dir("unsafe").symlink_to(
+            caller_directory,
+            target_is_directory=True,
+        )
+
+        response = self._post([("event_id", (None, "unsafe"))])
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.json(),
+            {
+                "error": "request_rejected",
+                "message": "canonical event input directory could not be opened safely",
+                "details": [],
+            },
+        )
+        self.assertEqual(
+            caller_directory.joinpath("event.xml").read_bytes(),
+            b"preserve",
+        )
+        self.assertTrue(paths.event_input_dir("unsafe").is_symlink())
+        self.assertFalse(paths.queue_dir().exists())
+
     def test_malformed_durable_sequence_state_is_sanitized_500(self) -> None:
         self._input_directory("sequence").joinpath("event.xml").write_bytes(b"event")
         queue_root = paths.queue_dir()

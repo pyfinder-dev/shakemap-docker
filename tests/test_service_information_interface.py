@@ -383,6 +383,20 @@ class ServiceInformationRestTests(unittest.TestCase):
         self.assertNotIn("valid", response.text)
         self.assertNotIn("bad", response.text)
 
+    def test_unsafe_named_regular_file_is_not_a_configuration(self) -> None:
+        regional = paths.regional_data_dir()
+        regional.mkdir(parents=True)
+        (regional / "bad\nname").write_text("ignored", encoding="utf-8")
+
+        with TestClient(main.app) as client:
+            response = client.get("/configurations")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {"default": "global", "configurations": ["global"]},
+        )
+
     def test_discovery_does_not_inspect_child_content_data_or_native_tools(self) -> None:
         regional = paths.regional_data_dir()
         (regional / "greece").mkdir(parents=True)

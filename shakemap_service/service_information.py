@@ -115,9 +115,9 @@ def discover_configuration_names() -> list[str]:
     try:
         with os.scandir(regional_root) as entries:
             for entry in entries:
-                name = validate_configuration_name(entry.name)
-                if entry.is_dir(follow_symlinks=False):
-                    discovered.add(name)
+                if not entry.is_dir(follow_symlinks=False):
+                    continue
+                discovered.add(validate_configuration_name(entry.name))
     except (OSError, ValueError) as exc:
         raise ServiceInformationError("regional configuration discovery failed") from exc
 

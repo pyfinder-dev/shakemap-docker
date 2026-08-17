@@ -974,6 +974,10 @@ def accept_request(
         raise InputValidationError(
             "canonical event input directory does not exist and no uploads were supplied"
         ) from exc
+    except ValueError as exc:
+        raise InputValidationError(
+            "canonical event input directory could not be opened safely"
+        ) from exc
     except OSError as exc:
         raise InputSnapshotError(
             "canonical event input directory could not be opened safely"

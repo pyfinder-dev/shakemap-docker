@@ -100,6 +100,7 @@ class OperationalProjectionTests(unittest.TestCase):
         queue: list[CalculationRecord] | None = None,
         current: list[CalculationRecord] | None = None,
         maximum_running: int = 10,
+        transaction_event_ids: frozenset[str] = frozenset(),
     ) -> public_views.OperationalViews:
         with (
             mock.patch.object(
@@ -111,6 +112,11 @@ class OperationalProjectionTests(unittest.TestCase):
                 public_views,
                 "scan_current_records",
                 return_value=(current or [], []),
+            ),
+            mock.patch.object(
+                public_views.recalculation,
+                "current_transaction_present",
+                side_effect=lambda event_id: event_id in transaction_event_ids,
             ),
         ):
             return public_views.build_operational_views(
@@ -217,6 +223,24 @@ class OperationalProjectionTests(unittest.TestCase):
         ).queue
         self.assertEqual(available["capacity"]["available"], 1)
         self.assertEqual(available["jobs"][0]["waiting_reason"], "awaiting_scheduler")
+
+    def test_unresolved_current_transaction_blocks_only_its_event(self) -> None:
+        blocked = _record(1, "blocked", LifecycleState.QUEUED)
+        unrelated = _record(2, "unrelated", LifecycleState.QUEUED)
+
+        views = self._views(
+            queue=[blocked, unrelated],
+            transaction_event_ids=frozenset({"blocked"}),
+        )
+
+        self.assertEqual(
+            [row["waiting_reason"] for row in views.events["jobs"]],
+            ["same_event_active", "awaiting_scheduler"],
+        )
+        self.assertEqual(
+            [row["waiting_reason"] for row in views.queue["jobs"]],
+            ["same_event_active", "awaiting_scheduler"],
+        )
 
     def test_success_flags_come_only_from_lifecycle_state(self) -> None:
         success = _record(1, "success", LifecycleState.SUCCESS)
@@ -337,6 +361,11 @@ class RestInterfaceTests(unittest.TestCase):
         with (
             mock.patch.object(public_views, "scan_queue_records", return_value=(queue, [])),
             mock.patch.object(public_views, "scan_current_records", return_value=(current, [])),
+            mock.patch.object(
+                public_views.recalculation,
+                "current_transaction_present",
+                return_value=False,
+            ),
             mock.patch.object(public_views, "settings", Settings(max_concurrent=2)),
             TestClient(main.app) as client,
         ):

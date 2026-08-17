@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from . import paths
+from . import paths, recalculation
 from .config import Settings, settings
 from .directory_access import directory_open_flags, open_service_directory
 from .request_validation import validate_event_id
@@ -391,12 +391,20 @@ def build_operational_snapshot(
     queued_records = [
         record for record in records if record.status == LifecycleState.QUEUED.value
     ]
+    transaction_event_ids = {
+        event_id
+        for event_id in {record.event_id for record in queued_records}
+        if recalculation.current_transaction_present(event_id)
+    }
 
     configured = settings if service_settings is None else service_settings
     capacity_exhausted = len(running_records_by_sequence) >= configured.max_concurrent
     queue_progress: dict[int, tuple[int, str]] = {}
     for position, record in enumerate(queued_records, start=1):
-        if record.event_id in running_event_ids:
+        if (
+            record.event_id in running_event_ids
+            or record.event_id in transaction_event_ids
+        ):
             waiting_reason = "same_event_active"
         elif capacity_exhausted:
             waiting_reason = "worker_capacity"
