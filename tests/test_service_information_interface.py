@@ -18,6 +18,7 @@ from shakemap_service import (
     main,
     paths,
     preparation,
+    readiness,
     required_products,
     service_information,
 )
@@ -32,9 +33,10 @@ def available_identity(version: str = "4.4.9") -> dict[str, object]:
         "schema_version": "1.0",
         "immutable_image": {
             "available": True,
+            "upstream": {"release_tag": "v4.4.9", "source_commit": "a" * 40},
             "installed": {"shakemap_distribution_version": version},
         },
-        "deployment": {"available": False},
+        "deployment": {"available": True, "image_id": "sha256:" + "b" * 64},
     }
 
 
@@ -103,6 +105,28 @@ class ServiceInformationRestTests(unittest.TestCase):
             config.json()["readiness"],
             {key: health.json()[key] for key in ("ready", "reason")},
         )
+
+    def test_health_and_config_use_one_matching_identity_snapshot_each(self) -> None:
+        identity = available_identity()
+        loader = mock.Mock(return_value=identity)
+        probe = mock.Mock(return_value={"ready": True, "reason": None})
+        with (
+            mock.patch.object(service_information, "service_identity", loader),
+            mock.patch.object(readiness, "read_readiness", probe),
+        ):
+            health = main.healthz()
+            self.assertEqual(loader.call_count, 1)
+            self.assertIs(probe.call_args.args[0], identity)
+            loader.reset_mock()
+            probe.reset_mock()
+            config = main.get_config()
+            self.assertEqual(loader.call_count, 1)
+            self.assertIs(probe.call_args.args[0], identity)
+        self.assertEqual(
+            {key: health[key] for key in ("ready", "reason")},
+            config["readiness"],
+        )
+        self.assertEqual(config["readiness"], {"ready": True, "reason": None})
 
     def test_unavailable_identity_has_null_version_without_declared_fallback(self) -> None:
         identity = unavailable_identity()
@@ -440,6 +464,41 @@ class ServiceInformationRestTests(unittest.TestCase):
         self.assertEqual(legacy_submission.status_code, 405)
         self.assertEqual(contracted_submission.status_code, 503)
         self.assertEqual(contracted_submission.json()["error"], "service_unavailable")
+
+    def test_persisted_readiness_controls_submission_before_acceptance(self) -> None:
+        identity = available_identity()
+        multipart = {"content-type": "multipart/form-data; boundary=x"}
+        with (
+            TestClient(main.app) as client,
+            mock.patch.object(main.Request, "form", side_effect=AssertionError) as form,
+            mock.patch.object(main.submission, "accept_request") as accept,
+        ):
+            readiness._record_not_ready("activation failed")
+            loader = mock.Mock(side_effect=AssertionError)
+            with mock.patch("shakemap_service.build_identity.service_identity", loader):
+                not_ready = client.post("/events", headers=multipart)
+            self.assertEqual(not_ready.status_code, 503)
+            self.assertEqual(not_ready.json()["message"], "activation failed")
+            loader.assert_not_called()
+
+            readiness._record_ready(identity)
+            changed = available_identity()
+            changed["deployment"]["image_id"] = "sha256:" + "c" * 64
+            with mock.patch(
+                "shakemap_service.build_identity.service_identity", return_value=changed
+            ):
+                mismatch = client.post("/events", headers=multipart)
+            self.assertEqual(mismatch.status_code, 503)
+            self.assertEqual(mismatch.json()["message"], readiness.MISMATCH)
+
+            with mock.patch(
+                "shakemap_service.build_identity.service_identity", return_value=identity
+            ):
+                ordinary = client.post("/events", json={})
+            self.assertEqual(ordinary.status_code, 400)
+            self.assertIn("Content-Type must be multipart/form-data", ordinary.text)
+            form.assert_not_called()
+            accept.assert_not_called()
 
 
 class ServiceInformationCliTests(unittest.TestCase):

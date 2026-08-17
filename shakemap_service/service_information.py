@@ -6,14 +6,11 @@ import os
 import stat
 from typing import Any
 
-from . import paths
+from . import paths, readiness as readiness_state
 from .build_identity import service_identity
 from .config import DEFAULT_CONFIGURATION, Settings, settings
 from .public_views import public_identity_projection
 from .request_validation import validate_configuration_name
-
-
-READINESS_NOT_RECORDED = "deployment readiness has not been recorded"
 
 
 class ServiceInformationError(RuntimeError):
@@ -21,11 +18,8 @@ class ServiceInformationError(RuntimeError):
 
 
 def read_readiness() -> dict[str, object]:
-    """Return the recorded readiness view, failing closed when none exists."""
-    return {
-        "ready": False,
-        "reason": READINESS_NOT_RECORDED,
-    }
+    """Return the current recorded readiness view."""
+    return readiness_state.read_readiness()
 
 
 def _installed_shakemap_version(identity: object) -> str | None:
@@ -60,8 +54,8 @@ def _identity_and_version() -> tuple[dict[str, Any], str | None]:
 
 def build_health_response() -> dict[str, object]:
     """Build the lightweight public health representation."""
-    _, version = _identity_and_version()
-    readiness = read_readiness()
+    identity, version = _identity_and_version()
+    readiness = readiness_state.read_readiness(identity)
     return {
         "ready": readiness["ready"],
         "reason": readiness["reason"],
@@ -95,7 +89,7 @@ def build_config_response(selected: Settings | None = None) -> dict[str, object]
         "maximum_running": effective.max_concurrent,
         "shared_service_root": effective.shared_service_root,
         "required_products": _required_product_policy(effective),
-        "readiness": read_readiness(),
+        "readiness": readiness_state.read_readiness(identity),
     }
 
 
