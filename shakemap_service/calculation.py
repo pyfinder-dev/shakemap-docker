@@ -552,6 +552,19 @@ def execute_calculation(
             env=context.environment,
             on_started=on_started,
         )
+    except runner.ServiceShutdownError:
+        return _finish_failed(
+            current,
+            phase="native_execution",
+            code="service_shutdown",
+            message="native execution stopped because the service is shutting down",
+            configuration_materialization=configuration_facts,
+            execution=execution,
+            execution_started=execution_started,
+            resolution=resolution,
+            validation=validation,
+            validated_at=validated_at,
+        )
     except Exception as error:
         return _finish_failed(
             current,
@@ -609,6 +622,19 @@ def execute_calculation(
             validation=validation,
             validated_at=validated_at,
             record_failure_log=False,
+        )
+    if execution.service_terminated:
+        return _finish_failed(
+            current,
+            phase="native_execution",
+            code="service_shutdown",
+            message="native execution stopped because the service is shutting down",
+            configuration_materialization=configuration_facts,
+            execution=execution,
+            execution_started=execution_started,
+            resolution=resolution,
+            validation=validation,
+            validated_at=validated_at,
         )
     if execution.signal is not None:
         return _finish_failed(

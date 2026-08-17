@@ -18,7 +18,7 @@ from shakemap_service.request_validation import (
     validate_event_id,
     validate_upload_basename,
 )
-from shakemap_service.worker import execute_shakemap, run_worker_cycle
+from shakemap_service.worker import execute_shakemap
 
 
 class RuntimePathTests(unittest.TestCase):
@@ -173,10 +173,9 @@ class RuntimePathTests(unittest.TestCase):
     def test_upload_basename_preserves_posix_backslash(self) -> None:
         self.assertEqual(validate_upload_basename("native\\file.ext"), "native\\file.ext")
 
-    def test_native_worker_boundary_delegates_but_does_not_claim_work(self) -> None:
-        result = run_worker_cycle()
-        self.assertFalse(result.claimed)
-        self.assertEqual(result.outcome, "worker_disabled")
+    def test_native_worker_boundary_has_only_the_calculation_delegate(self) -> None:
+        self.assertFalse(hasattr(worker, "run_worker_cycle"))
+        self.assertFalse(hasattr(worker, "WorkerResult"))
         record = object()
         with (
             mock.patch.dict(os.environ, {"M5J_TEST": "caller"}, clear=True),

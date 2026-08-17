@@ -83,7 +83,6 @@ class ApplicationStartupTests(unittest.TestCase):
                 "recover_stale_running_calculation",
                 wraps=real_recovery,
             ) as recovered,
-            mock.patch.object(worker, "run_worker_cycle") as worker_cycle,
             mock.patch.object(worker, "execute_shakemap") as native_execution,
         ):
             self._run_lifespan()
@@ -112,7 +111,6 @@ class ApplicationStartupTests(unittest.TestCase):
         self.assertEqual(paths.queue_sequence_file().read_bytes(), sequence_bytes)
         self.assertEqual(paths.queue_status_file(
             queued_running.internal_sequence).read_bytes(), terminal_bytes)
-        worker_cycle.assert_not_called()
         native_execution.assert_not_called()
 
     def test_malformed_state_refuses_startup_before_recovery(self) -> None:

@@ -2,6 +2,7 @@
 """Public REST views over ShakeMap service identity and durable state."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 from contextlib import asynccontextmanager
@@ -15,7 +16,15 @@ from starlette.datastructures import FormData, UploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.formparsers import MultiPartException
 
-from . import paths, service_information, startup_recovery, submission
+from . import (
+    paths,
+    readiness,
+    runner,
+    service_information,
+    startup_recovery,
+    submission,
+    worker,
+)
 from .public_views import (
     DurableStateError,
     UnknownEventError,
@@ -29,18 +38,125 @@ from .service_information import (
     build_configurations_response,
     build_health_response,
 )
+from .scheduler import Scheduler
 
 
 logger = logging.getLogger(__name__)
+ADMISSION_INTERVAL_SECONDS = 1.0
+SHUTDOWN_GRACE_SECONDS = 60.0
+SHUTDOWN_CALLBACK_SECONDS = 2.0
+_restart_required_after_incomplete_callback_drain = False
+
+
+async def _admit_ready_work(scheduler: Scheduler, stopping: asyncio.Event) -> None:
+    while not stopping.is_set():
+        try:
+            state = await asyncio.to_thread(readiness.read_readiness)
+            if state.get("ready") is True:
+                await asyncio.to_thread(scheduler.tick)
+            elif state.get("reason") == readiness.UNAVAILABLE:
+                logger.error("Calculation admission readiness is unavailable")
+        except Exception:
+            logger.exception("Calculation admission failed")
+        try:
+            await asyncio.wait_for(
+                stopping.wait(),
+                timeout=ADMISSION_INTERVAL_SECONDS,
+            )
+        except TimeoutError:
+            pass
+
+
+async def _shutdown_scheduler(
+    scheduler: Scheduler,
+    stopping: asyncio.Event,
+    admission_task: asyncio.Task,
+) -> None:
+    global _restart_required_after_incomplete_callback_drain
+
+    cleanup_error: BaseException | None = None
+
+    def retain_cleanup_error(error: BaseException) -> None:
+        nonlocal cleanup_error
+        if cleanup_error is None:
+            cleanup_error = error
+
+    # Closing the scheduler first lets an in-flight tick finish before stop is visible.
+    try:
+        scheduler.shutdown(wait=False)
+    except BaseException as error:
+        retain_cleanup_error(error)
+    stopping.set()
+    # Admission cancellation is re-raised only after native cleanup completes.
+    join_error: BaseException | None = None
+    try:
+        await admission_task
+    except BaseException as error:
+        join_error = error
+
+    try:
+        await asyncio.to_thread(
+            scheduler.wait_until_idle,
+            SHUTDOWN_GRACE_SECONDS,
+        )
+    except BaseException as error:
+        retain_cleanup_error(error)
+
+    try:
+        runner.close_and_terminate_active()
+    except BaseException as error:
+        retain_cleanup_error(error)
+
+    try:
+        await asyncio.to_thread(
+            scheduler.wait_until_idle,
+            SHUTDOWN_CALLBACK_SECONDS,
+        )
+    except BaseException as error:
+        retain_cleanup_error(error)
+
+    try:
+        runner.force_kill_active()
+    except BaseException as error:
+        retain_cleanup_error(error)
+
+    try:
+        final_idle = await asyncio.to_thread(
+            scheduler.wait_until_idle,
+            SHUTDOWN_CALLBACK_SECONDS,
+        )
+    except BaseException as error:
+        _restart_required_after_incomplete_callback_drain = True
+        retain_cleanup_error(error)
+    else:
+        if not final_idle:
+            _restart_required_after_incomplete_callback_drain = True
+
+    if join_error is not None:
+        raise join_error
+    if cleanup_error is not None:
+        raise cleanup_error
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Make interrupted durable calculations truthful before serving."""
+    """Recover durable state and own calculation admission while serving."""
+    if _restart_required_after_incomplete_callback_drain:
+        raise RuntimeError(
+            "application process restart is required after an incomplete "
+            "calculation callback drain"
+        )
     recovered = startup_recovery.recover_interrupted_calculations()
     if recovered:
         logger.info("Recovered %d interrupted calculations", len(recovered))
-    yield
+    runner.open_launch_gate()
+    scheduler = Scheduler(worker.execute_shakemap)
+    stopping = asyncio.Event()
+    admission_task = asyncio.create_task(_admit_ready_work(scheduler, stopping))
+    try:
+        yield
+    finally:
+        await _shutdown_scheduler(scheduler, stopping, admission_task)
 
 
 app = FastAPI(title="ShakeMap Service", version="0.1.0", lifespan=lifespan)

@@ -2,13 +2,25 @@ from __future__ import annotations
 
 import copy
 import contextlib
+import io
+import json
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from shakemap_service import calculation, product_validation, required_products, status
+from shakemap_service import (
+    calculation,
+    paths,
+    product_validation,
+    recalculation,
+    required_products,
+    status,
+)
+from shakemap_service.config import Settings
 from shakemap_service.runner import ExecutionResult
+from shakemap_service.submission import Upload, accept_request
 
 
 class CalculationExecutionTests(unittest.TestCase):
@@ -80,6 +92,7 @@ class CalculationExecutionTests(unittest.TestCase):
         partial_manifest_error: BaseException | None = None,
         failure_provenance_error: BaseException | None = None,
         base_environment: dict[str, str] | None = None,
+        runner_error: BaseException | None = None,
     ) -> tuple[str, dict[str, mock.Mock], list[str]]:
         calls: list[str] = []
         components: dict[str, mock.Mock] = {}
@@ -196,7 +209,9 @@ class CalculationExecutionTests(unittest.TestCase):
                 ),
             ),
             "runner": mock.patch.object(
-                calculation.runner, "run_shake", side_effect=started_runner
+                calculation.runner,
+                "run_shake",
+                side_effect=runner_error if runner_error is not None else started_runner,
             ),
             "products_dir": mock.patch.object(
                 calculation.paths,
@@ -412,6 +427,25 @@ class CalculationExecutionTests(unittest.TestCase):
                 components["resolve"].assert_not_called()
                 components["runner"].assert_called_once()
 
+    def test_service_shutdown_is_distinct_from_native_failure(self) -> None:
+        terminated = copy.deepcopy(self.execution)
+        terminated.exit_code = None
+        terminated.signal = 15
+        terminated.service_terminated = True
+        cases = (
+            ({"execution": terminated}, terminated),
+            ({"runner_error": calculation.runner.ServiceShutdownError("closed")}, None),
+        )
+        for arguments, expected_execution in cases:
+            with self.subTest(arguments=arguments):
+                result, components, _ = self._run_with_components(**arguments)
+                self.assertEqual(result, status.LifecycleState.FAILED.value)
+                failure = components["failure"].call_args.kwargs
+                self.assertEqual(failure["code"], "service_shutdown")
+                self.assertIn("service is shutting down", failure["message"])
+                self.assertIs(failure["execution"], expected_execution)
+                components["resolve"].assert_not_called()
+
     def test_resolution_and_validation_failures_do_not_retry(self) -> None:
         failed_validation = copy.deepcopy(self.validation)
         failed_validation = product_validation.ProductValidationResult(
@@ -594,6 +628,89 @@ class CalculationExecutionTests(unittest.TestCase):
             "unlink",
         ):
             self.assertNotIn(forbidden, source)
+
+
+class ShutdownFailurePersistenceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory(prefix="shutdown_failure_")
+        self.previous_paths_settings = paths.settings
+        self.previous_status_settings = status.settings
+        configured = Settings(
+            runtime_root=self.temporary.name,
+            shared_runtime_root="/operator/runtime",
+        )
+        paths.settings = configured
+        status.settings = configured
+
+    def tearDown(self) -> None:
+        status.settings = self.previous_status_settings
+        paths.settings = self.previous_paths_settings
+        self.temporary.cleanup()
+
+    def test_service_termination_writes_durable_failure_and_partial_evidence(self) -> None:
+        accepted = accept_request(
+            "shutdown-event",
+            [Upload("event.xml", io.BytesIO(b"input"))],
+        )
+        status.transition_to_running(accepted.internal_sequence)
+        recalculation.prepare_calculation(accepted.internal_sequence)
+        current = status.read_current_record("shutdown-event")
+        self.assertIsNotNone(current)
+        assert current is not None
+        paths.event_logs_dir(current.event_id).mkdir(parents=True, exist_ok=True)
+        paths.event_log_file(current.event_id).write_text(
+            "native process received SIGTERM\n",
+            encoding="utf-8",
+        )
+        execution = ExecutionResult(
+            command=["shake", "shutdown-event"],
+            exit_code=None,
+            signal=15,
+            pid=4321,
+            started_at="2026-08-17T12:00:00.000000Z",
+            completed_at="2026-08-17T12:00:01.000000Z",
+            service_terminated=True,
+        )
+
+        with mock.patch.object(
+            calculation.provenance.build_identity,
+            "service_identity",
+            return_value={"fixture": True},
+        ):
+            result = calculation._finish_failed(
+                current,
+                phase="native_execution",
+                code="service_shutdown",
+                message="native execution stopped because the service is shutting down",
+                configuration_materialization={
+                    "materialized": True,
+                    "selected_configuration": "global",
+                },
+                execution=execution,
+                execution_started=None,
+                resolution=None,
+                validation=None,
+                validated_at=None,
+            )
+
+        self.assertEqual(result, status.LifecycleState.FAILED.value)
+        terminal = status.read_current_record(current.event_id)
+        self.assertIsNotNone(terminal)
+        assert terminal is not None
+        self.assertEqual(terminal.failure["code"], "service_shutdown")
+        self.assertEqual(terminal.native_outcome["signal"], 15)
+        manifest = json.loads(
+            paths.event_manifest_file(current.event_id).read_text(encoding="utf-8")
+        )
+        provenance = json.loads(
+            paths.event_provenance_file(current.event_id).read_text(encoding="utf-8")
+        )
+        self.assertTrue(manifest["partial"])
+        self.assertEqual(provenance["failure"]["code"], "service_shutdown")
+        self.assertIn(
+            "service is shutting down",
+            paths.event_service_log_file(current.event_id).read_text(encoding="utf-8"),
+        )
 
 
 if __name__ == "__main__":

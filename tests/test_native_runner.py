@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from threading import Event, Thread
 from unittest import mock
 
 from shakemap_service import runner
@@ -28,8 +29,10 @@ class NativeRunnerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.log_file = Path(self.temporary.name) / "logs" / "shake.log"
+        runner.open_launch_gate()
 
     def tearDown(self) -> None:
+        runner.open_launch_gate()
         self.temporary.cleanup()
 
     def assert_utc_timestamp(self, value: str) -> None:
@@ -179,6 +182,190 @@ class NativeRunnerTests(unittest.TestCase):
         self.assertIs(caught.exception, failure)
         process.terminate.assert_called_once_with()
         process.wait.assert_called_once_with()
+
+    def test_closed_gate_rejects_launch_before_popen(self) -> None:
+        runner.close_and_terminate_active()
+        with mock.patch.object(runner.subprocess, "Popen") as popen:
+            with self.assertRaises(runner.ServiceShutdownError):
+                runner.run_shake(
+                    "evt",
+                    log_file=self.log_file,
+                    env={"HOME": "/private/profile"},
+                )
+        popen.assert_not_called()
+
+    def test_shutdown_cannot_miss_a_launch_during_popen(self) -> None:
+        popen_entered = Event()
+        allow_popen = Event()
+        process_released = Event()
+        process = mock.Mock(pid=4321)
+        process.poll.return_value = None
+        process.terminate.side_effect = process_released.set
+
+        def create_process(*args: object, **kwargs: object) -> mock.Mock:
+            popen_entered.set()
+            self.assertTrue(allow_popen.wait(timeout=5))
+            return process
+
+        def wait_for_process() -> int:
+            self.assertTrue(process_released.wait(timeout=5))
+            return -signal.SIGTERM
+
+        process.wait.side_effect = wait_for_process
+        results: list[runner.ExecutionResult] = []
+        with mock.patch.object(runner.subprocess, "Popen", side_effect=create_process):
+            execution = Thread(
+                target=lambda: results.append(
+                    runner.run_shake(
+                        "evt",
+                        log_file=self.log_file,
+                        env={"HOME": "/private/profile"},
+                    )
+                )
+            )
+            execution.start()
+            self.assertTrue(popen_entered.wait(timeout=5))
+            terminated: list[int] = []
+            shutdown = Thread(
+                target=lambda: terminated.append(
+                    runner.close_and_terminate_active()
+                )
+            )
+            shutdown.start()
+            self.assertTrue(shutdown.is_alive())
+            allow_popen.set()
+            shutdown.join(timeout=5)
+            execution.join(timeout=5)
+
+        self.assertFalse(shutdown.is_alive())
+        self.assertFalse(execution.is_alive())
+        self.assertEqual(terminated, [1])
+        self.assertTrue(results[0].service_terminated)
+        self.assertEqual(results[0].signal, signal.SIGTERM)
+
+    def test_force_kills_a_stubborn_tracked_process(self) -> None:
+        waiting = Event()
+        killed = Event()
+        process = mock.Mock(pid=4321)
+        process.poll.return_value = None
+        process.kill.side_effect = killed.set
+
+        def wait_for_process() -> int:
+            waiting.set()
+            self.assertTrue(killed.wait(timeout=5))
+            return -signal.SIGKILL
+
+        process.wait.side_effect = wait_for_process
+        results: list[runner.ExecutionResult] = []
+        with mock.patch.object(runner.subprocess, "Popen", return_value=process):
+            execution = Thread(
+                target=lambda: results.append(
+                    runner.run_shake(
+                        "evt",
+                        log_file=self.log_file,
+                        env={"HOME": "/private/profile"},
+                    )
+                )
+            )
+            execution.start()
+            self.assertTrue(waiting.wait(timeout=5))
+            self.assertEqual(runner.close_and_terminate_active(), 1)
+            self.assertEqual(runner.force_kill_active(), 1)
+            execution.join(timeout=5)
+
+        self.assertFalse(execution.is_alive())
+        process.terminate.assert_called_once_with()
+        process.kill.assert_called_once_with()
+        self.assertTrue(results[0].service_terminated)
+
+    def test_wait_failure_keeps_the_unresolved_process_owned(self) -> None:
+        process = mock.Mock(pid=4321)
+        process.wait.side_effect = OSError("wait failed")
+        process.poll.return_value = None
+        with mock.patch.object(runner.subprocess, "Popen", return_value=process):
+            with self.assertRaisesRegex(OSError, "wait failed"):
+                runner.run_shake(
+                    "evt",
+                    log_file=self.log_file,
+                    env={"HOME": "/private/profile"},
+                )
+        self.assertEqual(runner.close_and_terminate_active(), 1)
+        process.terminate.assert_called_once_with()
+        process.poll.return_value = 0
+        runner.open_launch_gate()
+
+    def test_signal_failures_keep_ownership_and_counts_truthful(self) -> None:
+        process = mock.Mock(pid=4321)
+        process.wait.side_effect = OSError("wait failed")
+        process.poll.return_value = None
+        process.terminate.side_effect = OSError("terminate failed")
+        with mock.patch.object(runner.subprocess, "Popen", return_value=process):
+            with self.assertRaisesRegex(OSError, "wait failed"):
+                runner.run_shake(
+                    "evt",
+                    log_file=self.log_file,
+                    env={"HOME": "/private/profile"},
+                )
+
+        self.assertEqual(runner.close_and_terminate_active(), 0)
+        with self.assertRaises(runner.ServiceShutdownError):
+            runner.open_launch_gate()
+        with mock.patch.object(runner.subprocess, "Popen") as popen:
+            with self.assertRaises(runner.ServiceShutdownError):
+                runner.run_shake(
+                    "later",
+                    log_file=self.log_file,
+                    env={"HOME": "/private/profile"},
+                )
+        popen.assert_not_called()
+        self.assertEqual(runner.force_kill_active(), 1)
+        process.kill.assert_called_once_with()
+        process.poll.return_value = 0
+        runner.open_launch_gate()
+
+    def test_process_control_baseexceptions_propagate(self) -> None:
+        for operation, error in (
+            ("poll", KeyboardInterrupt()),
+            ("terminate", KeyboardInterrupt()),
+            ("kill", SystemExit()),
+        ):
+            with self.subTest(operation=operation):
+                process = mock.Mock(pid=4321)
+                process.wait.side_effect = OSError("wait failed")
+                process.poll.return_value = None
+                with mock.patch.object(
+                    runner.subprocess,
+                    "Popen",
+                    return_value=process,
+                ):
+                    with self.assertRaisesRegex(OSError, "wait failed"):
+                        runner.run_shake(
+                            "evt",
+                            log_file=self.log_file,
+                            env={"HOME": "/private/profile"},
+                        )
+
+                if operation == "poll":
+                    process.poll.side_effect = error
+                    invoke = runner.close_and_terminate_active
+                elif operation == "terminate":
+                    process.terminate.side_effect = error
+                    invoke = runner.close_and_terminate_active
+                else:
+                    process.terminate.side_effect = OSError("terminate failed")
+                    self.assertEqual(runner.close_and_terminate_active(), 0)
+                    process.poll.side_effect = None
+                    process.poll.return_value = None
+                    process.kill.side_effect = error
+                    invoke = runner.force_kill_active
+
+                with self.assertRaises(type(error)):
+                    invoke()
+                process.poll.side_effect = None
+                process.poll.return_value = 0
+                process.terminate.side_effect = None
+                process.kill.side_effect = None
+                runner.open_launch_gate()
 
 
 if __name__ == "__main__":
