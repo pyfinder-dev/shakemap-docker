@@ -112,16 +112,31 @@ exit 0
             python_trace.read_text(encoding="utf-8").splitlines(),
         )
 
-    def test_makefile_exposes_exactly_six_thin_public_targets(self) -> None:
+    def test_makefile_exposes_exactly_seven_thin_public_targets(self) -> None:
         source = (PROJECT / "Makefile").read_text(encoding="utf-8")
         targets = {
             match.group(1)
             for match in re.finditer(r"^([a-z][a-z-]*):\s*$", source, re.MULTILINE)
         }
-        self.assertEqual(targets, {"build", "data", "finalize", "start", "stop", "verify"})
+        self.assertEqual(
+            targets,
+            {
+                "build",
+                "data",
+                "fix-permissions",
+                "finalize",
+                "start",
+                "stop",
+                "verify",
+            },
+        )
         recipes = [line.strip() for line in source.splitlines() if line.startswith("\t")]
-        self.assertEqual(len(recipes), 6)
+        self.assertEqual(len(recipes), 7)
         self.assertTrue(all("$(SCRIPTS)/" in recipe for recipe in recipes))
+        self.assertIn(
+            '$(SCRIPTS)/fix-shakemap-permissions.sh --runtime-root "$(RUNTIME_ROOT)"',
+            recipes,
+        )
 
     def test_container_command_has_fixed_identity_and_exact_mount_modes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
