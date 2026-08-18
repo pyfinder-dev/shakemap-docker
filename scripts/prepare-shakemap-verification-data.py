@@ -19,7 +19,7 @@ from typing import Any, Iterable
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFINITION_ROOT = PROJECT_ROOT / "tests" / "verification_packages"
+DEFINITION_ROOT = PROJECT_ROOT / "verification" / "packages"
 MODULE_PLAN = [
     "select",
     "assemble",

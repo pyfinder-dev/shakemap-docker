@@ -228,8 +228,8 @@ class TrackedDefinitionTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.path = (
             PROJECT
-            / "tests"
-            / "verification_packages"
+            / "verification"
+            / "packages"
             / "v4.4.9"
             / "source-manifest.json"
         )

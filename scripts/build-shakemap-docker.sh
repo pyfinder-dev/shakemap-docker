@@ -13,7 +13,7 @@ Build the release declared in VERSIONS.env, verify the untagged candidate by
 image identity, and then assign shakemap-docker:latest.
 
 Options:
-  --platform PLAT  Target platform (default: current Docker default)
+  --platform PLAT  Target platform passed to Docker (default: Docker selects)
   --no-cache       Build without layer cache
   --help           Show this help message
 EOF

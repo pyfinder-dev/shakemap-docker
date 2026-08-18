@@ -29,6 +29,7 @@ check command -v shake-in-docker
 check bash -n /app/entrypoint.sh
 check sm_profile --help
 check shake-in-docker --help
+check python -m pip check
 
 IDENTITY_RESULT="$(python - <<'PY'
 import hashlib

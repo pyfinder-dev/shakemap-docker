@@ -1,27 +1,22 @@
 FROM python:3.12-slim
 
-# ---------- Immutable build inputs ----------
+# Release identity is resolved and validated by the host build helper.
 ARG SHAKEMAP_SOURCE_URL
 ARG SHAKEMAP_RELEASE_TAG
 ARG SHAKEMAP_RELEASE_VERSION
 ARG SHAKEMAP_SOURCE_COMMIT
 ARG BUILD_TIMESTAMP_UTC
 
-# ---------- Environment ----------
-ENV DEBIAN_FRONTEND=noninteractive \
-    PYTHONUNBUFFERED=1 \
+# Runtime environment
+ENV PYTHONUNBUFFERED=1 \
     RUNTIME_ROOT=/home/sysop/runtime \
-    SHAKEMAP_PROFILE=default \
     SHAKEMAP_PORT=9010 \
-    SHAKEMAP_REQUIRE_MOUNT=0 \
     CARTOPY_DATA_DIR=/opt/shakemap-support/cartopy \
     SHAKEMAP_STREC_DB=/opt/shakemap-support/strec/moment_tensors.db
 
-# ---------- System packages ----------
-# - git: to clone the official ShakeMap repo
-# - build / numeric libs: likely needed by ShakeMap deps
-# - gdal-bin, libgdal-dev: required by Fiona (and thus shakemap-modules)
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# System packages needed to fetch and install ShakeMap and its native dependencies.
+RUN DEBIAN_FRONTEND=noninteractive apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     git \
     gcc \
     g++ \
@@ -33,7 +28,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgdal-dev \
  && rm -rf /var/lib/apt/lists/*
 
-# ---------- Fetch and install the resolved ShakeMap release ----------
 # The host resolver supplies one official stable tag and its full commit.
 # Fetch the tag, detach at the requested commit, and fail closed on mismatch.
 RUN test -n "${SHAKEMAP_SOURCE_URL}" \
@@ -48,8 +42,7 @@ RUN test -n "${SHAKEMAP_SOURCE_URL}" \
  && test "$(git -C /opt/shakemap rev-parse HEAD)" = "${SHAKEMAP_SOURCE_COMMIT}" \
  && test "$(git -C /opt/shakemap rev-parse HEAD^{commit})" = "${SHAKEMAP_SOURCE_COMMIT}"
 
-# Install ShakeMap and all its Python dependencies as defined by the project itself.
-# Even though the docs recommend conda, we rely on pip here inside Docker.
+# Install the release and its declared Python dependencies.
 RUN pip install --no-cache-dir /opt/shakemap
 
 # Copy the service identity implementation early so the resolved release's own
@@ -63,10 +56,10 @@ RUN python -m shakemap_service.build_identity apply-upstream-mapping-compatibili
       --source /opt/shakemap \
       --output /opt/shakemap-build/mapping-compatibility.json
 
-# ---------- Install the packaged service and console entry point ----------
-RUN pip install --no-cache-dir /app
+# Install the service last, then validate the complete installed environment.
+RUN pip install --no-cache-dir /app \
+ && python -m pip check
 
-# ---------- Immutable generic mapping and STREC support ----------
 # Natural Earth is generic mapping support, not event/scenario data. The
 # installer verifies every file against an immutable commit and SHA-256.
 COPY image-support/natural-earth-v5.1.2.json /opt/shakemap-support/natural-earth-v5.1.2.json
@@ -85,23 +78,25 @@ RUN python /tmp/install-image-support.py natural-earth \
 # Repository configurations are immutable image seeds. Runtime materialization
 # and native profile placement are deliberately handled by finalization.
 COPY regional-configs /opt/shakemap-seeds/regional
-COPY tests/fixtures/shakemap_scenario/event.xml \
-     tests/fixtures/shakemap_scenario/event_dat.xml \
-     tests/fixtures/shakemap_scenario/request-manifest.json \
+COPY verification/request/event.xml \
+     verification/request/event_dat.xml \
+     verification/request/request-manifest.json \
      /opt/shakemap-verification/
-COPY tests/verification_packages/v4.4.9/source-manifest.json \
+COPY verification/packages/v4.4.9/source-manifest.json \
      /opt/shakemap-verification/source-manifest.json
 
-# ---------- Create app directory and non-root user ----------
-# ---------- Copy service code ----------
 COPY entrypoint.sh /app/entrypoint.sh
 COPY scripts/verify-shakemap-image.sh /app/scripts/verify-shakemap-image.sh
 
 RUN chmod +x /app/entrypoint.sh /app/scripts/verify-shakemap-image.sh
 
-# ---------- Record installed identity and complete dependency inventory ----------
+# Capture a complete freeze before sorting so a failed inventory command cannot
+# leave a partial dependency record that appears successful.
 RUN mkdir -p /opt/shakemap-build \
- && python -m pip freeze --all | LC_ALL=C sort > /opt/shakemap-build/dependencies.txt \
+ && dependencies_tmp="$(mktemp /opt/shakemap-build/dependencies.XXXXXX)" \
+ && python -m pip freeze --all > "${dependencies_tmp}" \
+ && LC_ALL=C sort "${dependencies_tmp}" > /opt/shakemap-build/dependencies.txt \
+ && rm "${dependencies_tmp}" \
  && python -m shakemap_service.build_identity write \
       --output /opt/shakemap-build/identity.json \
       --dependencies /opt/shakemap-build/dependencies.txt \
@@ -124,31 +119,19 @@ RUN mkdir -p /opt/shakemap-build \
  && chmod 0444 /opt/shakemap-build/identity.json /opt/shakemap-build/dependencies.txt \
       /opt/shakemap-build/mapping-compatibility.json
 
-# ---------- Create non-root user and fix ownership ----------
+# Create the fixed non-root runtime identity.
 RUN groupadd -g 1000 sysop && useradd -u 1000 -g 1000 -ms /bin/bash sysop \
  && mkdir -p "${RUNTIME_ROOT}" \
  && chown -R sysop:sysop "${RUNTIME_ROOT}" /app /opt/shakemap
 
-# ---------- Image provenance labels ----------
+# Compact labels expose only the identity needed before reading the full manifest.
 LABEL org.opencontainers.image.created="${BUILD_TIMESTAMP_UTC}" \
-      org.usgs.shakemap.source="${SHAKEMAP_SOURCE_URL}" \
       org.usgs.shakemap.release="${SHAKEMAP_RELEASE_TAG}" \
       org.usgs.shakemap.version="${SHAKEMAP_RELEASE_VERSION}" \
-      org.usgs.shakemap.commit="${SHAKEMAP_SOURCE_COMMIT}" \
-      org.usgs.shakemap.identity-file="/opt/shakemap-build/identity.json" \
-      org.usgs.shakemap.dependency-inventory="/opt/shakemap-build/dependencies.txt" \
-      org.usgs.shakemap.natural-earth.tag="v5.1.2" \
-      org.usgs.shakemap.natural-earth.commit="f1890d9f152c896d250a77557a5751a93d494776" \
-      org.usgs.shakemap.natural-earth.manifest="/opt/shakemap-support/natural-earth-v5.1.2.json" \
-      org.usgs.shakemap.cartopy-data="/opt/shakemap-support/cartopy" \
-      org.usgs.shakemap.slab2.version="Slab2" \
-      org.usgs.shakemap.slab2.manifest="/opt/shakemap-support/slab2.json" \
-      org.usgs.shakemap.slab2.grids="/opt/shakemap-support/slab2/slabs" \
-      org.usgs.shakemap.configuration-seeds="/opt/shakemap-seeds/regional"
+      org.usgs.shakemap.commit="${SHAKEMAP_SOURCE_COMMIT}"
 
 USER sysop
 
-# ---------- Networking ----------
 EXPOSE 9010
 
 ENTRYPOINT ["/app/entrypoint.sh"]

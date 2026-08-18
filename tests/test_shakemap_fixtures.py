@@ -12,7 +12,7 @@ from pathlib import Path
 from xml.etree import ElementTree
 
 
-FIXTURE = Path(__file__).resolve().parent / "fixtures" / "shakemap_scenario"
+FIXTURE = Path(__file__).resolve().parents[1] / "verification" / "request"
 EXPECTED_FILES = {
     "README.md",
     "event.xml",

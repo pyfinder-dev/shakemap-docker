@@ -1,58 +1,41 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ------------------------------------------------------------------
 # Runtime foundation and API startup
 #
 # This entrypoint handles runtime/API concerns only:
-#   [1/7] Read environment variables with defaults
-#   [2/7] Log environment
-#   [3/7] Ensure runtime root exists
-#   [4/7] Optional mount check (REQUIRE_MOUNT)
-#   [5/7] Create service directories and verify permissions
-#   [6/7] Verify ShakeMap CLI is on PATH (smoke check)
-#   [7/7] Start FastAPI service
+#   [1/6] Read environment variables with defaults
+#   [2/6] Log environment
+#   [3/6] Ensure runtime root exists
+#   [4/6] Create service directories and verify permissions
+#   [5/6] Verify ShakeMap CLI is on PATH (smoke check)
+#   [6/6] Start FastAPI service
 #
 # Runtime data is mounted read-only and managed outside this entrypoint.
-# ------------------------------------------------------------------
 
-# [1/7] Read environment with defaults
+# [1/6] Read environment with defaults
 RUNTIME_ROOT="${RUNTIME_ROOT:-/home/sysop/runtime}"
 SERVICE_ROOT="${RUNTIME_ROOT}/shakemap"
-REQUIRE_MOUNT="${SHAKEMAP_REQUIRE_MOUNT:-0}"
 PORT="${SHAKEMAP_PORT:-9010}"
 
-# [2/7] Log environment
+# [2/6] Log environment
 echo "[entrypoint] Starting ShakeMap Docker service..."
 echo "[entrypoint] RUNTIME_ROOT            = ${RUNTIME_ROOT}"
 echo "[entrypoint] SERVICE_ROOT            = ${SERVICE_ROOT}"
 echo "[entrypoint] SHAKEMAP_PORT           = ${PORT}"
-echo "[entrypoint] SHAKEMAP_REQUIRE_MOUNT  = ${REQUIRE_MOUNT}"
 
-# [3/7] Ensure runtime root exists
-echo "[entrypoint] [3/7] Ensuring runtime root exists"
+# [3/6] Ensure runtime root exists
+echo "[entrypoint] [3/6] Ensuring runtime root exists"
 mkdir -p "${RUNTIME_ROOT}"
 
-# [4/7] Optional safety: require that SERVICE_ROOT is a mount
-if [ "${REQUIRE_MOUNT}" = "1" ]; then
-    echo "[entrypoint] [4/7] Checking mount requirement"
-    if ! grep -q " ${SERVICE_ROOT} " /proc/mounts; then
-        echo "[entrypoint] ERROR: SHAKEMAP_REQUIRE_MOUNT=1 but ${SERVICE_ROOT} is not a mounted volume." >&2
-        echo "[entrypoint] Please mount a host directory or named volume to ${SERVICE_ROOT}." >&2
-        exit 1
-    fi
-else
-    echo "[entrypoint] [4/7] Mount check skipped (REQUIRE_MOUNT=0)"
-fi
-
-# [5/7] Create service directories and verify permissions
+# [4/6] Create service directories and verify permissions
 #
 # Layout:
 #   User-facing (top-level):  products/ logs/
 #   External read-only data:  data/
 #   Internal (.service/):     .service/events/ .service/archive/
 #
-echo "[entrypoint] [5/7] Creating service directories and verifying permissions"
+echo "[entrypoint] [4/6] Creating service directories and verifying permissions"
 
 # User-facing directories
 for dir in products logs data/inputs; do
@@ -62,11 +45,6 @@ done
 # Internal service state directories
 for dir in .service/events .service/archive .service/queue; do
     mkdir -p "${SERVICE_ROOT}/${dir}"
-done
-
-# Best-effort chmod -- has NO real effect on bind mounts.
-for dir in products logs data/inputs .service/events .service/archive .service/queue; do
-    chmod 0755 "${SERVICE_ROOT}/${dir}" 2>/dev/null || true
 done
 
 # Verify sysop can write to all required directories.
@@ -90,15 +68,15 @@ for dir in products logs data/inputs .service/events .service/archive .service/q
 done
 echo "[entrypoint] All service directories writable by sysop (UID $(id -u))"
 
-# [6/7] Verify ShakeMap CLI available (smoke check)
-echo "[entrypoint] [6/7] Verifying ShakeMap CLI"
+# [5/6] Verify ShakeMap CLI available (smoke check)
+echo "[entrypoint] [5/6] Verifying ShakeMap CLI"
 if command -v shake >/dev/null 2>&1; then
     echo "[entrypoint] ShakeMap CLI found: $(command -v shake)"
 else
     echo "[entrypoint] WARNING: 'shake' not found on PATH. ShakeMap may not be installed correctly."
 fi
 
-# [7/7] Start the FastAPI service
-echo "[entrypoint] [7/7] Starting shakemap_service on port ${PORT}"
+# [6/6] Start the FastAPI service
+echo "[entrypoint] [6/6] Starting shakemap_service on port ${PORT}"
 cd /app
 exec uvicorn shakemap_service.main:app --host 0.0.0.0 --port "${PORT}"

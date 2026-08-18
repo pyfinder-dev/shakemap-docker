@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import re
 import shutil
 import tempfile
 import unittest
@@ -116,9 +117,33 @@ class ImageSupportTests(unittest.TestCase):
         )
         self.assertIn("validate_pinned_global_assets", verifier)
         self.assertIn("request-manifest.json", dockerfile)
+        self.assertIn("verification/request/event.xml", dockerfile)
+        self.assertIn("verification/packages/v4.4.9/source-manifest.json", dockerfile)
+        self.assertNotIn("COPY tests/", dockerfile)
         self.assertIn("request inventory must contain exactly two files", verifier)
         self.assertIn("request compatibility mismatch", verifier)
         self.assertIn("request file identity mismatch", verifier)
+
+    def test_image_labels_and_runtime_environment_are_minimal(self) -> None:
+        dockerfile = (PROJECT_DIR / "Dockerfile").read_text(encoding="utf-8")
+        labels = set(
+            re.findall(r"(?:^|\s)(org\.[a-z0-9_.-]+)=", dockerfile, re.MULTILINE)
+        )
+        self.assertEqual(
+            labels,
+            {
+                "org.opencontainers.image.created",
+                "org.usgs.shakemap.release",
+                "org.usgs.shakemap.version",
+                "org.usgs.shakemap.commit",
+            },
+        )
+        self.assertNotIn("SHAKEMAP_PROFILE", dockerfile)
+        self.assertNotIn("SHAKEMAP_REQUIRE_MOUNT", dockerfile)
+        self.assertIn("SHAKEMAP_STREC_DB", dockerfile)
+        env_block = dockerfile[dockerfile.index("ENV ") : dockerfile.index("\n\n", dockerfile.index("ENV "))]
+        self.assertNotIn("DEBIAN_FRONTEND", env_block)
+        self.assertIn("RUN DEBIAN_FRONTEND=noninteractive apt-get update", dockerfile)
 
 
 if __name__ == "__main__":

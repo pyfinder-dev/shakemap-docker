@@ -19,6 +19,23 @@ usage() {
     echo "Usage: $0 [--runtime-root DIR] [--port PORT] [--max-concurrent COUNT]"
 }
 
+permission_details() {
+    local path="$1"
+    local mode
+    local owner
+    mode="$(stat -f '%Sp' "${path}" 2>/dev/null || stat -c '%A' "${path}" 2>/dev/null || echo unknown)"
+    owner="$(stat -f '%u:%g' "${path}" 2>/dev/null || stat -c '%u:%g' "${path}" 2>/dev/null || echo unknown)"
+    printf 'mode %s, UID:GID %s' "${mode}" "${owner}"
+}
+
+report_permission_failure() {
+    local operation="$1"
+    local path="$2"
+    local result="$3"
+    local corrective_action="$4"
+    echo "ERROR: ${operation} failed for ${path} with exit code ${result} ($(permission_details "${path}")); ${corrective_action}" >&2
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --runtime-root) RUNTIME_ROOT="${2:?--runtime-root requires a directory}"; shift 2 ;;
@@ -106,14 +123,97 @@ CURRENT_STEP="verification data preparation"
 python "${PROJECT_ROOT}/scripts/prepare-shakemap-verification-data.py" prepare \
     --destination "${SERVICE_ABS}/data/test/${IMAGE_VERSION}"
 
-CURRENT_STEP="writable path ownership"
-for writable in products logs .service data/inputs; do
-    if ! chown -R 1000:1000 "${SERVICE_ABS}/${writable}" 2>/dev/null; then
-        owner="$(stat -f '%u:%g' "${SERVICE_ABS}/${writable}" 2>/dev/null || stat -c '%u:%g' "${SERVICE_ABS}/${writable}" 2>/dev/null || echo unknown)"
-        echo "ERROR: ${SERVICE_ABS}/${writable} is owned by ${owner}; run finalization with permission to assign 1000:1000." >&2
+CURRENT_STEP="writable path ownership and access"
+writable_roots=(products logs .service data/inputs)
+writable_directories=(
+    products
+    logs
+    data/inputs
+    .service/events
+    .service/archive
+    .service/queue
+)
+writable_special_modes=()
+for writable in "${writable_directories[@]}"; do
+    path="${SERVICE_ABS}/${writable}"
+    if [[ -L "${path}" || ! -d "${path}" ]]; then
+        echo "ERROR: service-writable path must be a real directory: ${path}" >&2
         exit 1
     fi
+    special=""
+    [[ -u "${path}" ]] && special+="u"
+    [[ -g "${path}" ]] && special+="g"
+    [[ -k "${path}" ]] && special+="t"
+    writable_special_modes+=("${special}")
 done
+
+# Ownership changes can clear directory special bits even when a recursive
+# change fails partway, so restoration always covers every captured directory.
+restore_writable_special_modes() {
+    local first_result=0
+    local index
+    local path
+    local special
+    local result
+    local mode
+    local operation
+    for index in "${!writable_directories[@]}"; do
+        path="${SERVICE_ABS}/${writable_directories[index]}"
+        special="${writable_special_modes[index]}"
+        for mode in u g t; do
+            [[ "${special}" == *"${mode}"* ]] || continue
+            if [[ "${mode}" == t ]]; then
+                operation="chmod +t"
+            else
+                operation="chmod ${mode}+s"
+            fi
+            if chmod "${operation#chmod }" "${path}"; then
+                continue
+            else
+                result=$?
+            fi
+            report_permission_failure "${operation}" "${path}" "${result}" \
+                "restore this mode as the path owner or with sufficient host permission, then rerun finalization."
+            if [[ "${first_result}" == 0 ]]; then
+                first_result="${result}"
+            fi
+        done
+    done
+    return "${first_result}"
+}
+
+for writable in "${writable_roots[@]}"; do
+    path="${SERVICE_ABS}/${writable}"
+    if chown -R 1000:1000 "${path}" 2>/dev/null; then
+        continue
+    else
+        result=$?
+    fi
+    report_permission_failure "chown -R 1000:1000" "${path}" "${result}" \
+        "rerun finalization as a host user permitted to assign UID:GID 1000:1000."
+    restore_writable_special_modes || true
+    exit "${result}"
+done
+# Only the directories used for service writes need additional mode bits.
+# Symbolic additions leave group/other and every existing ordinary bit intact.
+for index in "${!writable_directories[@]}"; do
+    path="${SERVICE_ABS}/${writable_directories[index]}"
+    if chmod u+rwx "${path}"; then
+        continue
+    else
+        result=$?
+    fi
+    report_permission_failure "chmod u+rwx" "${path}" "${result}" \
+        "rerun finalization as the path owner or with sufficient host permission."
+    restore_writable_special_modes || true
+    exit "${result}"
+done
+if restore_writable_special_modes; then
+    :
+else
+    result=$?
+    exit "${result}"
+fi
 
 CURRENT_STEP="isolated canonical container creation"
 if docker container inspect "${CANONICAL_CONTAINER}" >/dev/null 2>&1; then

@@ -1,7 +1,7 @@
 # ShakeMap v4.4.9 verification package definition
 
 `source-manifest.json` is the tracked, checksum-pinned recipe for the external
-scientific package used with `tests/fixtures/shakemap_scenario/`. It contains
+scientific package used with `verification/request/`. It contains
 no scientific payload. The preparation helper downloads or imports the listed
 sources and installs them under `runtime/shakemap/data/test/v4.4.9/` by
 default.

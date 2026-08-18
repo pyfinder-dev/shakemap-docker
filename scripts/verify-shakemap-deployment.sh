@@ -118,9 +118,9 @@ accepted = command(
     "--overwrite",
     "true",
     "--file",
-    str((__import__("pathlib").Path.cwd() / "tests/fixtures/shakemap_scenario/event.xml")),
+    str((__import__("pathlib").Path.cwd() / "verification/request/event.xml")),
     "--file",
-    str((__import__("pathlib").Path.cwd() / "tests/fixtures/shakemap_scenario/event_dat.xml")),
+    str((__import__("pathlib").Path.cwd() / "verification/request/event_dat.xml")),
 )
 sequence = accepted["internal_sequence"]
 encoded = urllib.parse.quote(event_id, safe="")

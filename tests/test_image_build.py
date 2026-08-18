@@ -2,7 +2,9 @@
 """Controlled host tests for candidate-image build and promotion safety."""
 from __future__ import annotations
 
+import fnmatch
 import os
+import shlex
 import stat
 import subprocess
 import tempfile
@@ -15,6 +17,37 @@ BUILD_HELPER = PROJECT_DIR / "scripts/build-shakemap-docker.sh"
 PRECEDING_ID = "sha256:" + "1" * 64
 CANDIDATE_ID = "sha256:" + "2" * 64
 SOURCE_COMMIT = "3" * 40
+
+
+def dockerfile_copy_sources() -> list[str]:
+    """Return source operands from the simple shell-form COPY instructions."""
+    instructions: list[str] = []
+    pending = ""
+    for raw_line in (PROJECT_DIR / "Dockerfile").read_text(encoding="utf-8").splitlines():
+        stripped = raw_line.strip()
+        if not pending and (not stripped or stripped.startswith("#")):
+            continue
+        pending = f"{pending} {stripped}".strip()
+        if pending.endswith("\\"):
+            pending = pending[:-1].rstrip()
+            continue
+        instructions.append(pending)
+        pending = ""
+    if pending:
+        instructions.append(pending)
+
+    sources: list[str] = []
+    for instruction in instructions:
+        fields = shlex.split(instruction)
+        if not fields or fields[0].upper() != "COPY":
+            continue
+        operands = fields[1:]
+        while operands and operands[0].startswith("--"):
+            operands.pop(0)
+        if len(operands) < 2:
+            raise AssertionError(f"malformed COPY instruction: {instruction}")
+        sources.extend(operands[:-1])
+    return sources
 
 
 class ImageBuildTransactionTests(unittest.TestCase):
@@ -104,6 +137,7 @@ class ImageBuildTransactionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         trace = self._trace()
         build = next(line for line in trace if line.startswith("build "))
+        self.assertNotIn("--platform", build)
         self.assertNotIn("--tag", build)
         self.assertNotIn(" -t ", f" {build} ")
         run = next(line for line in trace if line.startswith("run "))
@@ -147,6 +181,89 @@ class ImageBuildTransactionTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 2)
                 self.assertIn("Unknown option", result.stderr)
         self.assertFalse(self.trace.exists())
+
+    def test_explicit_platform_is_passed_to_docker_build(self) -> None:
+        for platform in ("linux/amd64", "linux/arm64"):
+            self.trace.unlink(missing_ok=True)
+            self.tag_state.unlink(missing_ok=True)
+            result = subprocess.run(
+                ["bash", str(BUILD_HELPER), "--platform", platform],
+                cwd=PROJECT_DIR,
+                env=self.environment,
+                capture_output=True,
+                text=True,
+            )
+            with self.subTest(platform=platform):
+                self.assertEqual(result.returncode, 0, result.stderr)
+                build = next(
+                    line for line in self._trace() if line.startswith("build ")
+                )
+                build_arguments = shlex.split(build)
+                self.assertEqual(build_arguments.count("--platform"), 1)
+                platform_index = build_arguments.index("--platform")
+                self.assertEqual(build_arguments[platform_index + 1], platform)
+
+        help_result = subprocess.run(
+            ["bash", str(BUILD_HELPER), "--help"],
+            cwd=PROJECT_DIR,
+            env=self.environment,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertIn("default: Docker selects", help_result.stdout)
+
+
+class DockerfileAssemblyTests(unittest.TestCase):
+    def test_copy_sources_exist_outside_ignored_roots(self) -> None:
+        patterns = [
+            line.strip().strip("/")
+            for line in (PROJECT_DIR / ".dockerignore").read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        self.assertIn("tests", patterns)
+        self.assertFalse(any(pattern.startswith("!") for pattern in patterns))
+
+        sources = dockerfile_copy_sources()
+        self.assertTrue(sources)
+        for source in sources:
+            with self.subTest(source=source):
+                self.assertFalse(source.startswith("/"), source)
+                self.assertTrue((PROJECT_DIR / source).exists(), source)
+                parts = Path(source).parts
+                matched_patterns = [
+                    pattern
+                    for pattern in patterns
+                    if any(fnmatch.fnmatchcase(part, pattern) for part in parts)
+                ]
+                self.assertEqual(matched_patterns, [], source)
+        self.assertTrue(any(source.startswith("verification/request/") for source in sources))
+        self.assertTrue(any(source.startswith("verification/packages/") for source in sources))
+
+    def test_final_dependency_inventory_is_fail_closed(self) -> None:
+        dockerfile = (PROJECT_DIR / "Dockerfile").read_text(encoding="utf-8")
+        verifier = (PROJECT_DIR / "scripts/verify-shakemap-image.sh").read_text(
+            encoding="utf-8"
+        )
+        install = dockerfile.index("pip install --no-cache-dir /app")
+        dependency_check = dockerfile.index("python -m pip check", install)
+        temporary = dockerfile.index("mktemp /opt/shakemap-build/dependencies.", dependency_check)
+        freeze = dockerfile.index("python -m pip freeze --all", dependency_check)
+        sort = dockerfile.index("LC_ALL=C sort", freeze)
+        cleanup = dockerfile.index('rm "${dependencies_tmp}"', sort)
+        identity = dockerfile.index("shakemap_service.build_identity write", cleanup)
+        self.assertLess(install, dependency_check)
+        self.assertLess(dependency_check, temporary)
+        self.assertLess(temporary, freeze)
+        self.assertLess(freeze, sort)
+        self.assertLess(sort, cleanup)
+        self.assertLess(cleanup, identity)
+        freeze_line = next(
+            line for line in dockerfile.splitlines() if "pip freeze --all" in line
+        )
+        self.assertNotIn("|", freeze_line)
+        self.assertIn('"${dependencies_tmp}"', freeze_line)
+        self.assertIn("check python -m pip check", verifier)
 
 
 if __name__ == "__main__":

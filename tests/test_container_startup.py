@@ -258,6 +258,10 @@ exit 0
             self.assertIn(writable, source)
         for external in ("data/global/vs30", "data/global/topo", ".service/preparation"):
             self.assertNotIn(external, source)
+        self.assertNotIn("SHAKEMAP_REQUIRE_MOUNT", source)
+        self.assertNotIn("chmod ", source)
+        self.assertIn('touch "${DIRPATH}/.writetest_$$"', source)
+        self.assertIn('rm -f "${DIRPATH}/.writetest_$$"', source)
 
     def test_external_data_mounts_are_separate_read_only_overlays(self) -> None:
         source = CONFIGURATION.read_text(encoding="utf-8")
