@@ -186,25 +186,31 @@ import stat
 
 errors = []
 root = pathlib.Path('/opt/shakemap-verification')
-manifest_path = root / 'request-manifest.json'
+manifest_path = root / 'scenario-manifest.json'
 identity_path = pathlib.Path('/opt/shakemap-build/identity.json')
 try:
     if not stat.S_ISREG(manifest_path.lstat().st_mode) or manifest_path.is_symlink():
-        raise ValueError('request manifest is not a safe regular file')
+        raise ValueError('scenario manifest is not a safe regular file')
     manifest = json.loads(manifest_path.read_text())
     identity = json.loads(identity_path.read_text())['immutable_image']
     if manifest.get('schema_version') != 1:
-        errors.append('request manifest schema mismatch')
+        errors.append('scenario manifest schema mismatch')
+    if manifest.get('scenario_id') != 'south-napa-global':
+        errors.append('scenario identity mismatch')
+    if manifest.get('intended_configuration') != 'global':
+        errors.append('scenario configuration mismatch')
+    if manifest.get('embedded_fixture_identity') != 'SCENARIO':
+        errors.append('embedded fixture identity mismatch')
     compatibility = manifest.get('compatible_shakemap')
     expected_compatibility = {
         'release_tag': identity['upstream']['release_tag'],
         'source_commit': identity['upstream']['source_commit'],
     }
     if compatibility != expected_compatibility:
-        errors.append('request compatibility mismatch')
+        errors.append('scenario compatibility mismatch')
     records = manifest.get('files')
     if not isinstance(records, list) or len(records) != 2:
-        errors.append('request inventory must contain exactly two files')
+        errors.append('scenario inventory must contain exactly two files')
         records = []
     inventory = {
         record.get('installed_name'): record
@@ -212,19 +218,19 @@ try:
         if isinstance(record, dict)
     }
     if set(inventory) != {'event.xml', 'event_dat.xml'}:
-        errors.append('request inventory names mismatch')
+        errors.append('scenario inventory names mismatch')
     for name in ('event.xml', 'event_dat.xml'):
         record = inventory.get(name)
         if not isinstance(record, dict):
             continue
         target = root / name
         if target.parent != root or not stat.S_ISREG(target.lstat().st_mode) or target.is_symlink():
-            errors.append(f'request file is missing or unsafe: {name}')
+            errors.append(f'scenario file is missing or unsafe: {name}')
             continue
         size = target.stat().st_size
         digest = hashlib.sha256(target.read_bytes()).hexdigest()
         if size != record.get('installed_size') or digest != record.get('installed_sha256'):
-            errors.append(f'request file identity mismatch: {name}')
+            errors.append(f'scenario file identity mismatch: {name}')
 except Exception as exc:
     errors.append(f'{type(exc).__name__}: {exc}')
 print('OK' if not errors else ' | '.join(errors))

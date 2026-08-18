@@ -12,12 +12,18 @@ from pathlib import Path
 from xml.etree import ElementTree
 
 
-FIXTURE = Path(__file__).resolve().parents[1] / "verification" / "request"
+FIXTURE = (
+    Path(__file__).resolve().parents[1]
+    / "verification"
+    / "scenarios"
+    / "v4.4.9"
+    / "south-napa-global"
+)
 EXPECTED_FILES = {
     "README.md",
     "event.xml",
     "event_dat.xml",
-    "request-manifest.json",
+    "scenario-manifest.json",
 }
 
 
@@ -33,7 +39,7 @@ class ScenarioFixtureTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.manifest = json.loads(
-            (FIXTURE / "request-manifest.json").read_text(encoding="utf-8")
+            (FIXTURE / "scenario-manifest.json").read_text(encoding="utf-8")
         )
 
     def test_capability_oriented_file_set(self) -> None:
@@ -48,7 +54,9 @@ class ScenarioFixtureTests(unittest.TestCase):
 
     def test_manifest_identity_compatibility_and_license(self) -> None:
         self.assertEqual(self.manifest["schema_version"], 1)
-        self.assertEqual(self.manifest["fixture_id"], "SCENARIO")
+        self.assertEqual(self.manifest["scenario_id"], "south-napa-global")
+        self.assertEqual(self.manifest["intended_configuration"], "global")
+        self.assertEqual(self.manifest["embedded_fixture_identity"], "SCENARIO")
         self.assertEqual(self.manifest["classification"], "SCENARIO")
         self.assertEqual(
             self.manifest["compatible_shakemap"],

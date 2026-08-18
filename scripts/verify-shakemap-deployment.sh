@@ -71,6 +71,7 @@ CURRENT_STEP="running-service checks"
 BASE_URL="http://127.0.0.1:${PORT}"
 python - "${BASE_URL}" "${PROJECT_CLI}" <<'PY'
 import json
+import pathlib
 import subprocess
 import sys
 import time
@@ -79,6 +80,7 @@ import urllib.request
 
 base, cli = sys.argv[1:]
 event_id = "shakemap-docker-verification"
+scenario = pathlib.Path.cwd() / "verification/scenarios/v4.4.9/south-napa-global"
 
 def rest(method, path, body=None, content_type=None):
     headers = {"Accept": "application/json"}
@@ -118,9 +120,9 @@ accepted = command(
     "--overwrite",
     "true",
     "--file",
-    str((__import__("pathlib").Path.cwd() / "verification/request/event.xml")),
+    str(scenario / "event.xml"),
     "--file",
-    str((__import__("pathlib").Path.cwd() / "verification/request/event_dat.xml")),
+    str(scenario / "event_dat.xml"),
 )
 sequence = accepted["internal_sequence"]
 encoded = urllib.parse.quote(event_id, safe="")

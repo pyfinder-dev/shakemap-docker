@@ -116,13 +116,16 @@ class ImageSupportTests(unittest.TestCase):
             verifier,
         )
         self.assertIn("validate_pinned_global_assets", verifier)
-        self.assertIn("request-manifest.json", dockerfile)
-        self.assertIn("verification/request/event.xml", dockerfile)
+        self.assertIn("scenario-manifest.json", dockerfile)
+        self.assertIn(
+            "verification/scenarios/v4.4.9/south-napa-global/event.xml",
+            dockerfile,
+        )
         self.assertIn("verification/packages/v4.4.9/source-manifest.json", dockerfile)
         self.assertNotIn("COPY tests/", dockerfile)
-        self.assertIn("request inventory must contain exactly two files", verifier)
-        self.assertIn("request compatibility mismatch", verifier)
-        self.assertIn("request file identity mismatch", verifier)
+        self.assertIn("scenario inventory must contain exactly two files", verifier)
+        self.assertIn("scenario compatibility mismatch", verifier)
+        self.assertIn("scenario file identity mismatch", verifier)
 
     def test_image_labels_and_runtime_environment_are_minimal(self) -> None:
         dockerfile = (PROJECT_DIR / "Dockerfile").read_text(encoding="utf-8")

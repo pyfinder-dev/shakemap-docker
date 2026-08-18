@@ -397,8 +397,12 @@ printf '%s\n' "${{CONTAINER_COMMAND[*]}}"
             PROJECT / "scripts/verify-shakemap-deployment.sh"
         ).read_text(encoding="utf-8")
         self.assertIn("verify-shakemap-image.sh --deployment", deployment_verifier)
-        self.assertIn("verification/request/event.xml", deployment_verifier)
-        self.assertIn("verification/request/event_dat.xml", deployment_verifier)
+        self.assertIn(
+            "verification/scenarios/v4.4.9/south-napa-global",
+            deployment_verifier,
+        )
+        self.assertIn('str(scenario / "event.xml")', deployment_verifier)
+        self.assertIn('str(scenario / "event_dat.xml")', deployment_verifier)
         self.assertNotIn("tests/fixtures/shakemap_scenario", deployment_verifier)
 
         permission_slice = source[

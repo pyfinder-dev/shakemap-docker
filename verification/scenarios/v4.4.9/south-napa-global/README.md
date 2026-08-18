@@ -1,15 +1,16 @@
-# ShakeMap verification scenario
+# South Napa global verification scenario
 
-This directory is the fixed client request used by the canonical-container
-ShakeMap calculation check. Its embedded native identity and classification
-are both `SCENARIO`; the managed check supplies its own public event IDs. The
-fixture is compatible with ShakeMap `v4.4.9` at commit
+This directory is the `south-napa-global` scenario used by the
+canonical-container ShakeMap calculation check. Its intended configuration is
+`global`. Its embedded native identity and classification are both `SCENARIO`;
+the managed check supplies its own public event IDs. The scenario is compatible
+with ShakeMap `v4.4.9` at commit
 `8923f1ff6e82fc866d928a33d1e19e45f276db52`.
 
 The source is the official release-matched USGS South Napa test event
 `nc72282711`. Upstream ShakeMap declares its repository material public domain
 in the United States and applies a CC0-1.0 dedication; the exact license and
-source links are in `request-manifest.json`.
+source links are in `scenario-manifest.json`.
 
 The immutable source files are:
 
@@ -23,7 +24,7 @@ The immutable source files are:
 |---|---|---|
 | `event.xml` | Origin for the 2014 South Napa M6.0 event | Changed `id` to `SCENARIO` and added `event_type="SCENARIO"`; origin values are unchanged. |
 | `event_dat.xml` | 334 instrumental stations, 999 components, and PGA, PGV, and 0.3/1.0/3.0 s PSA values from BG, BK, CE, NC, NP, and WR | Renamed upstream `stationlist.xml` because ShakeMap v4.4.9 assemble recognizes `*_dat.xml`; changed only the embedded earthquake ID to `SCENARIO`. |
-| `request-manifest.json` | Machine-readable identity, provenance, transformations, sizes, checksums, licensing, compatibility, and limitations | Project-authored metadata. |
+| `scenario-manifest.json` | Machine-readable identity, provenance, transformations, sizes, checksums, licensing, compatibility, and limitations | Project-authored metadata. |
 
 No finite rupture is supplied. This scenario deliberately exercises the
 release's point-source path. No event-specific configuration is supplied;

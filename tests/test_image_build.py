@@ -237,7 +237,14 @@ class DockerfileAssemblyTests(unittest.TestCase):
                     if any(fnmatch.fnmatchcase(part, pattern) for part in parts)
                 ]
                 self.assertEqual(matched_patterns, [], source)
-        self.assertTrue(any(source.startswith("verification/request/") for source in sources))
+        self.assertTrue(
+            any(
+                source.startswith(
+                    "verification/scenarios/v4.4.9/south-napa-global/"
+                )
+                for source in sources
+            )
+        )
         self.assertTrue(any(source.startswith("verification/packages/") for source in sources))
 
     def test_final_dependency_inventory_is_fail_closed(self) -> None:

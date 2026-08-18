@@ -1,10 +1,10 @@
 # ShakeMap v4.4.9 verification package definition
 
 `source-manifest.json` is the tracked, checksum-pinned recipe for the external
-scientific package used with `verification/request/`. It contains
-no scientific payload. The preparation helper downloads or imports the listed
-sources and installs them under `runtime/shakemap/data/test/v4.4.9/` by
-default.
+scientific package used with
+`verification/scenarios/v4.4.9/south-napa-global/`. It contains no scientific
+payload. The preparation helper downloads or imports the listed sources and
+installs them under `runtime/shakemap/data/test/v4.4.9/` by default.
 
 The definition intentionally selects only the release test configuration,
 California Vs30/topography/selection layer, the exact STREC moment database

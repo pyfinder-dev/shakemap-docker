@@ -78,9 +78,9 @@ RUN python /tmp/install-image-support.py natural-earth \
 # Repository configurations are immutable image seeds. Runtime materialization
 # and native profile placement are deliberately handled by finalization.
 COPY regional-configs /opt/shakemap-seeds/regional
-COPY verification/request/event.xml \
-     verification/request/event_dat.xml \
-     verification/request/request-manifest.json \
+COPY verification/scenarios/v4.4.9/south-napa-global/event.xml \
+     verification/scenarios/v4.4.9/south-napa-global/event_dat.xml \
+     verification/scenarios/v4.4.9/south-napa-global/scenario-manifest.json \
      /opt/shakemap-verification/
 COPY verification/packages/v4.4.9/source-manifest.json \
      /opt/shakemap-verification/source-manifest.json

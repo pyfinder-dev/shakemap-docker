@@ -1,8 +1,10 @@
 {
   "schema_version": 1,
-  "fixture_id": "SCENARIO",
+  "scenario_id": "south-napa-global",
+  "intended_configuration": "global",
+  "embedded_fixture_identity": "SCENARIO",
   "classification": "SCENARIO",
-  "purpose": "Fixed client request for release-matched native ShakeMap integration verification",
+  "purpose": "Release-matched South Napa scenario for native ShakeMap integration verification",
   "compatible_shakemap": {
     "release_tag": "v4.4.9",
     "source_commit": "8923f1ff6e82fc866d928a33d1e19e45f276db52"

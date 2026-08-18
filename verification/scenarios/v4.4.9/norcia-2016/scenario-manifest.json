@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "scenario_id": "norcia-2016",
+  "intended_configurations": ["global", "italy"],
+  "embedded_fixture_identity": "us1000731j",
+  "classification": "ACTUAL",
+  "purpose": "Pinned native inputs for configuration-selection and failure-behavior verification with the 30 October 2016 Norcia earthquake",
+  "target_shakemap": {
+    "release_tag": "v4.4.9",
+    "native_compatibility": "Must be established by execution in the exact project image; static inspection is insufficient"
+  },
+  "source": {
+    "event_page": "https://earthquake.usgs.gov/earthquakes/eventpage/us1000731j",
+    "product_type": "shakemap",
+    "product_source": "atlas",
+    "product_code": "us1000731j",
+    "product_update_time_ms": 1594393907171,
+    "product_version": "1",
+    "source_shakemap_version": "4.0.2+335.gcbad862.dirty",
+    "event_information_url": "https://earthquake.usgs.gov/product/shakemap/us1000731j/atlas/1594393907171/download/info.json",
+    "event_information_size": 5361,
+    "event_information_sha256": "c27ec4027379d99817f314ab885d943ae56dfd7907b258e19c426151db3cc6f0",
+    "description": "USGS ShakeMap Atlas v4 product for the 30 October 2016 M6.6 Norcia earthquake",
+    "license": "Most USGS-authored information is public domain in the United States, but these files carry no file-specific license and the station list contains observations attributed to non-USGS contributing networks; this manifest does not represent those contributions as CC0",
+    "license_url": "https://www.usgs.gov/information-policies-and-instructions/copyrights-and-credits",
+    "attribution_url": "https://www.usgs.gov/information-policies-and-instructions/acknowledging-or-crediting-usgs"
+  },
+  "origin": {
+    "id": "us1000731j",
+    "netid": "us",
+    "network": "USGS National Earthquake Information Center, PDE",
+    "time": "2016-10-30T06:40:18.000000Z",
+    "latitude": 42.8621,
+    "longitude": 13.0961,
+    "depth_km": 8.0,
+    "magnitude": 6.6,
+    "location": "7km N of Norcia, Italy",
+    "mechanism": "ALL",
+    "reference": "Origin",
+    "event_type": "ACTUAL"
+  },
+  "files": [
+    {
+      "installed_name": "event.xml",
+      "source_name": "rupture.json metadata and pinned product event-type",
+      "source_url": "https://earthquake.usgs.gov/product/shakemap/us1000731j/atlas/1594393907171/download/rupture.json",
+      "source_size": 513,
+      "source_sha256": "10aac3ad5ee7f614d669aef0b0e3b2d0303e379afa7896ee9f238b997ec986c3",
+      "installed_size": 270,
+      "installed_sha256": "65c39659d4b36c9d6a4ed290e0d5d3216d0c6024c47a9817f1f34d0e3a9c7c7f",
+      "transformation": "Rendered the pinned rupture-origin fields as ShakeMap v4 event XML and copied the pinned product classification ACTUAL. The optional productcode was not repeated in event.xml; rupture.json retains the source productcode, so its effective native merge behavior must be observed during execution. The embedded origin id remains us1000731j. The rupture-only rake value remains in rupture.json and was not converted into an event.xml attribute."
+    },
+    {
+      "installed_name": "stationlist.json",
+      "source_name": "download/stationlist.json",
+      "source_url": "https://earthquake.usgs.gov/product/shakemap/us1000731j/atlas/1594393907171/download/stationlist.json",
+      "source_size": 1353582,
+      "source_sha256": "6bd8b01168bae31fc4e87eada4802785d72bad774aa0cd6c3885d462cc7be160",
+      "installed_size": 1353582,
+      "installed_sha256": "6bd8b01168bae31fc4e87eada4802785d72bad774aa0cd6c3885d462cc7be160",
+      "transformation": "None; installed byte for byte from the pinned USGS product"
+    },
+    {
+      "installed_name": "rupture.json",
+      "source_name": "download/rupture.json",
+      "source_url": "https://earthquake.usgs.gov/product/shakemap/us1000731j/atlas/1594393907171/download/rupture.json",
+      "source_size": 513,
+      "source_sha256": "10aac3ad5ee7f614d669aef0b0e3b2d0303e379afa7896ee9f238b997ec986c3",
+      "installed_size": 513,
+      "installed_sha256": "10aac3ad5ee7f614d669aef0b0e3b2d0303e379afa7896ee9f238b997ec986c3",
+      "transformation": "None; installed byte for byte from the pinned USGS product"
+    }
+  ],
+  "observations": {
+    "feature_count": 383,
+    "instrumental_count": 302,
+    "macroseismic_count": 81,
+    "network_codes": ["AC", "BA", "CH", "CR", "DYFI", "FR", "GE", "GU", "IV", "MN", "OE", "OT", "OX", "RD", "SI", "SL", "ST", "XO"],
+    "provenance": "Unmodified station features from the pinned USGS ShakeMap Atlas product"
+  },
+  "reuse": {
+    "public_event_id": "The caller may choose a distinct public calculation ID for each global, italy, and missing-configuration submission",
+    "input_identity": "Reuse the exact three native input files without rewriting the embedded USGS origin identity; keep the README and manifest beside them as source metadata",
+    "configuration_selection": "Configuration is a request parameter; event geography does not select it"
+  },
+  "limitations": [
+    "The Atlas source product was generated with ShakeMap 4.0.2+335.gcbad862.dirty, not the project's v4.4.9 image.",
+    "JSON and XML structure, hashes, and internally consistent origin metadata do not establish native acceptance by ShakeMap v4.4.9.",
+    "The pinned processed info.json reports src_mech NM while the pinned rupture metadata reports mech ALL. This fixture preserves the rupture-origin value in event.xml and does not attempt a scientific reconciliation.",
+    "A successful native run would establish operational compatibility for the exact image and inputs, not scientific correctness or regional suitability.",
+    "The current italy preset and its external datasets are outside this fixture; their absence or native rejection must remain visible and must not trigger global fallback.",
+    "The included rupture is the source product's point rupture, not a finite-fault model.",
+    "No file-specific license was supplied with the downloaded JSON, and rights in non-USGS contributing-network observations remain unresolved."
+  ]
+}
