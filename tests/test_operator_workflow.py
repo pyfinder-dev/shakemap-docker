@@ -295,9 +295,14 @@ exit 0
         self.assertEqual(len(recipes), 7)
         self.assertTrue(all("$(SCRIPTS)/" in recipe for recipe in recipes))
         self.assertIn(
-            '$(SCRIPTS)/fix-shakemap-permissions.sh --runtime-root "$(RUNTIME_ROOT)"',
+            '$(SCRIPTS)/fix-shakemap-permissions.sh --runtime-root "$(RUNTIME_ROOT)" $(PERMISSION_TARGET_OPTION)',
             recipes,
         )
+        self.assertIn(
+            "fix-permissions: export PERMISSION_TARGET_VALUE := $(value PERMISSION_TARGET)",
+            source,
+        )
+        self.assertIn('--target "$${PERMISSION_TARGET_VALUE}"', source)
 
     def test_container_command_has_fixed_identity_and_exact_mount_modes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

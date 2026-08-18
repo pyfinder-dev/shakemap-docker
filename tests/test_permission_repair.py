@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Host tests for the fixed scientific-data permission repair."""
+"""Host tests for scientific-data permission repair."""
 from __future__ import annotations
 
 import os
 import shutil
+import socket
 import stat
 import subprocess
 import tempfile
@@ -38,9 +39,22 @@ class PermissionRepairTests(unittest.TestCase):
             text=True,
         )
 
+    def _run_make(
+        self,
+        runtime: Path,
+        target: str | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        command = ["make", "fix-permissions", f"RUNTIME_ROOT={runtime}"]
+        if target is not None:
+            command.append(f"PERMISSION_TARGET={target}")
+        return subprocess.run(command, cwd=PROJECT, capture_output=True, text=True)
+
     @staticmethod
     def _mode(path: Path, *, follow_symlinks: bool = True) -> int:
         return stat.S_IMODE(path.stat().st_mode if follow_symlinks else path.lstat().st_mode)
+
+    def _modes(self, paths: tuple[Path, ...]) -> dict[Path, int]:
+        return {path: self._mode(path, follow_symlinks=False) for path in paths}
 
     def test_repairs_fixed_trees_and_preserves_data_ownership_and_existing_bits(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -99,6 +113,268 @@ class PermissionRepairTests(unittest.TestCase):
             self.assertEqual(first_modes, second_modes)
             self.assertEqual(self._mode(target), 0o644)
 
+    def test_explicit_file_repairs_only_that_file_and_required_ancestors(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            runtime = self._make_runtime(base, "runtime with spaces")
+            data = runtime / "shakemap/data"
+            parent = data / "global/config collection"
+            parent.mkdir()
+            relative = "global/config collection/config;`touch INJECTION_MARKER`"
+            target = data / relative
+            sibling = parent / "sibling.conf"
+            unrelated = data / "regional/unrelated.conf"
+            target.write_bytes(b"selected\x00content")
+            sibling.write_bytes(b"sibling")
+            unrelated.write_bytes(b"unrelated")
+            target.chmod(0o6710)
+            sibling.chmod(0o600)
+            unrelated.chmod(0o600)
+            for path, mode in (
+                (runtime, 0o700),
+                (runtime / "shakemap", 0o700),
+                (data, 0o700),
+                (data / "global", 0o2700),
+                (parent, 0o3700),
+                (data / "regional", 0o700),
+                (data / "test", 0o700),
+            ):
+                path.chmod(mode)
+            target_mode = self._mode(target)
+            global_mode = self._mode(data / "global")
+            parent_mode = self._mode(parent)
+            owners = {
+                path: (path.stat().st_uid, path.stat().st_gid)
+                for path in (target, parent, sibling, unrelated)
+            }
+            marker = PROJECT / "INJECTION_MARKER"
+            self.assertFalse(marker.exists())
+
+            result = self._run_make(runtime, relative)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("--target", result.stdout)
+            self.assertEqual(target.read_bytes(), b"selected\x00content")
+            self.assertEqual(self._mode(target), target_mode | 0o444)
+            self.assertEqual(self._mode(runtime), 0o711)
+            self.assertEqual(self._mode(runtime / "shakemap"), 0o711)
+            self.assertEqual(self._mode(data), 0o711)
+            self.assertEqual(self._mode(data / "global"), global_mode | 0o011)
+            self.assertEqual(self._mode(parent), parent_mode | 0o011)
+            self.assertEqual(self._mode(sibling), 0o600)
+            self.assertEqual(self._mode(unrelated), 0o600)
+            self.assertEqual(self._mode(data / "regional"), 0o700)
+            self.assertEqual(self._mode(data / "test"), 0o700)
+            self.assertFalse(marker.exists())
+            for path, owner in owners.items():
+                self.assertEqual((path.stat().st_uid, path.stat().st_gid), owner)
+
+    def test_explicit_directory_repairs_its_tree_without_touching_siblings(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = self._make_runtime(Path(temporary))
+            data = runtime / "shakemap/data"
+            selected = data / "regional/alpine data"
+            nested = selected / "nested"
+            nested.mkdir(parents=True)
+            selected_file = nested / "grid.bin"
+            selected_file.write_bytes(b"grid")
+            sibling = data / "regional/sibling/private.conf"
+            sibling.parent.mkdir()
+            sibling.write_bytes(b"private")
+            other_tree = data / "global/private.bin"
+            other_tree.write_bytes(b"other")
+            for path, mode in (
+                (runtime, 0o700),
+                (runtime / "shakemap", 0o700),
+                (data, 0o700),
+                (data / "regional", 0o700),
+                (selected, 0o3700),
+                (nested, 0o1700),
+                (selected_file, 0o4710),
+                (sibling.parent, 0o700),
+                (sibling, 0o600),
+                (other_tree, 0o600),
+            ):
+                path.chmod(mode)
+            original_file_mode = self._mode(selected_file)
+            original_selected_mode = self._mode(selected)
+            original_nested_mode = self._mode(nested)
+            owners = {
+                path: (path.stat().st_uid, path.stat().st_gid)
+                for path in (selected, nested, selected_file)
+            }
+
+            first = self._run(runtime, "--target", "regional/alpine data")
+            first_modes = self._modes((selected, nested, selected_file))
+            second = self._run(runtime, "--target", "regional/alpine data")
+
+            self.assertEqual(first.returncode, 0, first.stderr)
+            self.assertEqual(second.returncode, 0, second.stderr)
+            self.assertEqual(first_modes, self._modes((selected, nested, selected_file)))
+            self.assertEqual(self._mode(selected), original_selected_mode | 0o055)
+            self.assertEqual(self._mode(nested), original_nested_mode | 0o055)
+            self.assertEqual(self._mode(selected_file), original_file_mode | 0o444)
+            self.assertEqual(self._mode(data / "regional"), 0o711)
+            self.assertEqual(self._mode(sibling.parent), 0o700)
+            self.assertEqual(self._mode(sibling), 0o600)
+            self.assertEqual(self._mode(other_tree), 0o600)
+            for path, owner in owners.items():
+                self.assertEqual((path.stat().st_uid, path.stat().st_gid), owner)
+
+    def test_invalid_explicit_targets_fail_before_mutation(self) -> None:
+        cases = (
+            (("--target", ""), "--target requires"),
+            (("--target", "/global/file"), "must be relative"),
+            (("--target", "global/../regional/file"), "unsafe path component"),
+            (("--target", "global/./file"), "unsafe path component"),
+            (("--target", "global//file"), "empty path component"),
+            (("--target", "global/"), "empty path component"),
+            (("--target", "inputs/file"), "must begin with global, regional, or test"),
+            (("--target", "global/missing"), "missing or inaccessible"),
+            (
+                ("--target", "global/safe.bin", "--target", "regional/other"),
+                "specified only once",
+            ),
+        )
+        for arguments, diagnostic in cases:
+            with self.subTest(arguments=arguments), tempfile.TemporaryDirectory() as temporary:
+                runtime = self._make_runtime(Path(temporary))
+                data = runtime / "shakemap/data"
+                safe = data / "global/safe.bin"
+                safe.write_bytes(b"safe")
+                safe.chmod(0o600)
+                paths = (
+                    runtime,
+                    runtime / "shakemap",
+                    data,
+                    data / "global",
+                    data / "regional",
+                    data / "test",
+                    safe,
+                )
+                for path in paths[:-1]:
+                    path.chmod(0o700)
+                original_modes = self._modes(paths)
+
+                result = self._run(runtime, *arguments)
+
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(diagnostic, result.stderr)
+                self.assertEqual(self._modes(paths), original_modes)
+                self.assertEqual(safe.read_bytes(), b"safe")
+
+    def test_explicit_symlink_ancestry_and_leaf_fail_before_mutation(self) -> None:
+        for link_position in ("ancestor", "leaf"):
+            with self.subTest(link_position=link_position), tempfile.TemporaryDirectory() as temporary:
+                base = Path(temporary)
+                runtime = self._make_runtime(base)
+                data = runtime / "shakemap/data"
+                outside = base / "outside"
+                outside.mkdir()
+                outside_file = outside / "private.bin"
+                outside_file.write_bytes(b"outside")
+                outside_file.chmod(0o600)
+                safe = data / "global/safe.bin"
+                safe.write_bytes(b"safe")
+                safe.chmod(0o600)
+                if link_position == "ancestor":
+                    link = data / "regional/linked"
+                    link.symlink_to(outside, target_is_directory=True)
+                    target = "regional/linked/private.bin"
+                else:
+                    link = data / "regional/linked.bin"
+                    link.symlink_to(outside_file)
+                    target = "regional/linked.bin"
+                paths = (runtime, runtime / "shakemap", data, data / "regional", safe)
+                for path in paths[:-1]:
+                    path.chmod(0o700)
+                original_modes = self._modes(paths)
+
+                result = self._run(runtime, "--target", target)
+
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Unsafe symbolic link in target ancestry", result.stderr)
+                self.assertIn(str(link), result.stderr)
+                self.assertEqual(self._modes(paths), original_modes)
+                self.assertEqual(self._mode(outside_file), 0o600)
+                self.assertEqual(safe.read_bytes(), b"safe")
+
+    def test_explicit_fifo_and_socket_targets_fail_before_mutation(self) -> None:
+        for special_kind in ("FIFO", "socket"):
+            with self.subTest(special_kind=special_kind), tempfile.TemporaryDirectory(dir="/tmp") as temporary:
+                runtime = self._make_runtime(Path(temporary))
+                data = runtime / "shakemap/data"
+                special = data / f"test/unexpected-{special_kind.lower()}"
+                safe = data / "test/safe.bin"
+                safe.write_bytes(b"safe")
+                safe.chmod(0o600)
+                open_socket = None
+                if special_kind == "FIFO":
+                    os.mkfifo(special, 0o600)
+                else:
+                    open_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                    try:
+                        open_socket.bind(str(special))
+                    except PermissionError:
+                        open_socket.close()
+                        source = HELPER.read_text(encoding="utf-8")
+                        self.assertIn('elif [[ -S "$path" ]]', source)
+                        continue
+                paths = (runtime, runtime / "shakemap", data, data / "test", safe)
+                for path in paths[:-1]:
+                    path.chmod(0o700)
+                original_modes = self._modes(paths)
+                try:
+                    result = self._run(runtime, "--target", f"test/{special.name}")
+                finally:
+                    if open_socket is not None:
+                        open_socket.close()
+
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(f"Selected target is a {special_kind}", result.stderr)
+                self.assertEqual(self._modes(paths), original_modes)
+                self.assertEqual(self._mode(safe), 0o600)
+
+        source = HELPER.read_text(encoding="utf-8")
+        self.assertIn('elif [[ -b "$path" ]]', source)
+        self.assertIn('elif [[ -c "$path" ]]', source)
+
+    def test_uninspectable_explicit_directory_fails_before_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = self._make_runtime(Path(temporary))
+            data = runtime / "shakemap/data"
+            selected = data / "global/locked"
+            selected.mkdir()
+            child = selected / "private.bin"
+            child.write_bytes(b"private")
+            child.chmod(0o600)
+            selected.chmod(0o300)
+            paths = (runtime, runtime / "shakemap", data, data / "global", selected, child)
+            for path in paths[:4]:
+                path.chmod(0o700)
+            original_modes = self._modes(paths)
+            try:
+                result = self._run(runtime, "--target", "global/locked")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Could not inspect directory", result.stderr)
+                self.assertEqual(self._modes(paths), original_modes)
+            finally:
+                selected.chmod(0o700)
+
+    def test_usage_documents_default_file_and_directory_examples(self) -> None:
+        result = subprocess.run(
+            ["bash", str(HELPER), "--help"],
+            cwd=PROJECT,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--target DATA_RELATIVE_PATH", result.stdout)
+        self.assertIn("--runtime-root ./runtime\n", result.stdout)
+        self.assertIn("--target 'regional/alps/config file.conf'", result.stdout)
+        self.assertIn("--target global/vs30", result.stdout)
+
     def test_nested_symlink_fails_without_touching_link_target_or_unrelated_trees(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
@@ -111,6 +387,9 @@ class PermissionRepairTests(unittest.TestCase):
             outside_file.chmod(0o600)
             link = data / "regional/external"
             link.symlink_to(outside, target_is_directory=True)
+            selected_safe = data / "global/safe.bin"
+            selected_safe.write_bytes(b"safe")
+            selected_safe.chmod(0o600)
             unrelated = {
                 data / "inputs/private": b"input",
                 runtime / "shakemap/products/private": b"product",
@@ -127,11 +406,12 @@ class PermissionRepairTests(unittest.TestCase):
             result = self._run(runtime)
 
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("Skipped symbolic link", result.stderr)
+            self.assertIn("Unsafe symbolic link in selected tree", result.stderr)
             self.assertIn(str(link), result.stderr)
             self.assertEqual(outside_file.read_bytes(), b"outside")
             self.assertEqual(self._mode(outside_file), 0o600)
             self.assertEqual(self._mode(link, follow_symlinks=False), original_link_mode)
+            self.assertEqual(self._mode(selected_safe), 0o600)
             for path, content in unrelated.items():
                 self.assertEqual(path.read_bytes(), content)
                 self.assertEqual(self._mode(path), 0o600)
@@ -152,7 +432,7 @@ class PermissionRepairTests(unittest.TestCase):
             self.assertIn("Unsafe symbolic-link directory", result.stderr)
             self.assertEqual(self._mode(target), 0o600)
 
-    def test_special_entry_is_reported_and_safe_entries_are_repaired(self) -> None:
+    def test_special_entry_fails_before_safe_entries_are_repaired(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             runtime = self._make_runtime(Path(temporary))
             root = runtime / "shakemap/data/global"
@@ -165,10 +445,10 @@ class PermissionRepairTests(unittest.TestCase):
             result = self._run(runtime)
 
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("Skipped FIFO", result.stderr)
+            self.assertIn("Unsafe FIFO in selected tree", result.stderr)
             self.assertIn(str(fifo), result.stderr)
             self.assertEqual(self._mode(fifo), 0o600)
-            self.assertEqual(self._mode(safe), 0o644)
+            self.assertEqual(self._mode(safe), 0o600)
 
     def test_missing_mandatory_ancestors_fail_without_creation_or_mode_changes(self) -> None:
         missing_paths = (
