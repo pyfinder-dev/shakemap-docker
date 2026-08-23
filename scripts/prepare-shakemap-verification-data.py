@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import sys
 import tempfile
 import urllib.request
@@ -227,13 +228,48 @@ def expected_installed_records(
     return records
 
 
+def package_file_inventory(destination: Path) -> set[str]:
+    actual: set[str] = set()
+    for root, directory_names, file_names in os.walk(
+        destination, topdown=True, followlinks=False
+    ):
+        root_path = Path(root)
+        for name in directory_names + file_names:
+            entry = root_path / name
+            relative = entry.relative_to(destination).as_posix()
+            try:
+                mode = entry.lstat().st_mode
+            except OSError as exc:
+                raise IntegrityError(f"cannot inspect package entry {relative}: {exc}") from exc
+            if stat.S_ISLNK(mode):
+                raise IntegrityError(f"package contains a symbolic link: {relative}")
+            if stat.S_ISDIR(mode):
+                if name == ".DS_Store":
+                    raise IntegrityError(
+                        f"package metadata entry is not a regular file: {relative}"
+                    )
+                continue
+            if not stat.S_ISREG(mode):
+                raise IntegrityError(f"package contains a special entry: {relative}")
+            # Finder metadata does not affect package identity once it is a real file.
+            if name == ".DS_Store":
+                continue
+            actual.add(relative)
+    return actual
+
+
 def validate_package(
     definition: dict[str, Any],
     destination: Path,
     recorded_destination: Path | None = None,
 ) -> dict[str, Any]:
-    if not destination.is_dir():
+    try:
+        destination_mode = destination.lstat().st_mode
+    except OSError:
+        destination_mode = 0
+    if not stat.S_ISDIR(destination_mode):
         raise MissingSourceError(f"verification package is missing: {destination}")
+    actual = package_file_inventory(destination)
     readme = destination / "README.md"
     manifest_path = destination / "package-manifest.json"
     if not readme.is_file() or not manifest_path.is_file():
@@ -370,11 +406,6 @@ def validate_package(
         )
 
     allowed = set(expected) | {"README.md", "package-manifest.json"}
-    actual = {
-        path.relative_to(destination).as_posix()
-        for path in destination.rglob("*")
-        if path.is_file()
-    }
     extras = sorted(actual - allowed)
     missing_files = sorted(allowed - actual)
     if extras or missing_files:

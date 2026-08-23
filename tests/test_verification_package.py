@@ -7,6 +7,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import tempfile
 import unittest
 import zipfile
@@ -175,6 +176,81 @@ class PreparationBehaviorTests(unittest.TestCase):
         state, _ = helper.prepare_package(self.definition, destination, self.source_dir)
         self.assertEqual(state, "already-valid")
         self.assertEqual(manifest_path.read_bytes(), before)
+
+    def test_regular_ds_store_files_are_ignored_and_preserved(self) -> None:
+        destination = self.root / "prepared"
+        helper.prepare_package(self.definition, destination, self.source_dir)
+        metadata = {
+            destination / ".DS_Store": b"root metadata",
+            destination / "config" / ".DS_Store": b"nested metadata",
+        }
+        for path, content in metadata.items():
+            path.write_bytes(content)
+
+        manifest = helper.validate_package(self.definition, destination)
+
+        self.assertFalse(
+            any(".DS_Store" in entry["installed_path"] for entry in manifest["files"])
+        )
+        for path, content in metadata.items():
+            self.assertEqual(path.read_bytes(), content)
+
+    def test_existing_destination_with_ds_store_files_is_reused(self) -> None:
+        destination = self.root / "prepared"
+        helper.prepare_package(self.definition, destination, self.source_dir)
+        root_metadata = destination / ".DS_Store"
+        nested_metadata = destination / "data" / ".DS_Store"
+        root_metadata.write_bytes(b"root metadata")
+        nested_metadata.write_bytes(b"nested metadata")
+        manifest_path = destination / "package-manifest.json"
+        manifest_before = manifest_path.read_bytes()
+
+        state, _ = helper.prepare_package(
+            self.definition, destination, self.source_dir
+        )
+
+        self.assertEqual(state, "already-valid")
+        self.assertEqual(root_metadata.read_bytes(), b"root metadata")
+        self.assertEqual(nested_metadata.read_bytes(), b"nested metadata")
+        self.assertEqual(manifest_path.read_bytes(), manifest_before)
+
+    def test_other_unexpected_dotfile_is_rejected(self) -> None:
+        destination = self.root / "prepared"
+        helper.prepare_package(self.definition, destination, self.source_dir)
+        (destination / ".hidden").write_bytes(b"unexpected")
+
+        with self.assertRaisesRegex(helper.IntegrityError, r"unexpected=\['\.hidden'\]"):
+            helper.validate_package(self.definition, destination)
+
+    def test_unsafe_ds_store_entry_types_are_rejected(self) -> None:
+        for entry_type in ("symlink", "directory", "fifo"):
+            with self.subTest(entry_type=entry_type):
+                destination = self.root / f"prepared-{entry_type}"
+                helper.prepare_package(self.definition, destination, self.source_dir)
+                metadata = destination / ".DS_Store"
+                if entry_type == "symlink":
+                    metadata.symlink_to(destination / "README.md")
+                    expected = "symbolic link"
+                elif entry_type == "directory":
+                    metadata.mkdir()
+                    expected = "not a regular file"
+                else:
+                    os.mkfifo(metadata)
+                    expected = "special entry"
+
+                with self.assertRaisesRegex(helper.IntegrityError, expected):
+                    helper.validate_package(self.definition, destination)
+
+    def test_ds_store_below_symlinked_directory_is_rejected(self) -> None:
+        destination = self.root / "prepared"
+        helper.prepare_package(self.definition, destination, self.source_dir)
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / ".DS_Store").write_bytes(b"metadata")
+        (destination / "linked").symlink_to(outside, target_is_directory=True)
+
+        with self.assertRaisesRegex(helper.IntegrityError, "symbolic link"):
+            helper.validate_package(self.definition, destination)
 
     def test_corrupt_installed_file_is_reported(self) -> None:
         destination = self.root / "prepared"
