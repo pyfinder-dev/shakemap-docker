@@ -58,8 +58,15 @@ try:
         errors.append('source commit mismatch')
     if importlib.metadata.version('shakemap') != image['installed']['shakemap_distribution_version']:
         errors.append('ShakeMap version mismatch')
-    if importlib.metadata.version('shakemap-modules') != image['installed']['shakemap_modules_distribution_version']:
+    installed_modules = importlib.metadata.version('shakemap-modules')
+    if installed_modules != image['installed']['shakemap_modules_distribution_version']:
         errors.append('module version mismatch')
+    definition = json.loads(pathlib.Path('/opt/shakemap-verification/source-manifest.json').read_text())
+    expected_modules = definition['compatibility']['shakemap_modules_version']
+    if installed_modules != expected_modules:
+        errors.append('installed modules differ from the release verification definition')
+    if importlib.metadata.version('esi-shakelib') != '1.2.1':
+        errors.append('esi-shakelib version mismatch')
     declared = load_declared_release_tag(pathlib.Path('/opt/shakemap-build/VERSIONS.env'))
     if image['upstream']['release_tag'] != declared:
         errors.append('installed release differs from VERSIONS.env')

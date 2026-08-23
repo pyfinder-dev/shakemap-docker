@@ -42,8 +42,12 @@ RUN test -n "${SHAKEMAP_SOURCE_URL}" \
  && test "$(git -C /opt/shakemap rev-parse HEAD)" = "${SHAKEMAP_SOURCE_COMMIT}" \
  && test "$(git -C /opt/shakemap rev-parse HEAD^{commit})" = "${SHAKEMAP_SOURCE_COMMIT}"
 
-# Install the release and its declared Python dependencies.
-RUN pip install --no-cache-dir /opt/shakemap
+# The native module package imports names supplied by this shakelib release.
+# Install both constraints with ShakeMap so pip cannot upgrade either one.
+RUN pip install --no-cache-dir \
+      /opt/shakemap \
+      "shakemap-modules[all]==1.1.18" \
+      "esi-shakelib==1.2.1"
 
 # Copy the service identity implementation early so the resolved release's own
 # lock can supply plotting compatibility. This is release-derived: future

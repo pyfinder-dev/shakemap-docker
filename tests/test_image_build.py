@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import fnmatch
+import json
 import os
+import re
 import shlex
 import stat
 import subprocess
@@ -271,6 +273,82 @@ class DockerfileAssemblyTests(unittest.TestCase):
         self.assertNotIn("|", freeze_line)
         self.assertIn('"${dependencies_tmp}"', freeze_line)
         self.assertIn("check python -m pip check", verifier)
+
+    def test_native_dependency_pair_is_exact_and_verified(self) -> None:
+        dockerfile = (PROJECT_DIR / "Dockerfile").read_text(encoding="utf-8")
+        verifier = (PROJECT_DIR / "scripts/verify-shakemap-image.sh").read_text(
+            encoding="utf-8"
+        )
+        definition = json.loads(
+            (
+                PROJECT_DIR
+                / "verification/packages/v4.4.9/source-manifest.json"
+            ).read_text(encoding="utf-8")
+        )
+
+        normalized_dockerfile = dockerfile.replace("\\\n", " ")
+        native_install = next(
+            line
+            for line in normalized_dockerfile.splitlines()
+            if line.startswith("RUN pip install --no-cache-dir")
+            and "/opt/shakemap" in line
+        )
+        self.assertEqual(
+            shlex.split(native_install),
+            [
+                "RUN",
+                "pip",
+                "install",
+                "--no-cache-dir",
+                "/opt/shakemap",
+                "shakemap-modules[all]==1.1.18",
+                "esi-shakelib==1.2.1",
+            ],
+        )
+        self.assertEqual(
+            definition["compatibility"]["shakemap_modules_version"],
+            "1.1.18",
+        )
+        identity_start = verifier.index('IDENTITY_RESULT="$(python')
+        module_imports = verifier.index('MODULE_RESULT="$(python')
+        deployment_branch = verifier.index('if [[ "${MODE}" == "image" ]]')
+        compatibility_check = verifier.index(
+            "expected_modules = definition['compatibility']"
+        )
+        shakelib_check = verifier.index(
+            "importlib.metadata.version('esi-shakelib') != '1.2.1'"
+        )
+        self.assertLess(identity_start, compatibility_check)
+        self.assertLess(compatibility_check, shakelib_check)
+        self.assertLess(shakelib_check, module_imports)
+        self.assertLess(module_imports, deployment_branch)
+        self.assertIn(
+            "installed_modules != expected_modules",
+            verifier,
+        )
+
+    def test_native_module_import_gate_remains_complete(self) -> None:
+        verifier = (PROJECT_DIR / "scripts/verify-shakemap-image.sh").read_text(
+            encoding="utf-8"
+        )
+        imports = re.findall(
+            r"^from shakemap_modules\.coremods\.([a-z0-9_]+) import ",
+            verifier,
+            flags=re.MULTILINE,
+        )
+        self.assertEqual(
+            imports,
+            [
+                "sm_select",
+                "assemble",
+                "model",
+                "contour",
+                "mapping",
+                "stations",
+                "gridxml",
+            ],
+        )
+        self.assertIn('check test "${MODULE_RESULT}" = OK', verifier)
 
 
 if __name__ == "__main__":
