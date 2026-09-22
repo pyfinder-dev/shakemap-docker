@@ -57,10 +57,12 @@ for dir in products logs data/inputs .service/events .service/archive .service/q
         echo "  Directory:      ${DIRPATH}" >&2
         OWNER="$(stat -c '%u:%g' "${DIRPATH}" 2>/dev/null || stat -f '%u:%g' "${DIRPATH}" 2>/dev/null || echo 'unknown')"
         echo "  Current owner:  ${OWNER}" >&2
-        echo "  Required owner: 1000:1000" >&2
+        echo "  Required service access: UID:GID 1000:1000" >&2
         echo "" >&2
         echo "  Suggested fix:" >&2
-        echo "    chown -R 1000:1000 <host-runtime-dir>" >&2
+        echo "    Stop the service, then run the host project's helper:" >&2
+        echo "    sudo /path/to/shakemap-docker/scripts/repair-shakemap-writable-paths.sh --runtime-root <host-runtime-dir>" >&2
+        echo "    Then rerun finalization normally." >&2
         echo "" >&2
         exit 1
     fi

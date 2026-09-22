@@ -3,11 +3,17 @@
 | Script | Responsibility |
 |---|---|
 | `build-shakemap-docker.sh` | Build the declared release as an untagged candidate, verify it by identity, and then promote the canonical image tag. |
-| `manage-shakemap-data.sh` | Inspect, validate, or provision missing global VS30/topography assets. |
+| `manage-shakemap-data.sh` | Inspect, validate, provision missing global VS30/topography assets, or stage validated replacements. |
 | `prepare-shakemap-verification-data.py` | Prepare or validate a release-matched fixed verification package. |
-| `start-shakemap-docker.sh` | Start the stable service with isolated state and a read-only data mount. |
+| `fix-shakemap-permissions.sh` | Add read/traversal access to selected operator-owned scientific data, preserving ownership and write bits. |
+| `repair-shakemap-writable-paths.sh` | Repair ownership and owner access only within the four service-writable trees; reused by finalization and manual privileged recovery. |
+| `finalize-shakemap.sh` | Prepare the runtime, verify effective container access, run the fixed global calculation, and publish readiness after successful checks. |
+| `start-shakemap-docker.sh` | Start only an already-finalized deployment matching the canonical image, mounts, and settings. |
+| `stop-shakemap-docker.sh` | Stop the canonical service gracefully while retaining its container and runtime. |
 | `verify-shakemap-image.sh` | Verify installed image identity, imports, and immutable support data. |
-| `verify-shakemap-deployment.sh` | Verify public schema, liveness, data evidence, and disabled readiness. |
+| `verify-shakemap-deployment.sh` | Run host tests, container checks, and running-service REST/CLI checks, including the fixed global calculation. |
+| `container-configuration.sh` | Shared canonical identity, mount construction, and configuration checks used by deployment helpers. |
+| `install-image-support.py` | Install pinned immutable support assets during the image build. |
 
 `manage-shakemap-data.sh inspect` is cheap and read-only.
 `manage-shakemap-data.sh validate` performs full pinned checksum validation and
@@ -31,6 +37,16 @@ source /path/to/project/.venv/bin/activate
 ./scripts/manage-shakemap-data.sh inspect
 ```
 
-The start helper accepts `--data DIR` for an existing exact data tree. It mounts
-that directory at `/home/sysop/runtime/shakemap/data:ro`; service-owned state
-continues to use the separately selected `--runtime` directory.
+Deployment helpers accept `--runtime-root DIR`, `--port PORT`, and
+`--max-concurrent COUNT`. There is one canonical image and container, both
+named `shakemap-docker` (image tag `latest`). The runtime mounts at
+`/home/sysop/runtime`; the `shakemap/data/global`, `regional`, and `test`
+subtrees have read-only overlays. The start helper has no separate `--data`,
+`--runtime`, or container-name override.
+
+`make build`, `data`, `fix-permissions`, `finalize`, `start`, `stop`, and
+`verify` are thin aliases to the corresponding helpers. The writable repair
+script is a recovery command, not an additional installation stage. It uses
+host shell utilities and needs neither Docker nor a Python environment.
+See [permissions](../docs/permissions.md) for its preconditions and manual
+`sudo` usage. Never elevate the entire finalization helper.

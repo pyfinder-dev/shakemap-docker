@@ -108,8 +108,13 @@ if details.get("Image") != image_id:
 configuration = details.get("Config")
 host = details.get("HostConfig")
 mounts = details.get("Mounts")
-if not isinstance(configuration, dict) or configuration.get("Image") != image_name:
+if not isinstance(configuration, dict) or configuration.get("Image") != (image_id if mode == "probe" else image_name):
     problems.append("image-reference")
+if mode == "probe" and (
+    configuration.get("User") != "1000:1000"
+    or configuration.get("Entrypoint") != ["python"]
+):
+    problems.append("probe-user-or-entrypoint")
 
 expected_mounts = sorted(
     [
@@ -172,10 +177,10 @@ if actual_environment != expected_environment:
 
 expected_ports = (
     {}
-    if mode == "isolated"
+    if mode in {"isolated", "probe"}
     else {"9010/tcp": [{"HostIp": "", "HostPort": port}]}
 )
-network_mode = "none" if mode == "isolated" else "default"
+network_mode = "none" if mode in {"isolated", "probe"} else "default"
 if not isinstance(host, dict) or (host.get("PortBindings") or {}) != expected_ports:
     problems.append("ports")
 if not isinstance(host, dict) or host.get("NetworkMode") != network_mode:
@@ -214,7 +219,7 @@ container_command() {
         return 1
     fi
     CONTAINER_COMMAND+=(--name "${CANONICAL_CONTAINER}")
-    if [[ "${mode}" == "isolated" ]]; then
+    if [[ "${mode}" == "isolated" || "${mode}" == "probe" ]]; then
         CONTAINER_COMMAND+=(--network none)
     elif [[ "${mode}" == "published" ]]; then
         CONTAINER_COMMAND+=(-p "${PORT}:${INTERNAL_PORT}")
@@ -232,7 +237,11 @@ container_command() {
         -e "SHAKEMAP_MAX_CONCURRENT=${MAX_CONCURRENT}"
     )
     [[ -n "${IMAGE_DIGEST}" ]] && CONTAINER_COMMAND+=(-e "SHAKEMAP_IMAGE_DIGEST=${IMAGE_DIGEST}")
-    CONTAINER_COMMAND+=("${CANONICAL_IMAGE}")
+    if [[ "${mode}" == "probe" ]]; then
+        CONTAINER_COMMAND+=(--user 1000:1000 --entrypoint python "${IMAGE_ID}")
+    else
+        CONTAINER_COMMAND+=("${CANONICAL_IMAGE}")
+    fi
 }
 
 container_run_command() {

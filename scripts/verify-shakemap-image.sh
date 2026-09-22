@@ -261,14 +261,21 @@ import json
 import pathlib
 
 from shakemap_service.preparation import validate_pinned_global_assets
+from shakemap_service.access_diagnostics import finalization_retry, host_runtime
 
 errors = []
 data_root = pathlib.Path('/home/sysop/runtime/shakemap/data')
-global_result = validate_pinned_global_assets(data_root)
+runtime = data_root.parent.parent
+global_result = validate_pinned_global_assets(data_root, retry=finalization_retry(runtime))
 if not global_result['pinned_integrity_valid']:
     for name, result in global_result['global_assets'].items():
         if not result['valid']:
-            errors.append(f"global {name}: {result['reason']} at {result['path']}")
+            host = host_runtime(runtime)
+            reported_path = str(host / pathlib.Path(result['path']).relative_to(runtime)) if host else result['path']
+            # The validator retains native exception detail; translate only the
+            # known bind prefix when reporting that detail to the host operator.
+            reason = result['reason'].replace(str(runtime) + '/', str(host) + '/') if host else result['reason']
+            errors.append(f"global {name}: {reason} at {reported_path}; {result['corrective_action']}")
 
 try:
     identity = json.loads(pathlib.Path('/opt/shakemap-build/identity.json').read_text())['immutable_image']

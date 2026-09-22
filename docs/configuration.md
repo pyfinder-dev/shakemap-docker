@@ -1,8 +1,11 @@
 # Configuration and external data
 
-The caller-selected configuration contract defaults omission to `global`.
-Effective configuration resolution is not implemented, so the service lists
-discovered names and validation state but does not run calculations.
+The caller selects the configuration through REST or `--configuration NAME`.
+Omission means `global`. Selection is never inferred from event geography.
+Missing configurations, materialization failures, and native execution failures
+fail the calculation without falling back to `global` or another name.
+`shake-in-docker configurations` lists available names; listing a name does
+not validate that configuration or its scientific data.
 
 | Data class | Contracted path |
 |---|---|
@@ -20,3 +23,10 @@ incomplete, or unexpected existing assets fail validation and remain unchanged.
 Stage 2 does not manage small image-resident or finalization support data.
 
 Uniform VS30 is not readiness evidence and is not used by these checks.
+
+Regional presets are seeded only when missing. Existing operator configurations
+are preserved. The Italy preset still needs separate data/path validation
+before use; successful global calculations would not establish Italy coverage.
+Any future synthetic showcase package must be isolated, explicitly labelled,
+and accompanied by provenance and checksums. It cannot support scientific or
+general regional readiness claims.

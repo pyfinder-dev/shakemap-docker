@@ -8,30 +8,64 @@ Confirm that the service mounted the intended exact tree:
 ./scripts/manage-shakemap-data.sh inspect --runtime /path/to/runtime
 ```
 
-An empty disposable runtime proves only that its own data tree is empty. If
-using data stored elsewhere, start with `--data /exact/shakemap/data`.
+An empty disposable runtime proves only that its own data tree is empty. Use
+the same `RUNTIME_ROOT` for data helpers, finalization, startup, and verification.
+The deployment does not accept a separate `--data` mount override.
 
 ## An asset is present but not validated
 
-This is expected from `/config`, `/healthz`, and `inspect`; those paths avoid
-large hashes and native reads. Run:
+`inspect` reports presence/readability without large hashes or native reads.
+`/config` and `/healthz` report operational settings and recorded readiness;
+they do not validate datasets. Run:
 
 ```bash
 ./scripts/manage-shakemap-data.sh validate --runtime /path/to/runtime
 ```
 
-Validation errors name the asset, path, problem, and corrective action.
-`provision` will not replace an invalid or unexpected existing asset. Review it,
-then move or remove it explicitly before installing the pinned asset, or correct
-the existing file manually and rerun validation.
+Validation errors name the asset, path, problem, and corrective action. Follow
+the reported cause before deciding whether the data needs replacement:
 
-## Overall readiness remains false
+| Reported problem | Recovery |
+|---|---|
+| Read/traversal permission denied on managed scientific data | Use the printed data-permission helper command and rerun the failed operation. Keep the dataset in place. |
+| Missing asset | Provision or manually place the pinned asset. |
+| Size, format, or checksum mismatch | Review the existing asset; prepare an approved replacement if required. |
+| Disk, I/O, or read-only-filesystem error | Resolve the storage or mount problem; permission repair does not fix it. |
+| Write denied while importing or downloading | Correct the destination's operator write access; the data-read helper cannot grant that access. |
 
-This is the correct current state. Dataset presence or validation cannot enable
-managed calculations because effective configuration resolution is not
-implemented.
+`provision` will not replace an invalid or unexpected existing asset. To replace
+one deliberately, use the data helper's `stage` action with an approved source.
+Only later finalization activates staged data when accepted work is idle. Keep
+the active operator dataset until that succeeds. An unreadable file has not
+been proven corrupt and must not be removed merely because validation could
+not read it.
+
+## Readiness remains false
+
+Read the `reason` in `shake-in-docker health`. Run `make finalize` with the
+intended runtime and settings after resolving its reported error. `make start`
+requires matching recorded readiness and cannot finish an installation.
+The latest recorded deployment attempt stopped at writable-path ownership;
+see [current verification status](../README.md#current-verification-status).
 
 ## Service-state permission failure
 
-Ensure UID/GID `1000:1000` can write `products/`, `logs/`,
-`.service/events/`, and `.service/archive/`. Keep `data/` read-only.
+Follow the exact bounded repair command printed by finalization, then rerun
+finalization as the ordinary operator. See [permissions](permissions.md) for
+the stopped/idle prerequisite and the distinction between service-write and
+scientific-data-read repairs. Do not recursively chown the entire runtime.
+
+If the repair helper itself fails, inspect its original utility error before
+using any conditional `sudo` command. A generic nonzero exit does not identify
+a permission problem; an I/O error or read-only mount is not fixed by elevation.
+
+Queued or running work, malformed records, and unsafe paths have different
+causes. Their errors do not prescribe a permission helper or `sudo`. Resolve
+the specific refusal before retrying; do not stop accepted calculations merely
+to bypass the unfinished-work check.
+
+## Docker probe fails before checking access
+
+Correct Docker daemon availability, image availability, or the reported mount
+configuration first. A failed container operation does not justify changing
+host ownership. The helper does not elevate privileges automatically.

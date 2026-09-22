@@ -19,21 +19,11 @@ usage() {
     echo "Usage: $0 [--runtime-root DIR] [--port PORT] [--max-concurrent COUNT]"
 }
 
-permission_details() {
-    local path="$1"
-    local mode
-    local owner
-    mode="$(stat -f '%Sp' "${path}" 2>/dev/null || stat -c '%A' "${path}" 2>/dev/null || echo unknown)"
-    owner="$(stat -f '%u:%g' "${path}" 2>/dev/null || stat -c '%u:%g' "${path}" 2>/dev/null || echo unknown)"
-    printf 'mode %s, UID:GID %s' "${mode}" "${owner}"
-}
-
-report_permission_failure() {
-    local operation="$1"
-    local path="$2"
-    local result="$3"
-    local corrective_action="$4"
-    echo "ERROR: ${operation} failed for ${path} with exit code ${result} ($(permission_details "${path}")); ${corrective_action}" >&2
+manual_repair_guidance() {
+    echo "For confirmed service-writable permission failures only: UID:GID 1000:1000 needs access. Wait for accepted work to finish, then stop the service and all runtime writers before manual repair." >&2
+    printf 'Run manually: sudo %q --runtime-root %q\n' \
+        "${SCRIPT_DIR}/repair-shakemap-writable-paths.sh" "${RUNTIME_ABS:-${RUNTIME_ROOT}}" >&2
+    echo "Then rerun finalization normally. Do not run the entire finalizer with sudo." >&2
 }
 
 while [[ $# -gt 0 ]]; do
@@ -86,8 +76,13 @@ SERVICE_ABS="${RUNTIME_ABS}/shakemap"
 load_image_identity
 
 CURRENT_STEP="unfinished-work gate"
-RUNTIME_ROOT="${RUNTIME_ABS}" SHAKEMAP_SHARED_RUNTIME_ROOT="${RUNTIME_ABS}" \
-    python -m shakemap_service.finalization begin
+if RUNTIME_ROOT="${RUNTIME_ABS}" SHAKEMAP_SHARED_RUNTIME_ROOT="${RUNTIME_ABS}" \
+    python -m shakemap_service.finalization begin; then :; else
+    result=$?
+    # The Python operation retains errno and the exact failed path through
+    # wrappers, so it owns recovery advice for these early failures.
+    exit "${result}"
+fi
 BEGUN=1
 
 if docker container inspect "${CANONICAL_CONTAINER}" >/dev/null 2>&1; then
@@ -113,8 +108,11 @@ if docker container inspect "${CANONICAL_CONTAINER}" >/dev/null 2>&1 && \
 fi
 
 CURRENT_STEP="runtime preparation"
-RUNTIME_ROOT="${RUNTIME_ABS}" SHAKEMAP_SHARED_RUNTIME_ROOT="${RUNTIME_ABS}" \
-    python -m shakemap_service.finalization prepare-runtime
+if RUNTIME_ROOT="${RUNTIME_ABS}" SHAKEMAP_SHARED_RUNTIME_ROOT="${RUNTIME_ABS}" \
+    python -m shakemap_service.finalization prepare-runtime; then :; else
+    result=$?
+    exit "${result}"
+fi
 CURRENT_STEP="staged data activation"
 RUNTIME_ROOT="${RUNTIME_ABS}" SHAKEMAP_SHARED_RUNTIME_ROOT="${RUNTIME_ABS}" \
     python -m shakemap_service.finalization activate-data \
@@ -123,96 +121,123 @@ CURRENT_STEP="verification data preparation"
 python "${PROJECT_ROOT}/scripts/prepare-shakemap-verification-data.py" prepare \
     --destination "${SERVICE_ABS}/data/test/${IMAGE_VERSION}"
 
-CURRENT_STEP="writable path ownership and access"
-writable_roots=(products logs .service data/inputs)
-writable_directories=(
-    products
-    logs
-    data/inputs
-    .service/events
-    .service/archive
-    .service/queue
-)
-writable_special_modes=()
-for writable in "${writable_directories[@]}"; do
-    path="${SERVICE_ABS}/${writable}"
-    if [[ -L "${path}" || ! -d "${path}" ]]; then
-        echo "ERROR: service-writable path must be a real directory: ${path}" >&2
-        exit 1
-    fi
-    special=""
-    [[ -u "${path}" ]] && special+="u"
-    [[ -g "${path}" ]] && special+="g"
-    [[ -k "${path}" ]] && special+="t"
-    writable_special_modes+=("${special}")
-done
+CURRENT_STEP="container writable access probe"
+# Replace the stopped canonical container only after its mounts and unfinished
+# work were checked. The probe overrides the entrypoint, never runs the API,
+# and retains its stopped container on failure for inspection.
+resolve_runtime_root
+probe_code="$(cat <<'PY'
+import errno
+import os
+from pathlib import Path
+import stat
+import sys
+import tempfile
 
-# Ownership changes can clear directory special bits even when a recursive
-# change fails partway, so restoration always covers every captured directory.
-restore_writable_special_modes() {
-    local first_result=0
-    local index
-    local path
-    local special
+if (os.getuid(), os.getgid()) != (1000, 1000):
+    raise SystemExit("ERROR: writable probe requires UID:GID 1000:1000")
+root = Path('/home/sysop/runtime/shakemap')
+host = Path(sys.argv[1])
+failed = False
+non_permission_failure = False
+def traversal_error(error):
+    raise error
+
+for relative in ('products', 'logs', 'data/inputs', '.service', '.service/events', '.service/archive', '.service/queue'):
+    path = root / relative
+    report_path = path
+    temporary = None
+    operation = 'inspect directory'
+    try:
+        if path.is_symlink() or not path.is_dir():
+            raise OSError('expected real directory')
+        operation = 'create/write/rename/delete'
+        fd, name = tempfile.mkstemp(prefix='.shakemap-write-probe-', dir=path)
+        temporary = Path(name)
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(b'write-access-probe')
+            stream.flush()
+        renamed = temporary.with_name(temporary.name + '.renamed')
+        temporary.rename(renamed)
+        temporary = renamed
+        temporary.unlink()
+        temporary = None
+        # Opening service state read/write proves existing lock/state access
+        # without truncating, acquiring locks, or changing its content.
+        if relative == '.service':
+            for directory, directories, files in os.walk(path, onerror=traversal_error):
+                for name in directories + files:
+                    state = Path(directory) / name
+                    report_path = state
+                    if state.is_symlink():
+                        raise OSError(f'symbolic service state: {state}')
+                    if name in files:
+                        operation = f'open existing state {state.relative_to(root)}'
+                        if not stat.S_ISREG(state.lstat().st_mode):
+                            raise OSError(f'non-regular service state: {state}')
+                        fd = os.open(state, os.O_RDWR | os.O_NOFOLLOW)
+                        os.close(fd)
+    except OSError as exc:
+        failed = True
+        # Only access-denied errors justify ownership repair. Storage, layout,
+        # and mount failures must be corrected without changing host ownership.
+        if exc.errno not in (errno.EACCES, errno.EPERM):
+            non_permission_failure = True
+        try:
+            info = report_path.stat()
+            details = f'mode {stat.filemode(info.st_mode)}, UID:GID {info.st_uid}:{info.st_gid}'
+        except OSError:
+            details = 'mode/owner unavailable'
+        print(f'ERROR: {operation} at {host / report_path.relative_to(root)} ({details}); service UID:GID 1000:1000: {exc}', file=sys.stderr)
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except OSError as exc:
+                failed = True
+                non_permission_failure = True
+                print(f'ERROR: probe cleanup at {host / temporary.relative_to(root)}: {exc}', file=sys.stderr)
+raise SystemExit(1 if non_permission_failure else 73 if failed else 0)
+PY
+)"
+probe_writable_access() {
     local result
-    local mode
-    local operation
-    for index in "${!writable_directories[@]}"; do
-        path="${SERVICE_ABS}/${writable_directories[index]}"
-        special="${writable_special_modes[index]}"
-        for mode in u g t; do
-            [[ "${special}" == *"${mode}"* ]] || continue
-            if [[ "${mode}" == t ]]; then
-                operation="chmod +t"
-            else
-                operation="chmod ${mode}+s"
-            fi
-            if chmod "${operation#chmod }" "${path}"; then
-                continue
-            else
-                result=$?
-            fi
-            report_permission_failure "${operation}" "${path}" "${result}" \
-                "restore this mode as the path owner or with sufficient host permission, then rerun finalization."
-            if [[ "${first_result}" == 0 ]]; then
-                first_result="${result}"
-            fi
-        done
-    done
-    return "${first_result}"
+    local state
+    local presence
+    presence="$(canonical_container_presence)" || return 1
+    if [[ "${presence}" == present ]]; then
+        docker rm "${CANONICAL_CONTAINER}" >/dev/null || return 1
+    fi
+    container_create_command probe
+    CONTAINER_COMMAND+=(-c "${probe_code}" "${SERVICE_ABS}")
+    "${CONTAINER_COMMAND[@]}" >/dev/null || return 1
+    verify_canonical_container_configuration probe || return 1
+    result=0
+    docker start -a "${CANONICAL_CONTAINER}" || result=$?
+    state="$(docker container inspect --format '{{.State.Status}}:{{.State.ExitCode}}:{{.State.Error}}' "${CANONICAL_CONTAINER}")" || return 1
+    # Only our explicit access-error exit code authorizes host repair. Docker
+    # creation/start/inspection failures must never become ownership changes.
+    if [[ "${state}" == exited:73: && ( "${result}" == 0 || "${result}" == 73 ) ]]; then return 73; fi
+    if [[ "${state}" == exited:0: && "${result}" == 0 ]]; then return 0; fi
+    echo "ERROR: writable probe execution failed (${state}, docker exit ${result}); inspect the retained canonical container and Docker before retrying." >&2
+    return 1
 }
-
-for writable in "${writable_roots[@]}"; do
-    path="${SERVICE_ABS}/${writable}"
-    if chown -R 1000:1000 "${path}" 2>/dev/null; then
-        continue
-    else
-        result=$?
-    fi
-    report_permission_failure "chown -R 1000:1000" "${path}" "${result}" \
-        "rerun finalization as a host user permitted to assign UID:GID 1000:1000."
-    restore_writable_special_modes || true
-    exit "${result}"
-done
-# Only the directories used for service writes need additional mode bits.
-# Symbolic additions leave group/other and every existing ordinary bit intact.
-for index in "${!writable_directories[@]}"; do
-    path="${SERVICE_ABS}/${writable_directories[index]}"
-    if chmod u+rwx "${path}"; then
-        continue
-    else
-        result=$?
-    fi
-    report_permission_failure "chmod u+rwx" "${path}" "${result}" \
-        "rerun finalization as the path owner or with sufficient host permission."
-    restore_writable_special_modes || true
-    exit "${result}"
-done
-if restore_writable_special_modes; then
-    :
-else
+if probe_writable_access; then :; else
     result=$?
-    exit "${result}"
+    [[ "${result}" == 73 ]] || exit "${result}"
+    CURRENT_STEP="service writable path repair"
+    if "${SCRIPT_DIR}/repair-shakemap-writable-paths.sh" --runtime-root "${RUNTIME_ABS}"; then :; else
+        result=$?
+        # A failed shell utility does not prove missing privilege. Preserve the
+        # helper's operation-specific diagnostic and stop before any reprobe.
+        exit "${result}"
+    fi
+    CURRENT_STEP="container writable access reprobe"
+    if probe_writable_access; then :; else
+        result=$?
+        [[ "${result}" != 73 ]] || manual_repair_guidance
+        exit "${result}"
+    fi
 fi
 
 CURRENT_STEP="isolated canonical container creation"

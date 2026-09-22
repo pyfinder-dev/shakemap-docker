@@ -16,6 +16,7 @@ from typing import Iterator
 
 from . import paths, preparation, readiness, status
 from .directory_access import open_service_directory
+from .access_diagnostics import finalization_recovery
 
 MARKER_SCHEMA_VERSION = 1
 MAX_MARKER_BYTES = 4096
@@ -73,22 +74,27 @@ def coordination_lock() -> Iterator[None]:
     try:
         name = paths.workflow_lock_file().name
         try:
-            descriptor = os.open(
-                name,
-                os.O_RDWR
-                | os.O_CREAT
-                | os.O_EXCL
-                | getattr(os, "O_NOFOLLOW", 0),
-                0o600,
-                dir_fd=service.descriptor,
-            )
-            os.fsync(service.descriptor)
-        except FileExistsError:
-            descriptor = os.open(
-                name,
-                os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
-                dir_fd=service.descriptor,
-            )
+            try:
+                descriptor = os.open(
+                    name,
+                    os.O_RDWR
+                    | os.O_CREAT
+                    | os.O_EXCL
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    0o600,
+                    dir_fd=service.descriptor,
+                )
+                os.fsync(service.descriptor)
+            except FileExistsError:
+                descriptor = os.open(
+                    name,
+                    os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=service.descriptor,
+                )
+        except OSError as exc:
+            if exc.filename == name:
+                exc.filename = str(service.path / name)
+            raise
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             raise FinalizationError("workflow coordination entry is not a regular file")
         fcntl.flock(descriptor, fcntl.LOCK_EX)
@@ -129,7 +135,14 @@ def begin() -> None:
             raise FinalizationError(
                 f"accepted calculations are unfinished ({details}); wait for them to finish"
             )
-        readiness._record_finalizing()
+        try:
+            readiness._record_finalizing()
+        except OSError as exc:
+            # Readiness writes use this directory's descriptor. Qualify only
+            # relative filenames here; do not replace a reported ancestor path.
+            if exc.filename and not Path(exc.filename).is_absolute():
+                exc.filename = str(paths.service_dir() / exc.filename)
+            raise
 
 
 def record_failure(reason: str) -> None:
@@ -379,6 +392,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except (FinalizationError, OSError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
+        recovery = finalization_recovery(exc, paths.runtime_root())
+        if recovery:
+            print(recovery, file=sys.stderr)
         return 2
 
 

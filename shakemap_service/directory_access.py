@@ -49,7 +49,9 @@ def open_service_directory(path: Path, *, create: bool) -> DirectoryHandle:
     try:
         # Open one component at a time without following links so every step
         # remains a real directory beneath the configured runtime.
+        current = runtime_root
         for component in relative.parts:
+            current = current / component
             try:
                 child = os.open(
                     component,
@@ -63,6 +65,12 @@ def open_service_directory(path: Path, *, create: bool) -> DirectoryHandle:
                     os.mkdir(component, mode=0o700, dir_fd=descriptor)
                 except FileExistsError:
                     pass
+                except OSError as exc:
+                    # Descriptor-relative filenames have no meaning to callers
+                    # once this descriptor is closed. Retain the actual attempted
+                    # absolute path while preserving errno and exception type.
+                    exc.filename = str(current)
+                    raise
                 # Persist each parent entry before building deeper state so a
                 # restart cannot expose only the lower part of the directory chain.
                 os.fsync(descriptor)
@@ -73,11 +81,13 @@ def open_service_directory(path: Path, *, create: bool) -> DirectoryHandle:
                         dir_fd=descriptor,
                     )
                 except OSError as exc:
+                    exc.filename = str(current)
                     raise ValueError(
                         f"unsafe service directory ancestry for {path}: "
                         f"{component}: {exc}"
                     ) from exc
             except OSError as exc:
+                exc.filename = str(current)
                 raise ValueError(
                     f"unsafe service directory ancestry for {path}: {component}: {exc}"
                 ) from exc
