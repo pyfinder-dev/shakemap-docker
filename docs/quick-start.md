@@ -1,5 +1,10 @@
 # Quick start
 
+These local development/fallback commands run from the `shakemap-docker`
+repository root. Future deployment orchestration belongs to `pyfinder-deploy`;
+that integration is separate work. The reusable entry points are documented in
+[the helper guide](../scripts/README.md#deployment-orchestration-boundary).
+
 ```bash
 source /path/to/project/.venv/bin/activate
 python -m pip install -e .

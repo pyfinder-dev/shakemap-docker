@@ -180,10 +180,14 @@ expected_ports = (
     if mode in {"isolated", "probe"}
     else {"9010/tcp": [{"HostIp": "", "HostPort": port}]}
 )
-network_mode = "none" if mode in {"isolated", "probe"} else "default"
 if not isinstance(host, dict) or (host.get("PortBindings") or {}) != expected_ports:
     problems.append("ports")
-if not isinstance(host, dict) or host.get("NetworkMode") != network_mode:
+# Network isolation is required only while probing or verifying privately.
+# Published deployments are checked by their exact port bindings, not Docker's
+# descriptive network-mode label.
+if mode in {"isolated", "probe"} and (
+    not isinstance(host, dict) or host.get("NetworkMode") != "none"
+):
     problems.append("network-mode")
 
 if problems:
@@ -256,7 +260,8 @@ wait_for_container_health() {
     local expected="$1"
     local attempt
     for attempt in $(seq 1 60); do
-        if docker exec "${CANONICAL_CONTAINER}" python - "${expected}" <<'PY' >/dev/null 2>&1
+        # Python consumes this heredoc on stdin; Docker must attach that stream.
+        if docker exec -i "${CANONICAL_CONTAINER}" python - "${expected}" <<'PY' >/dev/null 2>&1
 import json
 import sys
 import urllib.request

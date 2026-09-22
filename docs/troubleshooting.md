@@ -45,8 +45,9 @@ not read it.
 Read the `reason` in `shake-in-docker health`. Run `make finalize` with the
 intended runtime and settings after resolving its reported error. `make start`
 requires matching recorded readiness and cannot finish an installation.
-The latest recorded deployment attempt stopped at writable-path ownership;
-see [current verification status](../README.md#current-verification-status).
+Use the current failure reason rather than a historical deployment error;
+the latest verification evidence is in
+[current verification status](../README.md#current-verification-status).
 
 ## Service-state permission failure
 

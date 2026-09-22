@@ -7,23 +7,52 @@ configurations, and records products, provenance, manifests, and logs.
 
 ## Current verification status
 
-On 2026-09-22, the writable-access and diagnostic corrections passed 445 host
-tests. The most recent image execution evidence remains the 21 Linux ARM64
-image checks from 2026-08-24. Global VS30, topography, and Slab2 integrity checks
-also passed then.
-That deployment attempt stopped at host ownership preparation before the
-deployed service or either global example ran successfully.
+The accepted global-service development phase is complete, including the
+scoped cleanup and independent closeout review. Regional execution, broader
+platform validation, scientific suitability, and `pyfinder-deploy` integration
+remain outside this completion claim.
+
+On 2026-09-22, the current source passed 460 host tests and a rebuilt Linux
+ARM64 image passed all 21 image checks. The actual operator global VS30 and
+topography files passed fresh pinned integrity validation; retained Slab2
+integrity evidence dates from 2026-08-24.
+
+Finalization now succeeds after host-side seed-extraction and Docker stdin
+corrections. It passed the writable-access probe without ownership repair and
+all 20 container-internal deployment checks. South Napa/global (sequence 4)
+and `m9-norcia`/global (sequence 3) both reached `SUCCESS`, with completed jobs,
+ready products, seven validated core products, matching product-manifest
+checksums, provenance, and both required logs. REST/CLI status and product
+summaries agree. The canonical service is running and ready; the queue is empty.
+
+The full `make verify` workflow now passes all three sections: 460 host tests,
+20 container-internal checks, and live REST/CLI checks including the fixed
+South Napa calculation. Published-container validation no longer compares
+Docker network-mode labels; image, mount, environment, and port checks remain.
+Isolated preparation and writable probes still require network mode `none`.
+
+This phase accepts coverage of all eight public operations, including
+configuration listing, with global happy-path execution. Submission is exercised
+through the CLI's REST request; the seven read operations compare CLI and REST
+responses. It is not an exhaustive live test of every option, input mode,
+failure case, or regional configuration. Host tests cover additional cases.
 
 The writable-access correction checks effective container access and provides
 a bounded manual repair command when host privileges are insufficient. Its
 diagnostics distinguish permission denial from missing data, invalid content,
 and storage failures; unreadable datasets are retained for revalidation.
-Host verification does not establish a successful deployment. South Napa
-and Norcia through the deployed REST/CLI service, broader platform coverage,
-and regional usability remain unverified. See the
+These results establish operational execution of the two exact global examples
+on this macOS/Docker Desktop host with a Linux ARM64 image, not scientific
+correctness, broader platform coverage, or regional usability. See the
 [permission workflow](docs/permissions.md) before recovering an existing runtime.
 
 ## Supported workflow
+
+Run the following from this repository's root. Its Makefile is retained as a
+local development/fallback entry point; the helpers own the workflow logic.
+The planned `pyfinder-deploy` integration will orchestrate these operations
+later and is not implemented or verified by this repository's closeout. See
+[helper interfaces](scripts/README.md#deployment-orchestration-boundary).
 
 ```bash
 source /path/to/project/.venv/bin/activate

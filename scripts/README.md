@@ -50,3 +50,27 @@ script is a recovery command, not an additional installation stage. It uses
 host shell utilities and needs neither Docker nor a Python environment.
 See [permissions](../docs/permissions.md) for its preconditions and manual
 `sudo` usage. Never elevate the entire finalization helper.
+
+## Deployment orchestration boundary
+
+These helpers remain the reusable workflow implementations. This repository's
+Makefile is a local development/fallback interface; `pyfinder-deploy` will own
+deployment orchestration later. That integration is not implemented or verified
+here. Do not duplicate build, preparation, startup, or verification logic there.
+
+For that handoff, use the existing helper interfaces:
+
+- Build: `build-shakemap-docker.sh` (optional `--platform` and `--no-cache`).
+- Data: `manage-shakemap-data.sh ACTION --runtime DIR`, with actions listed above.
+- Finalize/start/verify: the respective helper with `--runtime-root DIR`,
+  `--port PORT`, and `--max-concurrent COUNT`.
+- Stop: `stop-shakemap-docker.sh` for the canonical service.
+- Manual permission recovery: use the exact host command printed by the failed
+  operation; these are not extra automatic deployment stages.
+
+Activate the project environment with the package and `shake-in-docker`
+installed. Run workflows from the `shakemap-docker` checkout and pass an absolute
+deployment runtime path, consistently across helpers. Do not assume that
+`make -f /path/to/shakemap-docker/Makefile` changes the working directory or that
+all helpers resolve relative runtime paths identically. The deployment
+repository must test its own invocation, environment, and runtime selection.

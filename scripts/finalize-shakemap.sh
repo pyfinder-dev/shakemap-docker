@@ -26,6 +26,16 @@ manual_repair_guidance() {
     echo "Then rerun finalization normally. Do not run the entire finalizer with sudo." >&2
 }
 
+cleanup_seed_staging() {
+    [[ -n "${SEED_STAGING}" && -d "${SEED_STAGING}" && ! -L "${SEED_STAGING}" ]] || return 0
+    # An interrupted archive can leave read-only directories. Restore owner
+    # traversal/removal access only inside our disposable tree, without following
+    # links or changing files that might be hard-linked outside that tree.
+    find -P "${SEED_STAGING}" -type d -exec chmod u+rwx {} \; || return
+    rm -rf -- "${SEED_STAGING}" || return
+    SEED_STAGING=""
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --runtime-root) RUNTIME_ROOT="${2:?--runtime-root requires a directory}"; shift 2 ;;
@@ -59,10 +69,7 @@ fail_closed() {
             docker stop --time 65 "${CANONICAL_CONTAINER}" >/dev/null 2>&1 || true
         fi
     fi
-    if [[ -n "${SEED_STAGING}" && -d "${SEED_STAGING}" ]]; then
-        rm -rf -- "${SEED_STAGING}" >/dev/null 2>&1 || true
-        SEED_STAGING=""
-    fi
+    cleanup_seed_staging || echo "ERROR: could not remove seed staging at ${SEED_STAGING}; inspect the reported cleanup error." >&2
     exit "${result}"
 }
 trap fail_closed EXIT
@@ -249,12 +256,23 @@ container_create_command isolated
 "${CONTAINER_COMMAND[@]}" >/dev/null
 CURRENT_STEP="image regional seed extraction"
 SEED_STAGING="$(mktemp -d "${TMPDIR:-/tmp}/shakemap-regional-seeds.XXXXXX")"
-docker cp "${CANONICAL_CONTAINER}:/opt/shakemap-seeds/regional/." "${SEED_STAGING}/"
+# Host tar delays directory-mode restoration until their children are extracted.
+# pipefail keeps a failed Docker producer from being hidden by a successful tar.
+docker cp "${CANONICAL_CONTAINER}:/opt/shakemap-seeds/regional/." - \
+    | tar -xf - --no-same-owner -C "${SEED_STAGING}"
+# Only real directories and singly-linked regular files may be normalized and
+# copied. Image seeds stay immutable; missing-only publication copies these
+# owner-editable staging modes without touching existing operator configs.
+unsafe_seed="$(find -P "${SEED_STAGING}" \( \( ! -type d -a ! -type f \) -o \( -type f -a -links +1 \) \) -print)"
+if [[ -n "${unsafe_seed}" ]]; then
+    printf 'ERROR: unsafe regional seed entries in disposable staging:\n%s\n' "${unsafe_seed}" >&2
+    exit 2
+fi
+chmod -R u+rwX "${SEED_STAGING}"
 RUNTIME_ROOT="${RUNTIME_ABS}" SHAKEMAP_SHARED_RUNTIME_ROOT="${RUNTIME_ABS}" \
     python -m shakemap_service.finalization prepare-runtime \
         --regional-seeds "${SEED_STAGING}"
-rm -rf -- "${SEED_STAGING}"
-SEED_STAGING=""
+cleanup_seed_staging
 RUNTIME_ROOT="${RUNTIME_ABS}" SHAKEMAP_SHARED_RUNTIME_ROOT="${RUNTIME_ABS}" \
     python -m shakemap_service.finalization arm --image-id "${IMAGE_ID}"
 CURRENT_STEP="isolated canonical container start"
@@ -270,7 +288,8 @@ submission="$(docker exec "${CANONICAL_CONTAINER}" shake-in-docker \
     --file /opt/shakemap-verification/event.xml \
     --file /opt/shakemap-verification/event_dat.xml)"
 sequence="$(python -c 'import json,sys; print(json.load(sys.stdin)["internal_sequence"])' <<<"${submission}")"
-docker exec "${CANONICAL_CONTAINER}" python - "${EVENT_ID}" "${sequence}" <<'PY'
+# Keep stdin attached so the terminal-state gate executes before publication.
+docker exec -i "${CANONICAL_CONTAINER}" python - "${EVENT_ID}" "${sequence}" <<'PY'
 import json
 import sys
 import time

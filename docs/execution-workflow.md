@@ -22,10 +22,12 @@ products, provenance, a product manifest, and both required logs. Poll event
 detail for the accepted `internal_sequence`; require `SUCCESS`,
 `job_completed=true`, and `products_ready=true` before collecting products.
 
-The implemented workflow still needs completed running-service evidence; see
+The global workflow has passed host, container, and running-service verification
+on the recorded platform; see the evidence and limitations in
 [current verification status](../README.md#current-verification-status).
 
-Native verification of a fixed package, where explicitly invoked, proves only
-that scenario, release, inputs, module plan, and validation gate. It does not
-establish REST submission, queue behavior, recalculation archival, concurrency,
-or production readiness.
+Native execution alone proves only that scenario, release, inputs, module plan,
+and validation gate. The live verifier additionally exercises the public
+operations, but does not exhaustively test archival, concurrency, input modes,
+or failures against the deployed container. Configuration listing is not proof
+that every listed configuration can execute successfully.

@@ -29,6 +29,8 @@ class ContainerStartupTests(unittest.TestCase):
         readiness_match: bool = True,
         configured_shared: str | None = None,
         configuration_change: str | None = None,
+        network_mode: str | None = "default",
+        validation_mode: str = "published",
     ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -87,8 +89,10 @@ class ContainerStartupTests(unittest.TestCase):
                 for name in ("global", "regional", "test")
             ],
         ]
-        ports = {"9010/tcp": [{"HostIp": "", "HostPort": "19010"}]}
-        network_mode = "default"
+        ports = (
+            {"9010/tcp": [{"HostIp": "", "HostPort": "19010"}]}
+            if validation_mode == "published" else {}
+        )
         if configuration_change == "extra_mount":
             mounts.append(
                 {
@@ -104,14 +108,14 @@ class ContainerStartupTests(unittest.TestCase):
             ports["9999/tcp"] = [{"HostIp": "", "HostPort": "19999"}]
         elif configuration_change == "host_ip":
             ports["9010/tcp"][0]["HostIp"] = "127.0.0.1"
-        elif configuration_change == "network_mode":
-            network_mode = "bridge"
         container_details = {
             "Name": "/shakemap-docker",
             "Image": "sha256:" + ("b" if mismatch else "a") * 64,
             "Config": {
-                "Image": "shakemap-docker:latest",
+                "Image": image_id if validation_mode == "probe" else "shakemap-docker:latest",
                 "Env": container_environment,
+                "User": "1000:1000",
+                "Entrypoint": ["python"],
             },
             "Mounts": mounts,
             "HostConfig": {
@@ -119,6 +123,8 @@ class ContainerStartupTests(unittest.TestCase):
                 "NetworkMode": network_mode,
             },
         }
+        if network_mode is None:
+            container_details["HostConfig"].pop("NetworkMode")
         docker = fakebin / "docker"
         docker.write_text(
             """#!/usr/bin/env bash
@@ -167,19 +173,35 @@ exit 0
                 "REAL_PYTHON": sys.executable,
                 "RUNTIME": str(runtime.resolve()),
                 "SERVICE": str(service.resolve()),
+                "CONFIGURATION_SCRIPT": str(CONFIGURATION),
+                "VALIDATION_MODE": validation_mode,
             }
         )
+        command = [
+            "bash",
+            str(START),
+            "--runtime-root",
+            str(runtime),
+            "--port",
+            "19010",
+            "--max-concurrent",
+            "3",
+        ]
+        if validation_mode != "published":
+            # Reuse the same inspection fixture but exercise the shared private
+            # deployment validator directly, without invoking a startup path.
+            command = ["bash", "-c", """
+set -euo pipefail
+source "$CONFIGURATION_SCRIPT"
+RUNTIME_ABS="$RUNTIME"
+SERVICE_ABS="$SERVICE"
+PORT=19010
+MAX_CONCURRENT=3
+load_image_identity
+verify_canonical_container_configuration "$VALIDATION_MODE"
+"""]
         result = subprocess.run(
-            [
-                "bash",
-                str(START),
-                "--runtime-root",
-                str(runtime),
-                "--port",
-                "19010",
-                "--max-concurrent",
-                "3",
-            ],
+            command,
             cwd=PROJECT,
             env=environment,
             capture_output=True,
@@ -398,7 +420,6 @@ exit 0
             ("extra_env", "environment"),
             ("extra_port", "ports"),
             ("host_ip", "ports"),
-            ("network_mode", "network-mode"),
         ):
             with self.subTest(change=change):
                 result, trace = self._run_matching_start(
@@ -411,6 +432,31 @@ exit 0
                     any(line.startswith(("run ", "start ", "stop ", "rm ")) for line in trace),
                     trace,
                 )
+
+    def test_published_validation_is_independent_of_network_mode_label(self) -> None:
+        for label in ("default", "bridge", "operator-network", "none", None):
+            with self.subTest(label=label):
+                result, trace = self._run_matching_start("running", network_mode=label)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertFalse(
+                    any(line.startswith(("run ", "start ", "stop ", "rm ")) for line in trace)
+                )
+
+    def test_private_validation_still_requires_exact_network_isolation(self) -> None:
+        for mode in ("isolated", "probe"):
+            for label in ("none", "default", "bridge", "operator-network", None):
+                with self.subTest(mode=mode, label=label):
+                    result, trace = self._run_matching_start(
+                        "running", network_mode=label, validation_mode=mode,
+                    )
+                    if label == "none":
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                    else:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn("network-mode", result.stderr)
+                    self.assertFalse(
+                        any(line.startswith(("run ", "start ", "stop ", "rm ")) for line in trace)
+                    )
 
     def test_stop_is_idempotent_and_stops_only_a_running_canonical_container(self) -> None:
         for state in ("absent", "stopped", "running"):

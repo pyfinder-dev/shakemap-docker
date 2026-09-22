@@ -6,6 +6,7 @@ import re
 import os
 import stat
 import subprocess
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -229,9 +230,9 @@ printf '%s\n' "${{CONTAINER_COMMAND[*]}}"
         ]
         self.assertLess(
             failure_handler.index("shakemap_service.finalization fail"),
-            failure_handler.index('rm -rf -- "${SEED_STAGING}"'),
+            failure_handler.index("cleanup_seed_staging"),
         )
-        self.assertIn('rm -rf -- "${SEED_STAGING}" >/dev/null 2>&1 || true', failure_handler)
+        self.assertIn("cleanup_seed_staging ||", failure_handler)
         deployment_verifier = (
             PROJECT / "scripts/verify-shakemap-deployment.sh"
         ).read_text(encoding="utf-8")
@@ -247,7 +248,11 @@ printf '%s\n' "${{CONTAINER_COMMAND[*]}}"
         self.assertIn("probe_writable_access", source)
         self.assertIn("repair-shakemap-writable-paths.sh", source)
         self.assertNotIn("chown -R", source)
-        self.assertNotIn("chmod u+rwx", source)
+        mode_commands = [
+            line for line in source.splitlines()
+            if "chmod " in line and not line.lstrip().startswith("#")
+        ]
+        self.assertTrue(all('"${SEED_STAGING}"' in line for line in mode_commands))
 
     def test_finalization_failure_records_reason_stops_and_retains_container(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -385,6 +390,12 @@ exit 0
     def test_finalization_extracts_selected_image_seeds_before_first_start(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            archive = root / "seeds.tar"
+            with tarfile.open(archive, "w") as bundle:
+                region = tarfile.TarInfo("region")
+                region.type = tarfile.DIRTYPE
+                region.mode = 0o555
+                bundle.addfile(region)
             runtime = root / "runtime"
             service = runtime / "shakemap"
             for relative in (
@@ -454,7 +465,7 @@ if [[ "$1 $2" == "container ls" ]]; then
   exit 0
 fi
 if [[ "$1" == "create" ]]; then touch "$CONTAINER_STATE"; echo fake-container; exit 0; fi
-if [[ "$1" == "cp" ]]; then exit 0; fi
+if [[ "$1" == "cp" ]]; then cat "$SEED_ARCHIVE"; exit 0; fi
 if [[ "$1 $2" == "start -a" ]]; then exit 0; fi
 if [[ "$1" == "start" ]]; then exit 17; fi
 exit 0
@@ -473,6 +484,7 @@ exit 0
                     "PYTHON_TRACE": str(python_trace),
                     "DOCKER_TRACE": str(docker_trace),
                     "CONTAINER_STATE": str(container_state),
+                    "SEED_ARCHIVE": str(archive),
                 }
             )
             result = subprocess.run(

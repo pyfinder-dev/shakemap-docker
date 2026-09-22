@@ -223,6 +223,7 @@ elif a[:2] == ['container', 'inspect']:
     elif 'State.Status' in fmt: print('exited:' + str(data['code']) + ':')
     elif 'State.Running' in fmt: print('false')
 elif a[0] == 'rm': state.unlink(missing_ok=True)
+elif a[0] == 'cp': sys.stdout.buffer.write(b'\0' * 10240)
 elif a[0] == 'create':
     probe = '--entrypoint' in a
     mounts, env = [], []
