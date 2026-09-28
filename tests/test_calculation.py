@@ -446,6 +446,22 @@ class CalculationExecutionTests(unittest.TestCase):
                 self.assertIs(failure["execution"], expected_execution)
                 components["resolve"].assert_not_called()
 
+    def test_typed_configuration_failure_is_retained_without_service_retry(self) -> None:
+        execution = copy.deepcopy(self.execution)
+        execution.exit_code = 1
+        execution.configuration_error = {
+            "origin": "native_configured_module",
+            "exception_type": "ModuleNotFoundError",
+            "reference": "shakelib.gmice.ofm22",
+        }
+        result, components, _ = self._run_with_components(execution=execution)
+        self.assertEqual(result, status.LifecycleState.FAILED.value)
+        failure = components["failure"].call_args.kwargs
+        self.assertEqual(failure["code"], "native_configuration_failed")
+        self.assertEqual(failure["configuration_error"], execution.configuration_error)
+        components["runner"].assert_called_once()
+        components["resolve"].assert_not_called()
+
     def test_resolution_and_validation_failures_do_not_retry(self) -> None:
         failed_validation = copy.deepcopy(self.validation)
         failed_validation = product_validation.ProductValidationResult(

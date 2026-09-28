@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import inspect
+import json
 import signal
+import sys
 import tempfile
 import unittest
 from datetime import datetime
@@ -13,7 +15,9 @@ from shakemap_service import runner
 
 
 FIXED_COMMAND = [
-    "shake",
+    sys.executable,
+    "-m",
+    "shakemap_service.native_launcher",
     "evt",
     "select",
     "assemble",
@@ -79,7 +83,11 @@ class NativeRunnerTests(unittest.TestCase):
         self.assertEqual(call_order, ["on_started", "wait"])
         popen.assert_called_once()
         self.assertEqual(popen.call_args.args, (FIXED_COMMAND,))
-        self.assertIs(popen.call_args.kwargs["env"], environment)
+        child_env = popen.call_args.kwargs["env"]
+        self.assertIsNot(child_env, environment)
+        self.assertEqual(child_env["HOME"], environment["HOME"])
+        self.assertEqual(child_env["TMPDIR"], environment["TMPDIR"])
+        self.assertEqual(child_env[runner.REPORT_ENV], str(self.log_file.parent / "native_failure.json"))
         self.assertEqual(
             environment,
             {"HOME": "/private/profile", "TMPDIR": "/private/tmp"},
@@ -112,6 +120,40 @@ class NativeRunnerTests(unittest.TestCase):
 
         self.assertIsNone(result.exit_code)
         self.assertEqual(result.signal, signal.SIGTERM)
+
+    def test_only_matching_failed_invocation_can_supply_configuration_evidence(self) -> None:
+        fact = {
+            "origin": "native_config_validation",
+            "exception_type": "RuntimeError",
+            "reference": "/profile/install/config/model.conf",
+        }
+        for exit_code, mismatch, recognized in ((1, False, True), (1, True, False), (0, False, False)):
+            with self.subTest(exit_code=exit_code, mismatch=mismatch):
+                report = self.log_file.parent / "native_failure.json"
+                report.unlink(missing_ok=True)
+
+                def start_process(*args, **kwargs):
+                    environment = kwargs["env"]
+                    report.write_text(json.dumps({
+                        "event_id": "evt",
+                        "token": "stale" if mismatch else environment[runner.TOKEN_ENV],
+                        "configuration_error": fact,
+                    }))
+                    return mock.Mock(pid=4321, wait=mock.Mock(return_value=exit_code))
+
+                with mock.patch.object(runner.subprocess, "Popen", side_effect=start_process):
+                    result = runner.run_shake("evt", log_file=self.log_file, env={})
+                self.assertEqual(result.configuration_error, fact if recognized else None)
+
+    def test_existing_report_prevents_launch_without_removing_evidence(self) -> None:
+        self.log_file.parent.mkdir()
+        report = self.log_file.parent / "native_failure.json"
+        report.write_text("retained evidence")
+        with mock.patch.object(runner.subprocess, "Popen") as popen:
+            with self.assertRaises(FileExistsError):
+                runner.run_shake("evt", log_file=self.log_file, env={})
+        popen.assert_not_called()
+        self.assertEqual(report.read_text(), "retained evidence")
 
     def test_normal_nonzero_return_is_preserved_as_exit_code(self) -> None:
         process = mock.Mock(pid=4321)

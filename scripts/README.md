@@ -54,9 +54,11 @@ See [permissions](../docs/permissions.md) for its preconditions and manual
 ## Deployment orchestration boundary
 
 These helpers remain the reusable workflow implementations. This repository's
-Makefile is a local development/fallback interface; `pyfinder-deploy` will own
-deployment orchestration later. That integration is not implemented or verified
-here. Do not duplicate build, preparation, startup, or verification logic there.
+Makefile is a local development interface. `pyfinder-deploy` now owns deployment
+orchestration and delegates to these helpers with the selected common runtime
+and settings. Do not duplicate build, preparation, startup, or verification logic
+there. See the [configuration runbook](../docs/configuration.md) for regional
+provisioning boundaries and current limitations.
 
 For that handoff, use the existing helper interfaces:
 

@@ -2,7 +2,11 @@
 """Native ShakeMap subprocess execution."""
 from __future__ import annotations
 
+import json
+import os
 import subprocess
+import sys
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,6 +14,7 @@ from threading import Lock
 from typing import Callable, Optional
 
 from .config import settings
+from .native_launcher import REPORT_ENV, TOKEN_ENV
 
 
 @dataclass
@@ -21,6 +26,7 @@ class ExecutionResult:
     started_at: str
     completed_at: str
     service_terminated: bool = False
+    configuration_error: Optional[dict[str, object]] = None
 
 
 class ServiceShutdownError(RuntimeError):
@@ -114,7 +120,22 @@ def run_shake(
     env: dict[str, str],
     on_started: Optional[Callable[[int, list[str], str], None]] = None,
 ) -> ExecutionResult:
-    command = ["shake", event_id, *settings.module_plan]
+    # Use an explicit launcher rather than shadowing the installed shake
+    # executable. Execution evidence records the command that actually ran;
+    # the launcher delegates these same event/module arguments to official main.
+    command = [
+        sys.executable,
+        "-m",
+        "shakemap_service.native_launcher",
+        event_id,
+        *settings.module_plan,
+    ]
+    report_path = log_file.with_name("native_failure.json")
+    if os.path.lexists(report_path):
+        raise FileExistsError(f"native failure evidence already exists: {report_path}")
+    token = uuid.uuid4().hex
+    child_environment = dict(env)
+    child_environment.update({REPORT_ENV: str(report_path), TOKEN_ENV: token})
     log_file.parent.mkdir(parents=True, exist_ok=True)
     with log_file.open("w", encoding="utf-8") as output:
         started_at = _now_iso()
@@ -128,7 +149,7 @@ def run_shake(
                 command,
                 stdout=output,
                 stderr=subprocess.STDOUT,
-                env=env,
+                env=child_environment,
                 text=True,
             )
             _active_processes[process] = _TrackedProcess()
@@ -167,6 +188,31 @@ def run_shake(
         completed_at = _now_iso()
     exit_code = return_code if return_code >= 0 else None
     terminating_signal = -return_code if return_code < 0 else None
+    configuration_error = None
+    if exit_code is not None and exit_code != 0 and not service_terminated:
+        try:
+            # The report is private to this invocation. Missing, malformed or
+            # mismatched evidence leaves native_exit generic and cannot cause
+            # caller recovery. The original log and exit status remain intact.
+            if report_path.is_symlink() or report_path.stat().st_size > 16384:
+                raise ValueError("invalid native failure report")
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            fact = report.get("configuration_error")
+            if (
+                report.get("event_id") == event_id
+                and report.get("token") == token
+                and isinstance(fact, dict)
+                and fact.get("origin") in {
+                    "native_config_validation",
+                    "native_model_reference",
+                    "native_configured_module",
+                }
+                and isinstance(fact.get("reference"), str)
+                and isinstance(fact.get("exception_type"), str)
+            ):
+                configuration_error = fact
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
     return ExecutionResult(
         command=command,
         exit_code=exit_code,
@@ -175,4 +221,5 @@ def run_shake(
         started_at=started_at,
         completed_at=completed_at,
         service_terminated=service_terminated,
+        configuration_error=configuration_error,
     )

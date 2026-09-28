@@ -215,6 +215,7 @@ def finalize_failure(
     message: str,
     execution: ExecutionResult | None = None,
     secondary_evidence: tuple[Mapping[str, object], ...] = (),
+    configuration_error: Mapping[str, object] | None = None,
 ) -> status.CalculationRecord:
     """Write FAILED while retaining the supplied primary and secondary facts."""
     current = _require_matching_current(record)
@@ -228,6 +229,8 @@ def finalize_failure(
         "message": message,
         "secondary_evidence": secondary,
     }
+    if configuration_error is not None:
+        failure["configuration_error"] = dict(configuration_error)
     return status._transition_current_record_terminal(
         current.event_id,
         current.internal_sequence,

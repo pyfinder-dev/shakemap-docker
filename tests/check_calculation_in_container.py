@@ -6,6 +6,7 @@ import io
 import json
 import os
 import stat
+import sys
 import threading
 import time
 from pathlib import Path
@@ -217,7 +218,10 @@ def _verify_single_success(record: status.CalculationRecord) -> dict[str, object
     )
     native_execution = provenance_record.get("native_execution")
     _require(isinstance(native_execution, dict), "native execution is absent")
-    expected_command = ["shake", record.event_id, *MODULE_PLAN]
+    expected_command = [
+        sys.executable, "-m", "shakemap_service.native_launcher",
+        record.event_id, *MODULE_PLAN,
+    ]
     _require(native_execution.get("command") == expected_command, "command differs")
     _require(
         native_execution.get("exit_code") == 0

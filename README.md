@@ -132,3 +132,7 @@ or scientific suitability.
 See [docs/quick-start.md](docs/quick-start.md),
 [docs/runtime-layout.md](docs/runtime-layout.md), and
 [docs/health-and-readiness.md](docs/health-and-readiness.md).
+
+For regional configuration ownership, the five native files, supported data
+helpers and current Italy/Switzerland prerequisites, see the
+[configuration runbook](docs/configuration.md).

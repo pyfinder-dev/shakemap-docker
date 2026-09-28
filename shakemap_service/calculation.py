@@ -262,10 +262,13 @@ def _finish_failed(
     validated_at: str | None,
     terminal_at: str | None = None,
     record_failure_log: bool = True,
+    configuration_error: Mapping[str, object] | None = None,
 ) -> str:
     if terminal_at is None:
         terminal_at = _now_iso()
     primary = {"phase": phase, "code": code, "message": message}
+    if configuration_error is not None:
+        primary["configuration_error"] = dict(configuration_error)
     secondary: list[dict[str, object]] = []
 
     if record_failure_log:
@@ -333,6 +336,7 @@ def _finish_failed(
         message=message,
         execution=execution,
         secondary_evidence=tuple(secondary),
+        configuration_error=configuration_error,
     )
     recalculation.finalize_transaction(record.event_id)
     return terminal.status
@@ -653,7 +657,11 @@ def execute_calculation(
         return _finish_failed(
             current,
             phase="native_execution",
-            code="native_exit",
+            code=(
+                "native_configuration_failed"
+                if execution.configuration_error
+                else "native_exit"
+            ),
             message=f"ShakeMap exited with code {execution.exit_code}",
             configuration_materialization=configuration_facts,
             execution=execution,
@@ -661,6 +669,7 @@ def execute_calculation(
             resolution=resolution,
             validation=validation,
             validated_at=validated_at,
+            configuration_error=execution.configuration_error,
         )
 
     try:
