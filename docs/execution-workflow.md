@@ -1,6 +1,6 @@
-# Current execution workflow
+# Execution workflow
 
-The supported current workflow is:
+The supported workflow is:
 
 1. Build and verify the immutable image.
 2. Provision or validate global data in the selected runtime.
@@ -22,9 +22,9 @@ products, provenance, a product manifest, and both required logs. Poll event
 detail for the accepted `internal_sequence`; require `SUCCESS`,
 `job_completed=true`, and `products_ready=true` before collecting products.
 
-The global workflow has passed host, container, and running-service verification
-on the recorded platform; see the evidence and limitations in
-[current verification status](../README.md#current-verification-status).
+Verify the selected deployment at each of the
+[three verification levels](../README.md#verification-and-outcome-evidence).
+Inspect the actual mounted data and recorded calculation outcomes.
 
 Native execution alone proves only that scenario, release, inputs, module plan,
 and validation gate. The live verifier additionally exercises the public

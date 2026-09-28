@@ -1,12 +1,14 @@
 # Quick start
 
-These local development/fallback commands run from the `shakemap-docker`
-repository root. Future deployment orchestration belongs to `pyfinder-deploy`;
-that integration is separate work. The reusable entry points are documented in
-[the helper guide](../scripts/README.md#deployment-orchestration-boundary).
+For a combined PyFinder deployment, use
+[pyfinder-deploy](../../pyfinder-deploy/README.md) and its shared runtime.
+The commands below are a standalone service alternative, run from the
+`shakemap-docker` repository root with an activated project Python environment.
+They use `./runtime` as an example; choose one runtime root and pass it
+consistently to every helper. Deployment wrappers delegate to the reusable
+entry points in [the helper guide](../scripts/README.md#deployment-orchestration-boundary).
 
 ```bash
-source /path/to/project/.venv/bin/activate
 python -m pip install -e .
 make build
 make data RUNTIME_ROOT=./runtime
@@ -35,8 +37,8 @@ resolved before use; follow the diagnostic and the
 
 `make verify` requires an already-running canonical deployment; it includes a
 new run of the fixed verification calculation. It does not build or start the
-service. See the [current verification status](../README.md#current-verification-status)
-for which execution gates have actually passed.
+service. Check its reported results for each verification level; host tests
+alone do not establish image or running-service readiness.
 
 After successful finalization, submit native inputs through the host client:
 

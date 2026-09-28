@@ -15,11 +15,10 @@ alert and logs. This does not change the service's exact-selection behavior.
 
 ## Inspect the running deployment
 
-Use the shared project environment for host commands:
+Activate the project Python environment with `shake-in-docker` installed before
+running these host commands:
 
 ```bash
-source /Users/savas/my-codes/eew/pyfinder-dev/.venv/bin/activate
-
 # Read readiness and the operational configuration.
 shake-in-docker --url http://127.0.0.1:9010 health
 shake-in-docker --url http://127.0.0.1:9010 config
@@ -42,11 +41,11 @@ global path; it does not certify every listed regional configuration.
 
 ## Runtime paths and the five native files
 
-`RUNTIME_ROOT` is the common runtime parent. The current consolidated deployment
-uses `/Users/savas/my-codes/eew/pyfinder-dev/pyfinder-deploy/runtime`, mounted as
-`/home/sysop/runtime`. Its scientific data subtrees are read-only inside the
-service container. Configuration fields must reference paths visible inside that
-container, not host paths.
+`RUNTIME_ROOT` selects the host runtime parent; the service helpers default to
+`./runtime`. It mounts as `/home/sysop/runtime`. Its scientific data subtrees are
+read-only inside the service container. Configuration fields must reference paths
+visible inside that container, not host paths. A combined deployment supplies its
+common runtime root through the deployment settings.
 
 ```text
 <RUNTIME_ROOT>/shakemap/data/
@@ -54,7 +53,6 @@ container, not host paths.
 │   ├── vs30/global_vs30.grd
 │   └── topo/topo_30sec.grd
 ├── regional/
-│   ├── global_italy_vs30_clobber.grd
 │   └── <name>/
 │       ├── gmpe_sets.conf
 │       ├── model.conf
@@ -64,9 +62,11 @@ container, not host paths.
 └── test/<resolved-version>/
 ```
 
-The shared Italy grid shown here is present in the current operator runtime;
-it is not installed by the current global-data helper. A fresh installation must
-not assume it exists.
+Regional grids are separate prerequisites. For example, the Italy seed names
+`global_italy_vs30_clobber.grd`; the global-data helper does not install it. Put
+shared regional assets in a location explicitly referenced by their native
+configuration, without adding a directory that discovery would mistake for a
+profile.
 
 | File | Native responsibility |
 |---|---|
@@ -127,11 +127,11 @@ make data COMPONENT=shakemap DATA_ACTION=inspect
 make data COMPONENT=shakemap DATA_ACTION=validate
 ```
 
-The service-checkout equivalent is:
+For a standalone service runtime, run this from the service checkout:
 
 ```bash
 ./scripts/manage-shakemap-data.sh inspect \
-  --runtime /Users/savas/my-codes/eew/pyfinder-dev/pyfinder-deploy/runtime
+  --runtime ./runtime
 ```
 
 `provision` explicitly installs missing global VS30/topography assets and reuses
@@ -149,33 +149,32 @@ may stop the service or revoke readiness. They are not regional inspection
 commands. See [scripts](../scripts/README.md) and
 [deployment guidance](../../pyfinder-deploy/README.md).
 
-## Current global, Italy and Switzerland limits
+## Global, Italy and Switzerland prerequisites
 
-The following is the inspected state on 2026-09-27, not a regional readiness
-certificate. The new typed-failure launcher requires its own image and deployment
-verification before relying on it in the running service.
+The shipped seeds describe scientific choices; they are not complete regional
+installations. Inspect the selected runtime and image rather than assuming data
+is present or absent from a seed directory listing.
 
-| Selection | Established state | Work required before a usable regional recipe |
+| Selection | Required configuration and assets | Installation limitation |
 |---|---|---|
-| `global` | Current service reports ready on 4.4.9; mounted global grids are present. | Keep recorded verification scope separate from scientific accuracy or regional coverage. |
-| `italy` | Five files and the shared Italy grid exist, but the profile still references old `/home/shake/shakemap_data` paths and private layers that are not materialized. OFM22 is absent from the inspected image. | Install the exact compatible OFM22 implementation; wire the intended grid, topography and complete polygons; verify actual selection and native products. |
-| `switzerland` | Five files exist. FM11_CH is absent; old topography/layer paths remain. The referenced `null_vs30.grd` is absent. Preserved Swiss amplification HDF exists under `runtime/install-dtgeo/data/GenericAmpFactors`, outside the current private profile. | Validate and package FM11_CH, wire exact polygons and amplification data, and resolve Swiss site treatment through a bounded experiment. |
+| `global` | Pinned global VS30 and topography, plus image support and a finalized native profile. | Image installation and file presence alone do not prove deployment readiness. Run finalization against the intended runtime. |
+| `italy` | The intended `global_italy_vs30_clobber.grd`, topography, complete selection polygons, and the OFM22 custom GMICE implementation. | The seed contains legacy absolute data paths and `<INSTALL_DIR>/data/layers`. The global helper does not provision its grid, polygons or custom module; those paths need explicit wiring and the module needs current-release compatibility checks. |
+| `switzerland` | EF2013 model branches, FM11_CH, Swiss selection polygons, and the intended generic amplification data and site treatment. | The seed references `null_vs30.grd` and enables generic amplification. The image does not supply FM11_CH and the service does not materialize regional amplification data. Site treatment remains unresolved; do not substitute a grid or constant to make the run finish. |
 
-Pinned INGV sources provide [OFM22](https://github.com/INGV/shakemap/blob/f3632031a46e487f72b96dcb0df3657f4acdc2ea/ext/ofm22.py),
+The upstream INGV sources provide
+[OFM22](https://github.com/INGV/shakemap/blob/f3632031a46e487f72b96dcb0df3657f4acdc2ea/ext/ofm22.py),
 [FM11_CH](https://github.com/INGV/shakemap/blob/f3632031a46e487f72b96dcb0df3657f4acdc2ea/ext/fm11_ch.py),
-and the previously missing Italian [Sicily](https://github.com/INGV/shakemap/blob/f3632031a46e487f72b96dcb0df3657f4acdc2ea/data/shakemap_profiles/italy/install/data/layers/sicily_area.wkt)
+and Italian [Sicily](https://github.com/INGV/shakemap/blob/f3632031a46e487f72b96dcb0df3657f4acdc2ea/data/shakemap_profiles/italy/install/data/layers/sicily_area.wkt)
 and [volcanic](https://github.com/INGV/shakemap/blob/f3632031a46e487f72b96dcb0df3657f4acdc2ea/data/shakemap_profiles/italy/install/data/layers/volcanic_italy.wkt)
-polygons. Source availability and static API comparison do not establish numerical
-compatibility with the current release. Preserve authored coefficients and units
-while testing any necessary namespace adaptation.
+polygons. They identify implementation sources, not a tested installation recipe
+for this release. Preserve scientific coefficients, units and asset identities
+while establishing compatibility. Regional provisioning must record source and
+integrity evidence rather than silently accepting an arbitrary replacement.
 
-The imported Italy grid has an observed digest and upstream source evidence,
-but no publisher-supplied checksum or proven identity to the historically missing
-file. A small native loader window does not establish regional coverage accuracy.
-For Switzerland, historical `vs30default=1200` is evidence for investigation,
-not an approved setting. The full site's treatment and amplification coverage,
-units and supported intensity measures remain experiment prerequisites. Uniform
-VS30 must not be used as proof of normal readiness.
+Swiss site treatment and amplification coverage, units and supported intensity
+measures require a bounded compatibility experiment. No uniform VS30 value is
+prescribed here, and uniform VS30 must not be used as proof of normal readiness.
+Successful global execution does not resolve these regional requirements.
 
 ## Submission, evidence and corrective actions
 

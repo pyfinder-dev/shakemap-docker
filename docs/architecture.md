@@ -24,4 +24,4 @@ Scientific-data read repair and service-writable ownership repair have separate
 helpers because they operate on disjoint trees with different permitted changes.
 Automatic writable repair and its manual privileged command share one
 implementation. See [permissions](permissions.md) and the
-[current verification status](../README.md#current-verification-status).
+[verification boundaries](../README.md#verification-and-outcome-evidence).

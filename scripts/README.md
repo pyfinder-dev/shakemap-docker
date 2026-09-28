@@ -21,11 +21,10 @@ may take time. `manage-shakemap-data.sh provision` reuses a valid existing asset
 and installs only a missing one. It never replaces an invalid or unexpected
 existing asset.
 
-Install the standard project package in the project environment before running
+Activate the project Python environment and install the package before running
 the build helper. The helper checks this prerequisite and never installs it:
 
 ```bash
-source /path/to/project/.venv/bin/activate
 python -m pip install -e .
 ./scripts/build-shakemap-docker.sh
 ```
@@ -33,7 +32,6 @@ python -m pip install -e .
 Keep that environment active before running the data helper:
 
 ```bash
-source /path/to/project/.venv/bin/activate
 ./scripts/manage-shakemap-data.sh inspect
 ```
 
@@ -54,13 +52,13 @@ See [permissions](../docs/permissions.md) for its preconditions and manual
 ## Deployment orchestration boundary
 
 These helpers remain the reusable workflow implementations. This repository's
-Makefile is a local development interface. `pyfinder-deploy` now owns deployment
+Makefile is a local development interface. `pyfinder-deploy` owns deployment
 orchestration and delegates to these helpers with the selected common runtime
 and settings. Do not duplicate build, preparation, startup, or verification logic
 there. See the [configuration runbook](../docs/configuration.md) for regional
 provisioning boundaries and current limitations.
 
-For that handoff, use the existing helper interfaces:
+The deployment wrappers use these helper interfaces:
 
 - Build: `build-shakemap-docker.sh` (optional `--platform` and `--no-cache`).
 - Data: `manage-shakemap-data.sh ACTION --runtime DIR`, with actions listed above.

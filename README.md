@@ -1,138 +1,118 @@
 # ShakeMap Docker service
 
-This repository builds a ShakeMap v4.4.9 image and provides a calculation
-service through REST and the `shake-in-docker` host client. The service accepts
-caller-prepared native inputs, queues calculations, materializes caller-selected
-configurations, and records products, provenance, manifests, and logs.
+Build and run ShakeMap v4.4.9 behind a REST API and the `shake-in-docker` host
+client. Callers supply native inputs, a calculation ID and a configuration name.
+The service queues work, runs the complete native module sequence, and retains
+products, provenance, manifests and logs.
 
-## Current verification status
+## Install and start
 
-The accepted global-service development phase is complete, including the
-scoped cleanup and independent closeout review. Regional execution, broader
-platform validation, scientific suitability, and `pyfinder-deploy` integration
-remain outside this completion claim.
+For a combined PyFinder deployment, start with the
+[deployment guide](../pyfinder-deploy/README.md) and its shared runtime. The
+commands below are a standalone service alternative. They use `./runtime` as
+an example; choose one runtime root and pass it consistently to every helper.
 
-On 2026-09-22, the current source passed 460 host tests and a rebuilt Linux
-ARM64 image passed all 21 image checks. The actual operator global VS30 and
-topography files passed fresh pinned integrity validation; retained Slab2
-integrity evidence dates from 2026-08-24.
-
-Finalization now succeeds after host-side seed-extraction and Docker stdin
-corrections. It passed the writable-access probe without ownership repair and
-all 20 container-internal deployment checks. South Napa/global (sequence 4)
-and `m9-norcia`/global (sequence 3) both reached `SUCCESS`, with completed jobs,
-ready products, seven validated core products, matching product-manifest
-checksums, provenance, and both required logs. REST/CLI status and product
-summaries agree. The canonical service is running and ready; the queue is empty.
-
-The full `make verify` workflow now passes all three sections: 460 host tests,
-20 container-internal checks, and live REST/CLI checks including the fixed
-South Napa calculation. Published-container validation no longer compares
-Docker network-mode labels; image, mount, environment, and port checks remain.
-Isolated preparation and writable probes still require network mode `none`.
-
-This phase accepts coverage of all eight public operations, including
-configuration listing, with global happy-path execution. Submission is exercised
-through the CLI's REST request; the seven read operations compare CLI and REST
-responses. It is not an exhaustive live test of every option, input mode,
-failure case, or regional configuration. Host tests cover additional cases.
-
-The writable-access correction checks effective container access and provides
-a bounded manual repair command when host privileges are insufficient. Its
-diagnostics distinguish permission denial from missing data, invalid content,
-and storage failures; unreadable datasets are retained for revalidation.
-These results establish operational execution of the two exact global examples
-on this macOS/Docker Desktop host with a Linux ARM64 image, not scientific
-correctness, broader platform coverage, or regional usability. See the
-[permission workflow](docs/permissions.md) before recovering an existing runtime.
-
-## Supported workflow
-
-Run the following from this repository's root. Its Makefile is retained as a
-local development/fallback entry point; the helpers own the workflow logic.
-The planned `pyfinder-deploy` integration will orchestrate these operations
-later and is not implemented or verified by this repository's closeout. See
-[helper interfaces](scripts/README.md#deployment-orchestration-boundary).
+You need Docker and an activated project Python environment with Python 3.10 or
+newer. Run these commands from this repository's root:
 
 ```bash
-source /path/to/project/.venv/bin/activate
+# Install the host client and helpers into the active environment.
 python -m pip install -e .
+
+# Build and verify the canonical image.
 make build
-make data
+
+# Provision the required external global grids.
+make data RUNTIME_ROOT=./runtime
+
+# Prepare the runtime and verify a native global calculation.
 make finalize RUNTIME_ROOT=./runtime PORT=9010 MAX_CONCURRENT=10
-make verify RUNTIME_ROOT=./runtime PORT=9010 MAX_CONCURRENT=10
+```
+
+Finalization leaves the canonical `shakemap-docker` service running when its
+checks succeed. Read its state before submitting work:
+
+```bash
 shake-in-docker health
 shake-in-docker configurations
 ```
 
-The build reads only `SHAKEMAP_RELEASE_TAG` from `VERSIONS.env`. It creates an
-untagged candidate, runs image-internal checks against that image identity, and
-assigns `shakemap-docker:latest` only after those checks pass. The active
-project environment must already provide the packaged `shake-in-docker`
-command; the helper never installs or changes host packages.
+`make start` starts an already-finalized deployment with matching image, mounts
+and settings. `make stop` stops it gracefully and preserves its runtime. Use the
+same `RUNTIME_ROOT`, `PORT` and `MAX_CONCURRENT` values throughout installation
+and startup. The image is `shakemap-docker:latest`; the container is
+`shakemap-docker`.
 
-The supported dependency pair is `shakemap-modules[all]==1.1.18` with
-`esi-shakelib==1.2.1`. Image verification checks both versions and imports all
-seven native modules; `pip check` alone cannot detect incompatible APIs.
-The complete dependency environment is not fully locked.
+For a combined PyFinder deployment, use the
+[deployment guide](../pyfinder-deploy/README.md). Its wrappers delegate to this
+repository's helpers; they do not replace their data or lifecycle logic.
+See [quick start](docs/quick-start.md) and [helper interfaces](scripts/README.md)
+for manual imports and detailed operation.
 
-Image verification also covers the installed ShakeMap release, STREC
-`moment_tensors.db`, Slab2 grids, Natural Earth mapping support, and immutable
-regional configuration seeds. Global VS30 and topography remain external.
-This is image-installation evidence only, not deployment or calculation
-readiness.
+## Data and configurations
 
-`inspect` is cheap and read-only. It checks presence/readability and parses only
-small directory entries. `validate` is also read-only, but hashes the two large
-pinned global assets. `provision` reuses valid assets and may download or import
-only a missing asset. An invalid, incomplete, or unexpected existing asset is
-left unchanged and reported with corrective action.
-
-`make finalize` prepares and verifies the canonical deployment and runs the
-fixed global calculation before publishing readiness. `make start` only starts
-an already-finalized matching deployment. `make verify` requires a running
-canonical service and replaces the fixed verification calculation with a new
-run. `make stop` preserves the container and runtime.
-
-Keep the project Python environment active when running these host helpers.
-Helpers never invoke `sudo`; follow the specific manual recovery command if
-one is reported. Do not run the whole installation or finalization as root.
-
-## Runtime data contract
-
-External data lives below `runtime/shakemap/data/`:
+Global VS30 and topography remain external, operator-owned files:
 
 ```text
-global/
-  vs30/global_vs30.grd
-  topo/topo_30sec.grd
-regional/
-test/<resolved-version>/
-inputs/<event_id>/
+runtime/shakemap/data/
+├── global/
+│   ├── vs30/global_vs30.grd
+│   └── topo/topo_30sec.grd
+├── regional/
+├── test/<resolved-version>/
+└── inputs/<event_id>/
 ```
 
-Stage 2 manages only the displayed global VS30 and topography files. Other
-small support data belongs to image build or finalization, not this helper.
-Manual placement remains supported. Select the complete runtime with
-`RUNTIME_ROOT`; `global/`, `regional/`, and `test/` are read-only container
-overlays. `inputs/` and service-owned state remain writable. The service does not create or require
-`.service/preparation`, `incoming`, `.service/work`, or a top-level event/work
-tree.
+The data helper manages only the two global grids. `inspect` checks presence and
+readability; `validate` performs full pinned checksums. Both are read-only.
+`provision` reuses valid files or installs missing ones. Invalid or unexpected
+existing files are retained with an explanation and corrective action. Manual
+placement and explicit replacement staging are supported.
 
-## What API evidence means
+The image includes small STREC, Slab2 and mapping support, and regional
+configuration seeds. Seeding preserves existing operator profile directories.
+Regional modules, data paths and scientific assets must be usable before the
+selected profile can calculate. A name in `configurations` is not evidence of
+regional readiness. See the [configuration runbook](docs/configuration.md) for
+the five native files and Italy/Switzerland prerequisites.
 
-`/healthz` reports `ready`, `reason`, and `shakemap_version`. `/config` reports
-the installed identity, operational settings, and recorded readiness. Neither
-endpoint runs checksum validation or a calculation. Use the data helper for
-integrity checks and the matching submission's `SUCCESS`, `job_completed`, and
-`products_ready` fields to determine completion. Product existence alone is
-insufficient. Configuration discovery does not establish regional data coverage
-or scientific suitability.
+Each service request runs exactly its caller-selected configuration; omission
+means `global`. The service never substitutes a different configuration. PyFinder
+may make a separate explicit global recovery submission after a confirmed
+regional configuration failure, retaining both attempt outcomes. That caller
+policy does not change service selection or replacement semantics.
 
-See [docs/quick-start.md](docs/quick-start.md),
-[docs/runtime-layout.md](docs/runtime-layout.md), and
-[docs/health-and-readiness.md](docs/health-and-readiness.md).
+## Verification and outcome evidence
 
-For regional configuration ownership, the five native files, supported data
-helpers and current Italy/Switzerland prerequisites, see the
-[configuration runbook](docs/configuration.md).
+Verification has three separate levels: host tests, installed image/module
+checks, and running-service checks. A successful build does not establish
+mounted-data readiness. Finalization runs a fixed global calculation before
+publishing readiness. To verify an already-running deployment:
+
+```bash
+# This submits a new run of the fixed verification calculation.
+make verify RUNTIME_ROOT=./runtime PORT=9010 MAX_CONCURRENT=10
+```
+
+Finalization and verification are mutating operations. Follow their diagnostics
+if they fail; they may stop the service or revoke readiness. Keep the project
+environment active and do not run the entire workflow with `sudo`. Targeted
+[permission recovery](docs/permissions.md) is available when needed.
+
+`/healthz` reports readiness, reason and installed ShakeMap version. `/config`
+reports operational settings and identity. Neither performs large checksums or
+scientific validation. For a submitted calculation, follow its exact returned
+sequence and require `SUCCESS`, `job_completed=true`, `products_ready=true`,
+validated core products, provenance, a manifest and logs. Product existence
+alone is insufficient.
+
+A successful verification covers its recorded inputs and selected configuration;
+it does not establish all regional branches, geographic coverage or scientific
+accuracy. The supported native dependency pair is
+`shakemap-modules[all]==1.1.18` with `esi-shakelib==1.2.1`; the complete dependency
+environment is not fully locked.
+
+See the [REST and CLI guide](docs/rest-api.md),
+[runtime layout](docs/runtime-layout.md),
+[health and readiness](docs/health-and-readiness.md), and
+[troubleshooting](docs/troubleshooting.md).

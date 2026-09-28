@@ -1,10 +1,8 @@
 # Developer guide
 
-Use the project environment for all project Python work:
-
-```bash
-source /Users/savas/my-codes/eew/pyfinder-dev/.venv/bin/activate
-```
+Activate the project Python environment before running project scripts and
+tests. Install the package into that environment so the helpers can use the
+`shake-in-docker` host client. Do not use the system Python for project work.
 
 Run host tests:
 
@@ -31,8 +29,8 @@ merely to prove non-mutation.
 
 Do not infer scientific readiness from uniform VS30, file presence, or partial
 products. The calculation and readiness gates are implemented, but successful
-host tests do not prove real image or deployment behavior. Check the
-[current verification status](../README.md#current-verification-status).
+host tests do not prove real image or deployment behavior. Run and inspect each
+[verification level](../README.md#verification-and-outcome-evidence) separately.
 
 Comment helper responsibilities, preconditions, and non-obvious behavior;
 avoid historical or milestone commentary in code. Keep each workflow in its

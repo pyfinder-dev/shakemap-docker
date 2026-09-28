@@ -9,5 +9,5 @@ are usable. These seeds are not a claim that every region is ready to calculate.
 Do not add fallback rules or scientific substitutions to make them load.
 
 See the [configuration runbook](../docs/configuration.md) for file responsibilities,
-container-visible paths, current Italy/Switzerland limitations, supported helpers
+container-visible paths, Italy/Switzerland installation prerequisites, supported helpers
 and the distinction between service selection and caller recovery.
