@@ -113,7 +113,7 @@ exit 0
             python_trace.read_text(encoding="utf-8").splitlines(),
         )
 
-    def test_makefile_exposes_exactly_seven_thin_public_targets(self) -> None:
+    def test_makefile_exposes_approved_thin_public_targets(self) -> None:
         source = (PROJECT / "Makefile").read_text(encoding="utf-8")
         targets = {
             match.group(1)
@@ -129,10 +129,11 @@ exit 0
                 "start",
                 "stop",
                 "verify",
+                "check",
             },
         )
         recipes = [line.strip() for line in source.splitlines() if line.startswith("\t")]
-        self.assertEqual(len(recipes), 7)
+        self.assertEqual(len(recipes), 8)
         self.assertTrue(all("$(SCRIPTS)/" in recipe for recipe in recipes))
         self.assertIn(
             '$(SCRIPTS)/fix-shakemap-permissions.sh --runtime-root "$(RUNTIME_ROOT)" $(PERMISSION_TARGET_OPTION)',

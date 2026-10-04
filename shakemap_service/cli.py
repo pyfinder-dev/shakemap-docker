@@ -34,6 +34,10 @@ def parser() -> argparse.ArgumentParser:
     subcommands.add_parser("health", help="show service readiness")
     subcommands.add_parser("config", help="show operational service configuration")
     subcommands.add_parser("configurations", help="list configuration names")
+    check_parser = subcommands.add_parser(
+        "check", help="inspect static profile prerequisites without running calculations"
+    )
+    check_parser.add_argument("--configuration", default="global")
     submit_parser = subcommands.add_parser(
         "submit",
         help="submit caller-prepared native files for a calculation",
@@ -226,6 +230,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         "queue": "/queue",
     }
     endpoint = endpoints.get(arguments.command)
+    if arguments.command == "check":
+        configuration = quote(arguments.configuration, safe="")
+        endpoint = f"/configurations/{configuration}/check"
     if arguments.command in {"status", "products"}:
         encoded_event_id = quote(arguments.event_id, safe="")
         endpoint = f"/events/{encoded_event_id}"
@@ -255,6 +262,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
     print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+    if arguments.command == "check":
+        report_status = payload.get("status") if isinstance(payload, dict) else None
+        return {"NO_KNOWN_BLOCKERS": 0, "BLOCKED": 1}.get(report_status, 2)
     return 0
 
 

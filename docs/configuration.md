@@ -39,6 +39,57 @@ files, installed scientific modules, usable datasets, geographic suitability,
 or native success. Deployment `ready: true` records the separately verified
 global path; it does not certify every listed regional configuration.
 
+## Read-only profile checks
+
+Use the running service to inspect the selected profile's actual references:
+
+```bash
+make check CONFIGURATION=italy
+make check CONFIGURATION=switzerland
+make check CONFIGURATION=global
+# Equivalent host CLI; SERVICE_URL on make selects another service URL.
+shake-in-docker --url http://127.0.0.1:9010 check --configuration italy
+```
+
+The separate `GET /configurations/{name}/check` endpoint returns the same JSON.
+It leaves the names-only listing unchanged. An older service without this endpoint
+must be updated before the command can report installed-service diagnostics; a
+missing endpoint is not a successful check.
+
+Each finding includes `configuration`, `config_file`, `section`, `key`,
+`reference`, `resolved_path`, `reason`, `corrective_action`, and `evidence`.
+Paths are visible to the service container. For `<INSTALL_DIR>/data/layers`,
+the resolved path is the installed layer source copied by native `sm_profile`,
+not a directory created for a new calculation. Missing files, unreadable files,
+invalid native syntax, unresolved path macros and missing configured modules
+remain distinct findings. No unrelated configuration values or secrets are dumped.
+
+| Report status | Meaning | CLI exit |
+|---|---|---|
+| `NO_KNOWN_BLOCKERS` | Supported static checks completed without a known blocker. | 0 |
+| `BLOCKED` | At least one required reference is missing or broken. Other unknowns remain visible. | 1 |
+| `INCOMPLETE` | A required check could not be resolved statically. | 2 |
+
+Per-finding states are `OK`, `MISSING`, `BROKEN` and `UNKNOWN`. The report always
+says `scope: static` and `native_execution: not_run`. Syntax parsing is not full
+native schema validation. Module lookup does not import models or validate their
+classes, dependencies or constructors. Model branches are inspected without
+choosing event geography; weights, coverage and scientific suitability remain
+the profile owner's responsibility. No uniform site defaults are substituted.
+
+The checker neither performs repairs nor changes submission behavior. PyFinder
+still submits the selected region first and makes one explicit global submission
+only after a qualifying configuration failure. Some native failures cannot be
+predicted or classified from static checks. Inspect `global` separately; neither
+a regional warning nor a global static pass promises successful recovery.
+Service `capabilities.native_configuration_diagnostics` describes the installed
+diagnostic implementation, not eligibility of every possible failure.
+
+Use `make data DATA_ACTION=inspect` for a cheap global dataset inventory, or
+`DATA_ACTION=validate` for full pinned content validation. `make verify` runs
+native work and can revoke readiness or stop the service on failure; it is a
+separate, mutating verification operation.
+
 ## Runtime paths and the five native files
 
 `RUNTIME_ROOT` selects the host runtime parent; the service helpers default to

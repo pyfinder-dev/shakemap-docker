@@ -165,6 +165,7 @@ class PublicInterfaceParityTests(unittest.TestCase):
             "/healthz": {"get"},
             "/config": {"get"},
             "/configurations": {"get"},
+            "/configurations/{configuration}/check": {"get"},
             "/events": {"get", "post"},
             "/events/{event_id}": {"get"},
             "/events/{event_id}/products": {"get"},

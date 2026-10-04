@@ -2,16 +2,23 @@
 RUNTIME_ROOT ?= ./runtime
 PORT ?= 9010
 MAX_CONCURRENT ?= 10
+CONFIGURATION ?= global
+SERVICE_URL ?= http://localhost:$(PORT)
 DATA_ACTION ?= provision
 SCRIPTS := scripts
 # Expand the exported value inside shell quotes so spaces and shell punctuation
 # remain one target argument.
 PERMISSION_TARGET_OPTION = $(if $(strip $(value PERMISSION_TARGET)),--target "$${PERMISSION_TARGET_VALUE}",)
 
-.PHONY: build data fix-permissions finalize start stop verify
+.PHONY: build data fix-permissions finalize start stop verify check
 
 build:
 	$(SCRIPTS)/build-shakemap-docker.sh
+
+check: export CHECK_CONFIGURATION_VALUE := $(CONFIGURATION)
+check: export CHECK_SERVICE_URL_VALUE := $(SERVICE_URL)
+check:
+	$(SCRIPTS)/check-shakemap.sh --configuration "$${CHECK_CONFIGURATION_VALUE}" --url "$${CHECK_SERVICE_URL_VALUE}"
 
 data:
 	$(SCRIPTS)/manage-shakemap-data.sh $(DATA_ACTION) --runtime $(RUNTIME_ROOT)

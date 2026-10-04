@@ -40,6 +40,7 @@ from .service_information import (
     build_health_response,
 )
 from .scheduler import Scheduler
+from .profile_checks import check_configuration
 
 
 logger = logging.getLogger(__name__)
@@ -364,6 +365,17 @@ def get_configurations():
         return build_configurations_response()
     except ServiceInformationError as exc:
         return _service_information_error_response(exc)
+
+
+@app.get("/configurations/{configuration}/check")
+def get_configuration_check(configuration: str):
+    """Inspect static prerequisites without admitting or changing work."""
+    try:
+        return check_configuration(configuration)
+    except ValueError:
+        return JSONResponse(
+            status_code=422, content={"detail": "Invalid configuration name"}
+        )
 
 
 @app.post("/events", openapi_extra=SUBMISSION_OPENAPI)

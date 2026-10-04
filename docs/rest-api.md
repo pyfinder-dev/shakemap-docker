@@ -8,6 +8,7 @@ select a service; the default is `http://localhost:9010`.
 | `GET /healthz` | `health` | `ready`, `reason`, installed ShakeMap version |
 | `GET /config` | `config` | Identity, module plan, default configuration, capacity, shared root, required-product policy, readiness |
 | `GET /configurations` | `configurations` | Default and available configuration names |
+| `GET /configurations/{name}/check` | `check --configuration NAME` | Read-only static findings with exact file/key/reference context; no native execution |
 | `POST /events` | `submit <event_id>` | Accept native input files and queue a caller-identified calculation |
 | `GET /events` | `list` | Current and queued calculation summaries |
 | `GET /events/{event_id}` | `status <event_id>` | Current, queued, and retained calculation details |
@@ -32,4 +33,9 @@ asset validation.
 
 Available configuration names do not establish dataset validity, regional
 coverage, or successful execution. Public identity/provenance omit private
-container paths; complete records remain in service-owned storage.
+container paths; complete records remain in service-owned storage. The separate
+operator check deliberately includes component-visible configuration and asset
+paths needed for recovery, without dumping complete configuration files.
+Completed diagnostic requests return HTTP 200 even when findings are blocked;
+the CLI returns 0, 1 or 2 for no known blockers, blocked or incomplete checks.
+See [profile checks](configuration.md#read-only-profile-checks) for limitations.

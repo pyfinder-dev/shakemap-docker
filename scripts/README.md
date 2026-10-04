@@ -4,6 +4,7 @@
 |---|---|
 | `build-shakemap-docker.sh` | Build the declared release as an untagged candidate, verify it by identity, and then promote the canonical image tag. |
 | `manage-shakemap-data.sh` | Inspect, validate, provision missing global VS30/topography assets, or stage validated replacements. |
+| `check-shakemap.sh` | Read static profile diagnostics from the running service without changing profiles, data, readiness, or work. |
 | `prepare-shakemap-verification-data.py` | Prepare or validate a release-matched fixed verification package. |
 | `fix-shakemap-permissions.sh` | Add read/traversal access to selected operator-owned scientific data, preserving ownership and write bits. |
 | `repair-shakemap-writable-paths.sh` | Repair ownership and owner access only within the four service-writable trees; reused by finalization and manual privileged recovery. |
@@ -43,7 +44,7 @@ subtrees have read-only overlays. The start helper has no separate `--data`,
 `--runtime`, or container-name override.
 
 `make build`, `data`, `fix-permissions`, `finalize`, `start`, `stop`, and
-`verify` are thin aliases to the corresponding helpers. The writable repair
+`verify`, plus `make check`, are thin aliases to the corresponding helpers. The writable repair
 script is a recovery command, not an additional installation stage. It uses
 host shell utilities and needs neither Docker nor a Python environment.
 See [permissions](../docs/permissions.md) for its preconditions and manual
@@ -62,6 +63,9 @@ The deployment wrappers use these helper interfaces:
 
 - Build: `build-shakemap-docker.sh` (optional `--platform` and `--no-cache`).
 - Data: `manage-shakemap-data.sh ACTION --runtime DIR`, with actions listed above.
+- Check: `check-shakemap.sh --configuration NAME --url URL`. This contacts the
+  running service and never starts it. JSON and exit status match the host CLI;
+  see [profile checks](../docs/configuration.md#read-only-profile-checks).
 - Finalize/start/verify: the respective helper with `--runtime-root DIR`,
   `--port PORT`, and `--max-concurrent COUNT`.
 - Stop: `stop-shakemap-docker.sh` for the canonical service.

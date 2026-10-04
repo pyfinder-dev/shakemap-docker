@@ -35,6 +35,7 @@ checks succeed. Read its state before submitting work:
 ```bash
 shake-in-docker health
 shake-in-docker configurations
+make check CONFIGURATION=italy
 ```
 
 `make start` starts an already-finalized deployment with matching image, mounts
@@ -81,6 +82,14 @@ means `global`. The service never substitutes a different configuration. PyFinde
 may make a separate explicit global recovery submission after a confirmed
 regional configuration failure, retaining both attempt outcomes. That caller
 policy does not change service selection or replacement semantics.
+
+`make check CONFIGURATION=italy` reads the running service's static diagnostic
+report. Use `CONFIGURATION=switzerland` or `global` to inspect those profiles.
+Findings identify the native file, section/key, referenced path, problem and
+corrective action. The check never repairs profiles, downloads data, starts or
+stops containers, changes readiness, or submits a calculation. A static pass means
+no known blockers within the reported checks; it does not prove native execution
+or scientific suitability. See [diagnostic details](docs/configuration.md#read-only-profile-checks).
 
 ## Verification and outcome evidence
 

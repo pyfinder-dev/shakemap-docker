@@ -41,7 +41,7 @@ class ProjectPackagingTests(unittest.TestCase):
         with contextlib.redirect_stdout(output), self.assertRaisesRegex(SystemExit, "0"):
             cli.main(["--help"])
         self.assertIn(
-            "{health,config,configurations,submit,list,queue,status,products}",
+            "{health,config,configurations,check,submit,list,queue,status,products}",
             output.getvalue(),
         )
         self.assertIn("--url", output.getvalue())
