@@ -168,14 +168,24 @@ class PreparationBehaviorTests(unittest.TestCase):
         self.assertEqual(state, "prepared")
         helper.validate_package(definition, destination)
 
-    def test_valid_destination_is_not_overwritten(self) -> None:
+    def test_relocated_package_is_reused_but_corrupt_payload_is_rejected(self) -> None:
         destination = self.root / "prepared"
         helper.prepare_package(self.definition, destination, self.source_dir)
         manifest_path = destination / "package-manifest.json"
         before = manifest_path.read_bytes()
-        state, _ = helper.prepare_package(self.definition, destination, self.source_dir)
+
+        # A runtime move preserves the original preparation location as history.
+        # Reuse must validate its present bytes without fetching or rewriting it.
+        relocated = self.root / "relocated"
+        destination.rename(relocated)
+        state, _ = helper.prepare_package(self.definition, relocated)
         self.assertEqual(state, "already-valid")
-        self.assertEqual(manifest_path.read_bytes(), before)
+        self.assertEqual((relocated / "package-manifest.json").read_bytes(), before)
+
+        payload = relocated / "config" / "input.bin"
+        payload.write_bytes(b"x" * payload.stat().st_size)
+        with self.assertRaisesRegex(helper.IntegrityError, "SHA-256"):
+            helper.validate_package(self.definition, relocated)
 
     def test_regular_ds_store_files_are_ignored_and_preserved(self) -> None:
         destination = self.root / "prepared"

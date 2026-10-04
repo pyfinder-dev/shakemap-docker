@@ -261,7 +261,6 @@ def package_file_inventory(destination: Path) -> set[str]:
 def validate_package(
     definition: dict[str, Any],
     destination: Path,
-    recorded_destination: Path | None = None,
 ) -> dict[str, Any]:
     try:
         destination_mode = destination.lstat().st_mode
@@ -313,11 +312,16 @@ def validate_package(
         raise IntegrityError("prepared package image dependency metadata is incompatible")
     if manifest.get("limitations") != definition["limitations"]:
         raise IntegrityError("prepared package limitations are incompatible")
-    expected_destination_metadata = str(
-        (recorded_destination or destination).resolve()
-    )
-    if manifest.get("prepared_destination") != expected_destination_metadata:
-        raise IntegrityError("prepared package destination metadata is incompatible")
+    # This records where preparation originally happened. Moving a runtime
+    # does not change its scientific payload, and validation must not rewrite
+    # that history. Inspect and verify the actual destination below instead.
+    prepared_destination = manifest.get("prepared_destination")
+    if (
+        not isinstance(prepared_destination, str)
+        or "\x00" in prepared_destination
+        or not Path(prepared_destination).is_absolute()
+    ):
+        raise IntegrityError("prepared package destination metadata is not an absolute path")
 
     expected = expected_payload(definition)
     expected_records = expected_installed_records(definition)
@@ -656,7 +660,7 @@ def prepare_package(
             compressed_archive_bytes,
             installed_bytes,
         )
-        validate_package(definition, temporary, destination)
+        validate_package(definition, temporary)
         if destination.exists():
             raise DestinationError(
                 f"destination appeared during preparation and was not modified: {destination}"
