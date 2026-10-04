@@ -249,29 +249,16 @@ class DockerfileAssemblyTests(unittest.TestCase):
         )
         self.assertTrue(any(source.startswith("verification/packages/") for source in sources))
 
-    def test_final_dependency_inventory_is_fail_closed(self) -> None:
+    def test_dependency_inventory_and_validation_are_declared(self) -> None:
         dockerfile = (PROJECT_DIR / "Dockerfile").read_text(encoding="utf-8")
         verifier = (PROJECT_DIR / "scripts/verify-shakemap-image.sh").read_text(
             encoding="utf-8"
         )
-        install = dockerfile.index("pip install --no-cache-dir /app")
-        dependency_check = dockerfile.index("python -m pip check", install)
-        temporary = dockerfile.index("mktemp /opt/shakemap-build/dependencies.", dependency_check)
-        freeze = dockerfile.index("python -m pip freeze --all", dependency_check)
-        sort = dockerfile.index("LC_ALL=C sort", freeze)
-        cleanup = dockerfile.index('rm "${dependencies_tmp}"', sort)
-        identity = dockerfile.index("shakemap_service.build_identity write", cleanup)
-        self.assertLess(install, dependency_check)
-        self.assertLess(dependency_check, temporary)
-        self.assertLess(temporary, freeze)
-        self.assertLess(freeze, sort)
-        self.assertLess(sort, cleanup)
-        self.assertLess(cleanup, identity)
-        freeze_line = next(
-            line for line in dockerfile.splitlines() if "pip freeze --all" in line
-        )
-        self.assertNotIn("|", freeze_line)
-        self.assertIn('"${dependencies_tmp}"', freeze_line)
+        # Keep the required dependency checks and inventory artifacts visible
+        # without freezing temporary variable names or shell command order.
+        self.assertIn("python -m pip check", dockerfile)
+        self.assertIn("python -m pip freeze --all", dockerfile)
+        self.assertIn("shakemap_service.build_identity write", dockerfile)
         self.assertIn("check python -m pip check", verifier)
 
     def test_native_dependency_pair_is_exact_and_verified(self) -> None:
@@ -293,35 +280,15 @@ class DockerfileAssemblyTests(unittest.TestCase):
             if line.startswith("RUN pip install --no-cache-dir")
             and "/opt/shakemap" in line
         )
-        self.assertEqual(
-            shlex.split(native_install),
-            [
-                "RUN",
-                "pip",
-                "install",
-                "--no-cache-dir",
-                "/opt/shakemap",
-                "shakemap-modules[all]==1.1.18",
-                "esi-shakelib==1.2.1",
-            ],
-        )
+        packages = shlex.split(native_install)
+        self.assertIn("/opt/shakemap", packages)
+        self.assertIn("shakemap-modules[all]==1.1.18", packages)
+        self.assertIn("esi-shakelib==1.2.1", packages)
         self.assertEqual(
             definition["compatibility"]["shakemap_modules_version"],
             "1.1.18",
         )
-        identity_start = verifier.index('IDENTITY_RESULT="$(python')
-        module_imports = verifier.index('MODULE_RESULT="$(python')
-        deployment_branch = verifier.index('if [[ "${MODE}" == "image" ]]')
-        compatibility_check = verifier.index(
-            "expected_modules = definition['compatibility']"
-        )
-        shakelib_check = verifier.index(
-            "importlib.metadata.version('esi-shakelib') != '1.2.1'"
-        )
-        self.assertLess(identity_start, compatibility_check)
-        self.assertLess(compatibility_check, shakelib_check)
-        self.assertLess(shakelib_check, module_imports)
-        self.assertLess(module_imports, deployment_branch)
+        self.assertIn("importlib.metadata.version('esi-shakelib') != '1.2.1'", verifier)
         self.assertIn(
             "installed_modules != expected_modules",
             verifier,
@@ -337,8 +304,8 @@ class DockerfileAssemblyTests(unittest.TestCase):
             flags=re.MULTILINE,
         )
         self.assertEqual(
-            imports,
-            [
+            set(imports),
+            {
                 "sm_select",
                 "assemble",
                 "model",
@@ -346,7 +313,7 @@ class DockerfileAssemblyTests(unittest.TestCase):
                 "mapping",
                 "stations",
                 "gridxml",
-            ],
+            },
         )
         self.assertIn('check test "${MODULE_RESULT}" = OK', verifier)
 

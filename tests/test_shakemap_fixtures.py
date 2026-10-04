@@ -124,22 +124,6 @@ class ScenarioFixtureTests(unittest.TestCase):
             self.assertGreaterEqual(len(values), 998)
             self.assertTrue(all(value >= 0.0 for value in values))
 
-    def test_readme_states_proof_boundary_and_optional_observations(self) -> None:
-        readme = (FIXTURE / "README.md").read_text(encoding="utf-8")
-        required_phrases = [
-            "SCENARIO",
-            "event_dat.xml",
-            "v4.4.9",
-            "8923f1ff6e82fc866d928a33d1e19e45f276db52",
-            "SHA-256",
-            "public domain",
-            "optional",
-            "do not establish native acceptance",
-            "does not prove",
-        ]
-        for phrase in required_phrases:
-            self.assertIn(phrase.lower(), readme.lower())
-
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

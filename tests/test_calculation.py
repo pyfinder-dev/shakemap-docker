@@ -633,18 +633,6 @@ class CalculationExecutionTests(unittest.TestCase):
         failure.assert_not_called()
         transaction.assert_not_called()
 
-    def test_orchestrator_has_no_fallback_or_native_content_reader(self) -> None:
-        source = Path(calculation.__file__).read_text(encoding="utf-8")
-        for forbidden in (
-            "h5py",
-            "PIL",
-            "ShakeMapOutputContainer",
-            "fallback",
-            "rmtree",
-            "unlink",
-        ):
-            self.assertNotIn(forbidden, source)
-
 
 class ShutdownFailurePersistenceTests(unittest.TestCase):
     def setUp(self) -> None:

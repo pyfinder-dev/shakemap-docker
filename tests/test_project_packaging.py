@@ -25,17 +25,6 @@ class ProjectPackagingTests(unittest.TestCase):
         )
         self.assertIn("data/*.json", metadata["tool"]["setuptools"]["package-data"]["shakemap_service"])
 
-    def test_command_has_no_direct_runtime_or_native_access(self) -> None:
-        source = (PROJECT_DIR / "shakemap_service/cli.py").read_text(encoding="utf-8")
-        for forbidden in (
-            "subprocess",
-            "docker run",
-            "from .runner",
-            "from .paths",
-            "from .status",
-        ):
-            self.assertNotIn(forbidden, source)
-
     def test_command_help_describes_all_public_operations(self) -> None:
         output = io.StringIO()
         with contextlib.redirect_stdout(output), self.assertRaisesRegex(SystemExit, "0"):

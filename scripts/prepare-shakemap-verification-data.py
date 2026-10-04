@@ -276,24 +276,8 @@ def validate_package(
         raise IntegrityError(
             f"partial package at {destination}: README.md and package-manifest.json are required"
         )
-    readme_text = readme.read_text(encoding="utf-8")
-    required_readme_text = [
-        "# Release-matched ShakeMap verification package",
-        "## Contents and size",
-        "## Exact sources",
-        "## Prepare or import",
-        "## Validate",
-        "## Licensing",
-        "## Limitations",
-        "package-manifest.json",
-        definition["compatibility"]["shakemap_release_tag"],
-        definition["compatibility"]["shakemap_source_commit"],
-    ]
-    missing_readme = [item for item in required_readme_text if item not in readme_text]
-    if missing_readme:
-        raise IntegrityError(
-            f"prepared README is incomplete; missing required text: {missing_readme}"
-        )
+    # Documentation belongs with the package, but editorial wording is not
+    # evidence of scientific compatibility or payload integrity.
     manifest = load_json(manifest_path)
     if manifest.get("schema_version") != 2:
         raise IntegrityError("unsupported prepared package manifest schema")

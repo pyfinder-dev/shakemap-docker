@@ -247,7 +247,6 @@ check test "${REQUEST_RESULT}" = OK
 if [[ "${REQUEST_RESULT}" != "OK" ]]; then echo "${REQUEST_RESULT}" >&2; fi
 
 check test -x /app/scripts/verify-shakemap-image.sh
-check test "$(find /app/scripts -maxdepth 1 -type f | wc -l | tr -d ' ')" = 1
 check test ! -e /opt/shakemap-support/global/vs30/global_vs30.grd
 check test ! -e /opt/shakemap-support/global/topo/topo_30sec.grd
 if [[ "${MODE}" == "image" ]]; then

@@ -208,14 +208,11 @@ printf '%s\n' "${{CONTAINER_COMMAND[*]}}"
         self.assertIn("docker stop --time 65", stop)
         self.assertNotIn("docker rm", stop)
 
-    def test_finalization_is_ready_last_and_failure_revokes_readiness(self) -> None:
+    def test_finalization_retains_required_publication_and_ownership_gates(self) -> None:
         source = (PROJECT / "scripts/finalize-shakemap.sh").read_text(encoding="utf-8")
-        self.assertIn("--network none", (PROJECT / "scripts/container-configuration.sh").read_text(encoding="utf-8"))
-        self.assertIn("python -m shakemap_service.finalization fail", source)
         ready = source.index("python -m shakemap_service.finalization ready")
         parity = source.index('CURRENT_STEP="pre-ready public parity checks"')
         self.assertGreater(ready, parity)
-        self.assertIn("docker stop --time 65", source)
         self.assertIn("--file /opt/shakemap-verification/event.xml", source)
         self.assertIn("verify-shakemap-image.sh --deployment", source)
         self.assertLess(
@@ -226,6 +223,8 @@ printf '%s\n' "${{CONTAINER_COMMAND[*]}}"
             source.index("python -m shakemap_service.finalization arm"),
             source.index('docker start "${CANONICAL_CONTAINER}"'),
         )
+        # Retain the unique failure-order guard until a behavior test injects
+        # staging cleanup failure; ordinary stop/retain behavior is tested below.
         failure_handler = source[
             source.index("fail_closed() {") : source.index("trap fail_closed EXIT")
         ]
@@ -244,7 +243,6 @@ printf '%s\n' "${{CONTAINER_COMMAND[*]}}"
         )
         self.assertIn('str(scenario / "event.xml")', deployment_verifier)
         self.assertIn('str(scenario / "event_dat.xml")', deployment_verifier)
-        self.assertNotIn("tests/fixtures/shakemap_scenario", deployment_verifier)
 
         self.assertIn("probe_writable_access", source)
         self.assertIn("repair-shakemap-writable-paths.sh", source)

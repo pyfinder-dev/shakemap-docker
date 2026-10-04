@@ -259,11 +259,15 @@ class PreparationBehaviorTests(unittest.TestCase):
         with self.assertRaisesRegex(helper.IntegrityError, "corrupt installed file"):
             helper.validate_package(self.definition, destination)
 
-    def test_incomplete_prepared_readme_is_reported(self) -> None:
+    def test_documentation_edits_do_not_change_package_integrity(self) -> None:
         destination = self.root / "prepared"
         helper.prepare_package(self.definition, destination, self.source_dir)
-        (destination / "README.md").write_text("incomplete\n", encoding="utf-8")
-        with self.assertRaisesRegex(helper.IntegrityError, "README is incomplete"):
+        (destination / "README.md").write_text("Operator documentation.\n", encoding="utf-8")
+        helper.validate_package(self.definition, destination)
+
+        # The required document must still accompany a complete package.
+        (destination / "README.md").unlink()
+        with self.assertRaises(helper.IntegrityError):
             helper.validate_package(self.definition, destination)
 
     def test_incompatible_provenance_is_reported(self) -> None:
