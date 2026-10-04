@@ -92,16 +92,8 @@ def validate_build_identity(data: Any) -> dict:
     )
     if mapping_compatibility.get("installed_version") != locked_version:
         raise BuildIdentityError("installed matplotlib does not match the resolved release lock")
-    for field in ("source_lock_path", "source_lock_sha256", "record_path", "record_sha256"):
-        value = _require_string(mapping_compatibility.get(field), f"mapping_compatibility.{field}")
-        if field.endswith("sha256") and _SHA256_RE.fullmatch(value) is None:
-            raise BuildIdentityError(f"{field} is not a SHA-256 digest")
-    inventory_digest = _require_string(
-        installed.get("dependency_inventory_sha256"), "dependency_inventory_sha256"
-    ).lower()
-    if _SHA256_RE.fullmatch(inventory_digest) is None:
-        raise BuildIdentityError("dependency_inventory_sha256 is not a SHA-256 digest")
-    installed["dependency_inventory_sha256"] = inventory_digest
+    for field in ("source_lock_path", "record_path"):
+        _require_string(mapping_compatibility.get(field), f"mapping_compatibility.{field}")
 
     natural_earth = _require_mapping(support.get("natural_earth"), "support.natural_earth")
     strec = _require_mapping(support.get("strec"), "support.strec")
@@ -296,7 +288,6 @@ def apply_upstream_mapping_compatibility(source: Path, output: Path) -> dict:
         "distribution": "matplotlib",
         "platform": "linux-64",
         "source_lock_path": str(lock_path),
-        "source_lock_sha256": _sha256(lock_path),
         "before_version": before_version,
         "locked_version": locked_version,
         "installed_version": installed_version,
@@ -350,7 +341,6 @@ def write_build_identity(
     mapping_compatibility = {
         **mapping_compatibility,
         "record_path": str(mapping_compatibility_record),
-        "record_sha256": _sha256(mapping_compatibility_record),
     }
 
     try:
@@ -424,7 +414,6 @@ def write_build_identity(
                 "shakemap_modules_distribution_version": modules_version,
                 "python_version": platform.python_version(),
                 "dependency_inventory_path": str(dependencies),
-                "dependency_inventory_sha256": _sha256(dependencies),
                 "mapping_compatibility": mapping_compatibility,
             },
             "support": {

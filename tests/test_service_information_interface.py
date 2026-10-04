@@ -183,14 +183,11 @@ class ServiceInformationRestTests(unittest.TestCase):
                     "shakemap_distribution_version": "4.4.9",
                     "python_version": "3.12.7",
                     "dependency_inventory_path": "/opt/build/dependencies.txt",
-                    "dependency_inventory_sha256": "b" * 64,
                     "mapping_compatibility": {
                         "policy": "resolved_release_conda_lock",
                         "locked_version": "3.10.8",
                         "source_lock_path": "/opt/source/conda-lock.yml",
-                        "source_lock_sha256": "c" * 64,
                         "record_path": "/opt/build/mapping.json",
-                        "record_sha256": "d" * 64,
                     },
                 },
                 "support": {
@@ -255,7 +252,7 @@ class ServiceInformationRestTests(unittest.TestCase):
             "slabs_dir",
         ):
             self.assertNotIn(name, support["slab2"])
-        self.assertEqual(installed["dependency_inventory_sha256"], "b" * 64)
+        self.assertEqual(installed["shakemap_distribution_version"], "4.4.9")
         self.assertEqual(support["natural_earth"]["tag"], "v5.1.2")
         self.assertEqual(support["strec"]["database_size"], 10)
         self.assertEqual(support["slab2"]["source_url"], "https://example.test/slab2.zip")

@@ -41,20 +41,17 @@ def identity_manifest() -> dict:
                 "shakemap_modules_distribution_version": "1.2.3",
                 "python_version": "3.12.7",
                 "dependency_inventory_path": "/opt/shakemap-build/dependencies.txt",
-                "dependency_inventory_sha256": "d" * 64,
                 "mapping_compatibility": {
                     "schema_version": 1,
                     "policy": "resolved_release_conda_lock",
                     "distribution": "matplotlib",
                     "platform": "linux-64",
                     "source_lock_path": "/opt/shakemap/conda-lock.yml",
-                    "source_lock_sha256": "b" * 64,
                     "before_version": "3.11.1",
                     "locked_version": "3.10.8",
                     "installed_version": "3.10.8",
                     "changed": True,
                     "record_path": "/opt/shakemap-build/mapping-compatibility.json",
-                    "record_sha256": "c" * 64,
                 },
             },
             "support": {
@@ -177,7 +174,6 @@ def make_mapping_compatibility(root: Path, version: str) -> Path:
         "distribution": "matplotlib",
         "platform": "linux-64",
         "source_lock_path": "/opt/shakemap/conda-lock.yml",
-        "source_lock_sha256": "b" * 64,
         "before_version": version,
         "locked_version": version,
         "installed_version": version,
@@ -358,6 +354,14 @@ class BuildIdentityTests(unittest.TestCase):
             )
         self.assertEqual(json.loads(output.read_text(encoding="utf-8")), manifest)
         self.assertNotIn("service", manifest["immutable_image"])
+        installed = manifest["immutable_image"]["installed"]
+        self.assertEqual(installed["dependency_inventory_path"], str(dependencies))
+        self.assertEqual(dependencies.read_text(), "example==1.0\n")
+        self.assertNotIn("dependency_inventory_sha256", installed)
+        compatibility = installed["mapping_compatibility"]
+        self.assertEqual(compatibility["installed_version"], "1.2.3")
+        self.assertNotIn("source_lock_sha256", compatibility)
+        self.assertNotIn("record_sha256", compatibility)
 
     def test_module_cli_writes_manifest(self) -> None:
         metadata_root = self.root / "metadata"

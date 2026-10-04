@@ -151,12 +151,9 @@ class EventDetailInterfaceTests(unittest.TestCase):
                     "installed": {
                         "shakemap_distribution_version": "4.4.9",
                         "dependency_inventory_path": "/opt/build/dependencies.txt",
-                        "dependency_inventory_sha256": "b" * 64,
                         "mapping_compatibility": {
                             "source_lock_path": "/opt/source/conda-lock.yml",
-                            "source_lock_sha256": "c" * 64,
                             "record_path": "/opt/build/mapping.json",
-                            "record_sha256": "d" * 64,
                         },
                     },
                     "support": {
@@ -409,7 +406,7 @@ class EventDetailInterfaceTests(unittest.TestCase):
                 self.assertEqual(projected["unrelated"], {"retained": True})
                 installed = projected["software_identity"]["immutable_image"]["installed"]
                 self.assertNotIn("dependency_inventory_path", installed)
-                self.assertEqual(installed["dependency_inventory_sha256"], "b" * 64)
+                self.assertEqual(installed["shakemap_distribution_version"], "4.4.9")
 
         self.assertEqual(current_file.read_bytes(), current_bytes)
         self.assertEqual(archive_file.read_bytes(), archive_bytes)
