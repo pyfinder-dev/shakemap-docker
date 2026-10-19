@@ -25,9 +25,12 @@ check test "$(id -u)" = 1000
 check test "$(id -g)" = 1000
 check command -v shake
 check command -v sm_profile
+check command -v sm_tune
 check command -v shake-in-docker
+check bash -c '! command -v conda && ! command -v mamba && ! command -v micromamba'
 check bash -n /app/entrypoint.sh
 check sm_profile --help
+check sm_tune --help
 check shake-in-docker --help
 check python -m pip check
 
@@ -61,12 +64,6 @@ try:
     installed_modules = importlib.metadata.version('shakemap-modules')
     if installed_modules != image['installed']['shakemap_modules_distribution_version']:
         errors.append('module version mismatch')
-    definition = json.loads(pathlib.Path('/opt/shakemap-verification/source-manifest.json').read_text())
-    expected_modules = definition['compatibility']['shakemap_modules_version']
-    if installed_modules != expected_modules:
-        errors.append('installed modules differ from the release verification definition')
-    if importlib.metadata.version('esi-shakelib') != '1.2.1':
-        errors.append('esi-shakelib version mismatch')
     declared = load_declared_release_tag(pathlib.Path('/opt/shakemap-build/VERSIONS.env'))
     if image['upstream']['release_tag'] != declared:
         errors.append('installed release differs from VERSIONS.env')
@@ -156,34 +153,9 @@ PY
 )"
 check test "${MODULE_RESULT}" = OK
 
-MAPPING_STACK_RESULT="$(python - <<'PY'
-import importlib.metadata
-import json
-
-import cartopy
-import fiona
-import matplotlib
-import pyproj
-import rasterio
-import shapely
-from PIL import Image
-
-identity = json.load(open('/opt/shakemap-build/identity.json'))['immutable_image']
-compatibility = identity['installed']['mapping_compatibility']
-versions = {
-    name: importlib.metadata.version(name)
-    for name in ('matplotlib', 'cartopy', 'shapely', 'fiona', 'rasterio', 'pyproj', 'pillow')
-}
-errors = []
-if versions['matplotlib'] != compatibility['locked_version']:
-    errors.append('matplotlib does not match the resolved release lock')
-if compatibility['installed_version'] != versions['matplotlib']:
-    errors.append('mapping compatibility record differs from the installed stack')
-print('OK' if not errors else ' | '.join(errors))
-PY
-)"
-check test "${MAPPING_STACK_RESULT}" = OK
-if [[ "${MAPPING_STACK_RESULT}" != "OK" ]]; then echo "${MAPPING_STACK_RESULT}" >&2; fi
+check python -m shakemap_service.upstream_environment check \
+    --source /opt/shakemap \
+    --record /opt/shakemap-build/environment-compatibility.json
 
 REQUEST_RESULT="$(python - <<'PY'
 import hashlib
@@ -287,8 +259,6 @@ try:
         'shakemap_release_tag': identity['upstream']['release_tag'],
         'shakemap_version': version,
         'shakemap_source_commit': identity['upstream']['source_commit'],
-        'shakemap_modules_version': identity['installed']['shakemap_modules_distribution_version'],
-        'usgs_strec_version': importlib.metadata.version('usgs-strec'),
     }
     if compatibility != expected_compatibility:
         errors.append('verification definition does not match the installed release')

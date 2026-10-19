@@ -3,7 +3,7 @@
 `GET /healthz` and `shake-in-docker health` return the same lightweight view:
 
 ```json
-{"ready": false, "reason": "operational explanation", "shakemap_version": "4.4.9"}
+{"ready": false, "reason": "operational explanation", "shakemap_version": "4.5.0"}
 ```
 
 A responsive service returns HTTP 200 even when `ready=false`. A ready service

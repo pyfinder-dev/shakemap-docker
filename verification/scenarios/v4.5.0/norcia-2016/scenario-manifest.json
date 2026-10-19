@@ -6,7 +6,7 @@
   "classification": "ACTUAL",
   "purpose": "Pinned native inputs for configuration-selection and failure-behavior verification with the 30 October 2016 Norcia earthquake",
   "target_shakemap": {
-    "release_tag": "v4.4.9",
+    "release_tag": "v4.5.0",
     "native_compatibility": "Must be established by execution in the exact project image; static inspection is insufficient"
   },
   "source": {
@@ -84,8 +84,8 @@
     "configuration_selection": "Configuration is a request parameter; event geography does not select it"
   },
   "limitations": [
-    "The Atlas source product was generated with ShakeMap 4.0.2+335.gcbad862.dirty, not the project's v4.4.9 image.",
-    "JSON and XML structure, hashes, and internally consistent origin metadata do not establish native acceptance by ShakeMap v4.4.9.",
+    "The Atlas source product was generated with ShakeMap 4.0.2+335.gcbad862.dirty, not the project's v4.5.0 image.",
+    "JSON and XML structure, hashes, and internally consistent origin metadata do not establish native acceptance by ShakeMap v4.5.0.",
     "The pinned processed info.json reports src_mech NM while the pinned rupture metadata reports mech ALL. This fixture preserves the rupture-origin value in event.xml and does not attempt a scientific reconciliation.",
     "A successful native run would establish operational compatibility for the exact image and inputs, not scientific correctness or regional suitability.",
     "The current italy preset and its external datasets are outside this fixture; their absence or native rejection must remain visible and must not trigger global fallback.",

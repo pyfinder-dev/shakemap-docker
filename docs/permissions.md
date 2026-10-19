@@ -31,7 +31,14 @@ This helper uses host utilities; it does not need Python or Docker and never
 starts a service. It repairs only the four writable trees for `1000:1000`,
 preserving contents and existing group/other permissions. It rejects unsafe
 paths before repair. Fix a reported unsafe layout before retrying; `sudo` does
-not make a symbolic link or an unexpected file type acceptable.
+not make a symbolic service-state path or an unexpected file type acceptable.
+
+The probe and writable repair check the real directory boundaries of native
+caches at `.service/events/<event_id>/profile/cache/` and
+`.service/archive/<archive_id>/service/profile/cache/`, but leave their disposable
+contents untouched. Native libraries may create links inside these caches.
+Links at cache boundaries or elsewhere in authoritative service state remain
+invalid; neither helper follows cache links or repairs their targets.
 
 A failed shell utility does not by itself establish insufficient privilege.
 The helper preserves the utility's error and reports the affected operation

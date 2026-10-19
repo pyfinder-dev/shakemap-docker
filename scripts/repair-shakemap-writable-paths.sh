@@ -74,14 +74,30 @@ for relative in products logs .service data/inputs; do
         continue
     fi
     [[ -d "${root}" ]] || refuse "${root}" "writable root is not a directory"
-    # Materialize traversal before any mutation, so unreadable descendants or
-    # unsupported entries fail the entire preflight rather than half a repair.
-    if ! find "${root}" -print0 > "${listing}"; then
+    # Materialize traversal before any mutation. Native cache children are
+    # disposable and can contain library-generated links or unreadable files;
+    # list their real boundary for validation/repair, without descending into it.
+    # Match one event/archive component only; find -path '*' also matches '/'.
+    find_command=(find . -print0)
+    if [[ "${relative}" == .service ]]; then
+        find_command=(find . \( \
+            -regex './events/[^/]*/profile/cache' -o \
+            -regex './archive/[^/]*/service/profile/cache' \
+            \) -prune -print0 -o -print0)
+    fi
+    if ! (cd "${root}" && "${find_command[@]}") > "${listing}"; then
         failure "preflight traversal" "${root}"
         exit 1
     fi
-    while IFS= read -r -d '' path; do
+    while IFS= read -r -d '' entry; do
+        path="${root}"
+        [[ "${entry}" == . ]] || path="${root}/${entry#./}"
         [[ ! -L "${path}" ]] || refuse "${path}" "symbolic link"
+        if [[ "${relative}" == .service && \
+            ( "${entry}" =~ ^\./events/[^/]*/profile/cache$ || \
+              "${entry}" =~ ^\./archive/[^/]*/service/profile/cache$ ) ]]; then
+            [[ -d "${path}" ]] || refuse "${path}" "native cache boundary is not a directory"
+        fi
         [[ -d "${path}" || -f "${path}" ]] || refuse "${path}" "special filesystem entry"
         if ! details="$(metadata "${path}")"; then failure "stat" "${path}"; exit 1; fi
         read -r mode owner links identity <<< "${details}"

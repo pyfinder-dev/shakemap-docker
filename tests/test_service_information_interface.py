@@ -183,6 +183,17 @@ class ServiceInformationRestTests(unittest.TestCase):
                     "shakemap_distribution_version": "4.4.9",
                     "python_version": "3.12.7",
                     "dependency_inventory_path": "/opt/build/dependencies.txt",
+                    "environment_compatibility": {
+                        "policy": "resolved_release_environment",
+                        "source_environment_path": "/opt/source/environment.yml",
+                        "source_environment_sha256": "c" * 64,
+                        "record_path": "/opt/build/environment.json",
+                        "provider_differences": {
+                            "conda_inventory_path": "/opt/build/conda.txt",
+                            "resolved_python_inventory_path": "/opt/build/python.txt",
+                            "package_manager_in_runtime": False,
+                        },
+                    },
                     "mapping_compatibility": {
                         "policy": "resolved_release_conda_lock",
                         "locked_version": "3.10.8",
@@ -239,6 +250,13 @@ class ServiceInformationRestTests(unittest.TestCase):
         installed = projected["immutable_image"]["installed"]
         support = projected["immutable_image"]["support"]
         self.assertNotIn("dependency_inventory_path", installed)
+        self.assertNotIn("source_environment_path", installed["environment_compatibility"])
+        self.assertNotIn("record_path", installed["environment_compatibility"])
+        self.assertEqual(installed["environment_compatibility"]["source_environment_sha256"], "c" * 64)
+        self.assertEqual(
+            installed["environment_compatibility"]["provider_differences"],
+            {"package_manager_in_runtime": False},
+        )
         self.assertNotIn("source_lock_path", installed["mapping_compatibility"])
         self.assertNotIn("record_path", installed["mapping_compatibility"])
         self.assertNotIn("manifest_path", support["natural_earth"])

@@ -30,6 +30,10 @@ python -m pip install -e .
 ./scripts/build-shakemap-docker.sh
 ```
 
+Before `verify-shakemap-deployment.sh` or `make verify`, install the host test
+dependencies with `python -m pip install -r requirements.txt`. That file also
+installs the client and helpers into the active environment.
+
 Keep that environment active before running the data helper:
 
 ```bash
@@ -42,6 +46,18 @@ named `shakemap-docker` (image tag `latest`). The runtime mounts at
 `/home/sysop/runtime`; the `shakemap/data/global`, `regional`, and `test`
 subtrees have read-only overlays. The start helper has no separate `--data`,
 `--runtime`, or container-name override.
+
+Finalization permits one invocation at a time on the invoking host for the
+canonical container and selected Docker daemon, including calls from different
+checkouts or runtime paths. A competing invocation reports that finalization is already running;
+retry after it finishes. The operating system releases the lock when the
+operation exits; an existing lock file does not require manual removal.
+
+First installation and same-runtime upgrades or recovery use the same helper
+arguments. If the existing container mounts another runtime, finalization leaves
+it untouched. To switch deliberately, finish its accepted work, stop the service,
+and explicitly remove the old container before finalizing the new runtime.
+Keep the old runtime data; container removal does not require deleting it.
 
 `make build`, `data`, `fix-permissions`, `finalize`, `start`, `stop`, and
 `verify`, plus `make check`, are thin aliases to the corresponding helpers. The writable repair

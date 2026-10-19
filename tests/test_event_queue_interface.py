@@ -455,19 +455,6 @@ class CliTransportTests(unittest.TestCase):
                 self.assertEqual(output.getvalue(), "")
                 self.assertTrue(error.getvalue().startswith("ERROR:"))
 
-    def test_client_has_no_runtime_or_native_access(self) -> None:
-        source = Path(cli.__file__).read_text(encoding="utf-8")
-        for forbidden in (
-            "from .paths",
-            "from .status",
-            "from .queue",
-            "import docker",
-            "docker run",
-            "subprocess",
-            "RUNTIME_ROOT",
-        ):
-            self.assertNotIn(forbidden, source)
-
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

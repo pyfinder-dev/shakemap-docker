@@ -5,6 +5,111 @@ CANONICAL_IMAGE="shakemap-docker:latest"
 CANONICAL_CONTAINER="shakemap-docker"
 INTERNAL_PORT="9010"
 
+acquire_finalization_lock() {
+    # Re-exec, rather than supervise a child: the shell doing the deployment and
+    # its cleanup own the inherited lock. Consume the one-use handoff immediately
+    # so another helper launched by this process must acquire its own lock.
+    if [[ "${_SHAKEMAP_FINALIZER_OWNER:-}" == "$$" && \
+        "${_SHAKEMAP_FINALIZER_FD:-}" =~ ^[0-9]+$ ]]; then
+        python - finalization-lock-check "${_SHAKEMAP_FINALIZER_FD}" "${_SHAKEMAP_FINALIZER_PATH}" <<'PY'
+import fcntl
+import os
+import stat
+import sys
+
+descriptor, path = int(sys.argv[2]), sys.argv[3]
+opened, named = os.fstat(descriptor), os.stat(path, follow_symlinks=False)
+if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino):
+    raise SystemExit("ERROR: finalization lock handoff is unsafe")
+fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+PY
+        unset _SHAKEMAP_FINALIZER_OWNER _SHAKEMAP_FINALIZER_FD _SHAKEMAP_FINALIZER_PATH
+        return
+    fi
+    unset _SHAKEMAP_FINALIZER_OWNER _SHAKEMAP_FINALIZER_FD _SHAKEMAP_FINALIZER_PATH
+    # A selected CLI context or explicit endpoint is already stable. Otherwise
+    # pin the current context so a concurrent `docker context use` cannot move
+    # later commands to a different daemon than the one whose lock we acquire.
+    if [[ -z "${DOCKER_CONTEXT:-}" && -z "${DOCKER_HOST:-}" ]]; then
+        DOCKER_CONTEXT="$(docker context show)" || return 1
+        [[ -n "${DOCKER_CONTEXT}" ]] || { echo "ERROR: Docker context is unavailable." >&2; return 1; }
+        export DOCKER_CONTEXT
+    fi
+    exec "${PROJECT_PYTHON}" - finalization-lock "$@" <<'PY'
+import fcntl
+import hashlib
+import os
+from pathlib import Path
+import stat
+import subprocess
+import sys
+
+script, container, *arguments = sys.argv[2:]
+try:
+    daemon = subprocess.check_output(["docker", "info", "--format", "{{.ID}}"], text=True).strip()
+    if not daemon:
+        raise ValueError("Docker daemon identity is unavailable")
+    key = hashlib.sha256((daemon + "\0" + container).encode()).hexdigest()
+    path = Path("/tmp") / f"shakemap-finalization-{key}.lock"
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+    try:
+        descriptor = os.open(path, flags | os.O_CREAT | os.O_EXCL, 0o644)
+    except FileExistsError:
+        descriptor = os.open(path, flags)
+    else:
+        # The lock stores no data. Read access permits cooperating host users
+        # to lock the same inode even when their usual umask is private.
+        os.fchmod(descriptor, 0o644)
+    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        raise ValueError(f"finalization lock is not a regular file: {path}")
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        raise SystemExit("ERROR: another finalization is already running for this Docker daemon; wait for it to finish.")
+    os.set_inheritable(descriptor, True)
+    environment = dict(os.environ, _SHAKEMAP_FINALIZER_OWNER=str(os.getpid()),
+                       _SHAKEMAP_FINALIZER_FD=str(descriptor), _SHAKEMAP_FINALIZER_PATH=str(path))
+    os.execvpe("bash", ["bash", script, *arguments], environment)
+except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+    raise SystemExit(f"ERROR: cannot acquire finalization lock: {exc}")
+PY
+}
+
+inspect_finalization_mounts() {
+    local inspection
+    inspection="$(docker container inspect --format '{{json .}}' "${CANONICAL_CONTAINER}")" || {
+        echo "ERROR: existing canonical container could not be inspected; it was left untouched." >&2
+        return 1
+    }
+    python - finalization-mounts "${inspection}" "${RUNTIME_ABS}" "${CANONICAL_CONTAINER}" <<'PY'
+import json
+import re
+import sys
+
+inspection, runtime, name = sys.argv[2:]
+try:
+    details = json.loads(inspection)
+    expected = sorted([
+        ("bind", runtime, "/home/sysop/runtime", True),
+        *(("bind", f"{runtime}/shakemap/data/{name}", f"/home/sysop/runtime/shakemap/data/{name}", False)
+          for name in ("global", "regional", "test")),
+    ])
+    mounts = sorted((item["Type"], item["Source"], item["Destination"], item["RW"])
+                    for item in details["Mounts"])
+    if mounts != expected:
+        raise ValueError(f"canonical container mounts do not belong to requested runtime {runtime}")
+    if details["Name"] != f"/{name}" or not re.fullmatch(r"[0-9a-f]{64}", details["Id"]):
+        raise ValueError("canonical container identity is unavailable")
+except (ValueError, TypeError, KeyError) as exc:
+    raise SystemExit(
+        f"ERROR: {exc}; existing container and runtime were left untouched. "
+        "To switch runtimes deliberately, wait for accepted work to finish, stop the previous service, "
+        "explicitly remove its stopped canonical container, then rerun finalization. Preserve its runtime data."
+    )
+print(details["Id"])
+PY
+}
+
 require_project_environment() {
     if [[ -z "${VIRTUAL_ENV:-}" ]]; then
         echo "ERROR: activate the project Python environment before continuing." >&2
@@ -63,16 +168,16 @@ load_image_identity() {
 verify_canonical_container_configuration() {
     local mode="$1"
     local container_json
-    local image_environment_json
+    local image_configuration_json
     if ! container_json="$(docker container inspect --format '{{json .}}' "${CANONICAL_CONTAINER}")"; then
         echo "ERROR: canonical container could not be inspected." >&2
         return 1
     fi
-    if ! image_environment_json="$(docker image inspect --format '{{json .Config.Env}}' "${CANONICAL_IMAGE}")"; then
-        echo "ERROR: canonical image environment could not be inspected." >&2
+    if ! image_configuration_json="$(docker image inspect --format '{{json .Config}}' "${CANONICAL_IMAGE}")"; then
+        echo "ERROR: canonical image configuration could not be inspected." >&2
         return 1
     fi
-    python - "${mode}" "${container_json}" "${image_environment_json}" \
+    python - "${mode}" "${container_json}" "${image_configuration_json}" \
         "${CANONICAL_CONTAINER}" "${CANONICAL_IMAGE}" "${IMAGE_ID}" \
         "${RUNTIME_ABS}" "${SERVICE_ABS}" "${PORT}" "${MAX_CONCURRENT}" \
         "${IMAGE_DIGEST}" <<'PY'
@@ -82,7 +187,7 @@ import sys
 (
     mode,
     container_json,
-    image_environment_json,
+    image_configuration_json,
     container_name,
     image_name,
     image_id,
@@ -95,11 +200,13 @@ import sys
 problems = []
 try:
     details = json.loads(container_json)
-    image_environment = json.loads(image_environment_json)
+    image_configuration = json.loads(image_configuration_json)
 except json.JSONDecodeError as exc:
     raise SystemExit(f"ERROR: malformed Docker inspection JSON: {exc}")
 if not isinstance(details, dict):
     raise SystemExit("ERROR: malformed Docker container inspection data")
+if not isinstance(image_configuration, dict):
+    raise SystemExit("ERROR: malformed Docker image configuration data")
 
 if details.get("Name") != f"/{container_name}":
     problems.append("container-name")
@@ -115,6 +222,12 @@ if mode == "probe" and (
     or configuration.get("Entrypoint") != ["python"]
 ):
     problems.append("probe-user-or-entrypoint")
+elif mode != "probe" and isinstance(configuration, dict):
+    if (configuration.get("User") or "") != (image_configuration.get("User") or ""):
+        problems.append("user")
+    for key in ("Entrypoint", "Cmd"):
+        if (configuration.get(key) or []) != (image_configuration.get(key) or []):
+            problems.append(key.lower())
 
 expected_mounts = sorted(
     [
@@ -150,7 +263,7 @@ def environment(values):
     return result
 
 try:
-    expected_environment = environment(image_environment)
+    expected_environment = environment(image_configuration.get("Env"))
     actual_environment = environment(configuration.get("Env"))
 except (AttributeError, ValueError):
     expected_environment = None
@@ -201,7 +314,10 @@ PY
 canonical_container_presence() {
     local containers
     containers="$(docker container ls --all \
-        --filter "name=^/${CANONICAL_CONTAINER}$" --format '{{.Names}}')"
+        --filter "name=^/${CANONICAL_CONTAINER}$" --format '{{.Names}}')" || {
+        echo "ERROR: canonical container presence could not be inspected." >&2
+        return 1
+    }
     if [[ -z "${containers}" ]]; then
         echo absent
     elif [[ "${containers}" == "${CANONICAL_CONTAINER}" ]]; then

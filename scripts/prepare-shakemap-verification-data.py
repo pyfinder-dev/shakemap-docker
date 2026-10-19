@@ -18,6 +18,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from shakemap_service.release import ReleaseResolutionError, load_declared_release_tag
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFINITION_ROOT = PROJECT_ROOT / "verification" / "packages"
@@ -77,10 +79,17 @@ def load_json(path: Path) -> dict[str, Any]:
 
 
 def default_definition() -> Path:
-    manifests = sorted(DEFINITION_ROOT.glob("v*/source-manifest.json"))
-    if not manifests:
-        raise MissingSourceError(f"no verification definitions under {DEFINITION_ROOT}")
-    return manifests[-1]
+    try:
+        release_tag = load_declared_release_tag(PROJECT_ROOT / "VERSIONS.env")
+    except ReleaseResolutionError as exc:
+        raise MissingSourceError(f"cannot select release-matched verification data: {exc}") from exc
+    manifest = DEFINITION_ROOT / release_tag / "source-manifest.json"
+    if not manifest.is_file():
+        raise MissingSourceError(
+            f"missing verification definition for declared ShakeMap {release_tag}: "
+            f"{manifest}; add the release-matched definition before preparing data"
+        )
+    return manifest
 
 
 def load_definition(path: Path) -> dict[str, Any]:
@@ -476,7 +485,7 @@ transformation, size, SHA-256, license, and compatibility fact.
 - `data/mapping/CA_topo.grd`: California test topography.
 - `data/layers/california.wkt`: selection override polygon.
 - Natural Earth mapping layers are supplied read-only by the image.
-- The STREC 2.3.14 `moment_tensors.db` installed with the Python distribution
+- The STREC `moment_tensors.db` installed with the Python distribution
   is supplied read-only by the image; this package does not duplicate it.
 
 The event at ({definition['coverage']['event_latitude']},
@@ -743,7 +752,7 @@ def add_common(parser: argparse.ArgumentParser) -> None:
         "--definition",
         type=Path,
         default=None,
-        help="Tracked source-manifest.json (default: latest tracked definition)",
+        help="Tracked source-manifest.json (default: repository-declared ShakeMap release)",
     )
 
 
@@ -783,8 +792,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Iterable[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    definition_path = (args.definition or default_definition()).resolve()
     try:
+        definition_path = (args.definition or default_definition()).resolve()
         definition = load_definition(definition_path)
         destination = (
             args.destination.resolve()

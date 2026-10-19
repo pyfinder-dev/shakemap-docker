@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import fcntl
+import hashlib
 import errno
 import io
 import contextlib
@@ -13,9 +15,25 @@ import shlex
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 PROJECT = Path(__file__).resolve().parents[1]
 HELPER = PROJECT / "scripts/repair-shakemap-writable-paths.sh"
+
+
+def remove_fixture_lock(daemon: str) -> None:
+    """Remove only the idle lock for this test's unique fake daemon."""
+    key = hashlib.sha256((daemon + "\0shakemap-docker").encode()).hexdigest()
+    path = Path("/tmp") / f"shakemap-finalization-{key}.lock"
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        path.unlink()
+    finally:
+        os.close(descriptor)
 
 
 class WritablePathTests(unittest.TestCase):
@@ -23,6 +41,7 @@ class WritablePathTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(prefix="writable paths ")
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
+        self.addCleanup(remove_fixture_lock, str(self.root))
         self.runtime = self.root / "runtime with 'quote"
         self.service = self.runtime / "shakemap"
         for relative in ("products", "logs", ".service/events", ".service/archive",
@@ -188,12 +207,151 @@ fi
         self.assertEqual(result.returncode, 2, result.stderr)
         self.assertFalse(self.trace.exists())
 
+    def test_native_cache_descendants_are_not_probed_or_repaired(self):
+        caches = [
+            self.service / ".service/events/event with space/profile/cache",
+            self.service / ".service/archive/event-20261018T120000.000000Z/service/profile/cache",
+        ]
+        target = self.service / "data/global/font-cache-target"
+        target.write_bytes(b"operator data")
+        target.chmod(0o400)
+        retained = [target]
+        for cache in caches:
+            cache.mkdir(parents=True)
+            generated = cache / "generated.cache"
+            generated.write_bytes(b"native cache")
+            generated.chmod(0o400)
+            link = cache / "fontconfig-link"
+            link.symlink_to(os.path.relpath(target, cache))
+            inaccessible = cache / "unreadable"
+            inaccessible.mkdir()
+            (inaccessible / "private.cache").write_bytes(b"private cache")
+            inaccessible.chmod(0)
+            self.addCleanup(inaccessible.chmod, 0o700)
+            retained.extend((generated, link, inaccessible))
+
+        def metadata(path):
+            info = path.lstat()
+            return (info.st_mode, info.st_uid, info.st_gid, info.st_size,
+                    info.st_mtime_ns, info.st_ctime_ns)
+
+        before = {path: metadata(path) for path in retained}
+        destinations = {cache / "fontconfig-link": os.readlink(cache / "fontconfig-link") for cache in caches}
+        self.finalizer()
+        code = (self.root / "probe.py").read_text().replace(
+            "Path('/home/sysop/runtime/shakemap')", f"Path({str(self.service)!r})"
+        )
+        real_open = os.open
+        real_scandir = os.scandir
+
+        def observed_open(path, *args, **kwargs):
+            if not isinstance(path, int):
+                self.assertFalse(any(cache in Path(path).parents for cache in caches))
+            return real_open(path, *args, **kwargs)
+
+        def observed_scandir(path):
+            if not isinstance(path, int):
+                self.assertFalse(any(Path(path) == cache or cache in Path(path).parents for cache in caches))
+            return real_scandir(path)
+
+        with (mock.patch("os.getuid", return_value=1000), mock.patch("os.getgid", return_value=1000),
+              mock.patch.object(sys, "argv", ["probe", str(self.service)]),
+              mock.patch("os.open", side_effect=observed_open),
+              mock.patch("os.scandir", side_effect=observed_scandir),
+              contextlib.redirect_stderr(io.StringIO())):
+            with self.assertRaises(SystemExit) as stopped:
+                exec(code, {"__name__": "__main__"})
+            self.assertEqual(stopped.exception.code, 0)
+
+        self.executable("chmod", """#!/usr/bin/env bash
+printf '%s\\0' "$2" >> "$FIXTURE_ROOT/chmod-paths"
+exec /bin/chmod "$@"
+""")
+        result = self.helper()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        repaired = [Path(os.fsdecode(path)) for path in (self.root / "chmod-paths").read_bytes().split(b"\0") if path]
+        self.assertTrue(all(cache in repaired for cache in caches))
+        self.assertFalse(any(cache in path.parents for path in repaired for cache in caches))
+        self.assertEqual({path: metadata(path) for path in retained}, before)
+        self.assertEqual({link: os.readlink(link) for link in destinations}, destinations)
+        self.assertEqual(target.read_bytes(), b"operator data")
+        for cache in caches:
+            self.assertEqual((cache / "generated.cache").read_bytes(), b"native cache")
+
+    def test_cache_boundaries_and_authoritative_state_remain_checked(self):
+        self.finalizer()
+        code = (self.root / "probe.py").read_text().replace(
+            "Path('/home/sysop/runtime/shakemap')", f"Path({str(self.service)!r})"
+        )
+        target = self.service / "data/global/operator-target"
+        target.write_bytes(b"operator data")
+        target.chmod(0o400)
+        target_before = target.stat()
+        self.executable("chmod", """#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$FIXTURE_ROOT/chmod-trace"
+exec /bin/chmod "$@"
+""")
+        boundary = ".service/events/current/profile/cache"
+        archived = ".service/archive/event-20261018T120000.000000Z/service/profile/cache"
+        cases = (
+            (boundary, "symlink"), (archived, "symlink"),
+            (boundary, "file"), (archived, "file"),
+            (".service/events/current/profile", "symlink"),
+            (".service/archive/event-20261018T120000.000000Z/service/profile", "symlink"),
+            (".service/events/current/status.json", "symlink"),
+            (".service/archive/event-20261018T120000.000000Z/service/status.json", "symlink"),
+            (".service/events/current/status.json", "hardlink"),
+            (".service/archive/event-20261018T120000.000000Z/service/status.json", "fifo"),
+            (".service/events/current/nested/profile/cache/link", "symlink"),
+            (".service/archive/event/nested/service/profile/cache/link", "symlink"),
+            (".service/queue/cache/link", "symlink"),
+        )
+        for relative, kind in cases:
+            with self.subTest(path=relative, kind=kind):
+                path = self.service / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                if kind == "symlink":
+                    path.symlink_to(target)
+                elif kind == "hardlink":
+                    os.link(self.service / ".service/workflow.lock", path)
+                elif kind == "fifo":
+                    os.mkfifo(path)
+                else:
+                    path.write_bytes(b"invalid cache root")
+                # Hard-link rejection belongs to mutating repair; the probe
+                # only checks whether existing regular state can be opened.
+                if kind != "hardlink":
+                    output = io.StringIO()
+                    with (mock.patch("os.getuid", return_value=1000), mock.patch("os.getgid", return_value=1000),
+                          mock.patch.object(sys, "argv", ["probe", str(self.service)]),
+                          contextlib.redirect_stderr(output)):
+                        with self.assertRaises(SystemExit) as stopped:
+                            exec(code, {"__name__": "__main__"})
+                        self.assertEqual(stopped.exception.code, 1)
+                    self.assertIn(str(path), output.getvalue())
+                result = self.helper()
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn(str(path), result.stderr)
+                self.assertFalse(self.trace.exists())
+                self.assertFalse((self.root / "chmod-trace").exists())
+                path.unlink()
+                # Later cases can exercise a parent of the preceding path.
+                parent = path.parent
+                while parent.parent != self.service / ".service" and not any(parent.iterdir()):
+                    parent.rmdir()
+                    parent = parent.parent
+        after = target.stat()
+        self.assertEqual((after.st_mode, after.st_uid, after.st_gid, after.st_mtime_ns, after.st_ctime_ns),
+                         (target_before.st_mode, target_before.st_uid, target_before.st_gid,
+                          target_before.st_mtime_ns, target_before.st_ctime_ns))
+        self.assertEqual(target.read_bytes(), b"operator data")
+
     def finalizer(self, scenario="pass"):
         venv = self.root / "venv/bin"
         venv.mkdir(parents=True)
         python = venv / "python"
         python.write_text("""#!/usr/bin/env bash
-if [[ "$1" == - && "${2:-}" == probe ]]; then exec "$REAL_PYTHON" "$@"; fi
+if [[ "$1" == - && ( "${2:-}" == probe || "${2:-}" == finalization-* ) ]]; then exec "$REAL_PYTHON" "$@"; fi
 exit 0
 """)
         python.chmod(0o755)
@@ -210,9 +368,13 @@ state = root / 'container.json'
 scenario = os.environ['SCENARIO']
 with (root / 'docker-trace').open('a') as log: log.write(json.dumps(a) + '\n')
 image = 'sha256:' + 'a' * 64
-if a[:2] == ['image', 'inspect']:
+if a[:2] == ['context', 'show']:
+    print('fixture-context')
+elif a[0] == 'info':
+    print(root)
+elif a[:2] == ['image', 'inspect']:
     fmt = a[3]
-    print('[]' if 'Config.Env' in fmt else image if '.Id' in fmt else '4.4.9' if 'version' in fmt else 'v4.4.9' if 'release' in fmt else '')
+    print(json.dumps(dict(Env=[], User='sysop', Entrypoint=['/app/entrypoint.sh'], Cmd=None)) if 'json .Config' in fmt else image if '.Id' in fmt else '4.4.9' if 'version' in fmt else 'v4.4.9' if 'release' in fmt else '')
 elif a[:2] == ['container', 'ls']:
     if state.exists(): print('shakemap-docker')
 elif a[:2] == ['container', 'inspect']:
@@ -222,6 +384,7 @@ elif a[:2] == ['container', 'inspect']:
     if 'json .' in fmt: print(json.dumps(data))
     elif 'State.Status' in fmt: print('exited:' + str(data['code']) + ':')
     elif 'State.Running' in fmt: print('false')
+    elif '.Id' in fmt: print(data['Id'])
 elif a[0] == 'rm': state.unlink(missing_ok=True)
 elif a[0] == 'cp': sys.stdout.buffer.write(b'\0' * 10240)
 elif a[0] == 'create':
@@ -232,13 +395,14 @@ elif a[0] == 'create':
             parts = a[i+1].split(':')
             mounts.append(dict(Type='bind', Source=parts[0], Destination=parts[1], RW=len(parts) == 2))
         if value == '-e': env.append(a[i+1])
-    data = dict(Name='/shakemap-docker', Image=image,
+    data = dict(Id='b' * 64, Name='/shakemap-docker', Image=image,
                 Config=dict(Image=image if probe else 'shakemap-docker:latest', Env=env,
                             User='0:0' if scenario == 'wrong-user' else '1000:1000', Entrypoint=['python']),
                 HostConfig=dict(NetworkMode='none', PortBindings={}), Mounts=mounts, code=0, probe=probe)
     if scenario == 'wrong-mount': data['Mounts'][0]['RW'] = False
     if probe: (root / 'probe.py').write_text(a[a.index('-c')+1])
     state.write_text(json.dumps(data))
+    print(data['Id'])
 elif a[0] == 'start':
     data = json.loads(state.read_text())
     if not data['probe']: sys.exit(17)

@@ -347,6 +347,32 @@ class SchedulerTests(unittest.TestCase):
             scheduler.errors[0].message,
         )
 
+    def test_persistent_admission_fault_keeps_recent_errors_and_can_recover(self) -> None:
+        accepted = self._accept("blocked-admission")
+        scheduler = self._scheduler(self._complete_failed, capacity=1)
+
+        with mock.patch(
+            "shakemap_service.scheduler.discover_queue",
+            return_value=([accepted], []),
+        ), mock.patch.object(
+            recalculation,
+            "current_transaction_present",
+            side_effect=[OSError(f"unreadable state {index}") for index in range(1000)],
+        ):
+            for _ in range(1000):
+                self.assertEqual(scheduler.tick(), ())
+
+        self.assertEqual(status.read_status(accepted.internal_sequence).status, "QUEUED")
+        self.assertEqual(scheduler.active_count, 0)
+        self.assertEqual(scheduler.reserved_event_ids, frozenset())
+        self.assertEqual(len(scheduler.errors), 100)
+        self.assertEqual(scheduler.errors[0].message, "OSError: unreadable state 900")
+        self.assertEqual(scheduler.errors[-1].message, "OSError: unreadable state 999")
+
+        self.assertEqual(len(scheduler.tick()), 1)
+        self.assertTrue(scheduler.wait_until_idle(timeout=5))
+        self.assertEqual(status.read_status(accepted.internal_sequence).status, "FAILED")
+
     def test_reservation_is_retained_when_terminal_write_fails(self) -> None:
         accepted = self._accept("retained")
         scheduler = self._scheduler(lambda record: None, capacity=1)

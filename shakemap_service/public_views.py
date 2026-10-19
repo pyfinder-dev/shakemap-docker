@@ -95,6 +95,32 @@ _PRIVATE_IDENTITY_FIELDS = (
     (
         "immutable_image",
         "installed",
+        "environment_compatibility",
+        "source_environment_path",
+    ),
+    (
+        "immutable_image",
+        "installed",
+        "environment_compatibility",
+        "record_path",
+    ),
+    (
+        "immutable_image",
+        "installed",
+        "environment_compatibility",
+        "provider_differences",
+        "conda_inventory_path",
+    ),
+    (
+        "immutable_image",
+        "installed",
+        "environment_compatibility",
+        "provider_differences",
+        "resolved_python_inventory_path",
+    ),
+    (
+        "immutable_image",
+        "installed",
         "mapping_compatibility",
         "source_lock_path",
     ),
@@ -234,6 +260,15 @@ def public_provenance_projection(provenance: object) -> dict[str, Any]:
         )
         projected["software_identity"] = software_identity
         private_paths.extend(identity_paths)
+
+    execution = projected.get("native_execution")
+    if isinstance(execution, dict):
+        command = execution.get("command")
+        if isinstance(command, list) and command and isinstance(command[0], str):
+            # argv[0] names the container executable. Keep its basename while
+            # preserving every argument verbatim, including caller event IDs.
+            if Path(command[0]).is_absolute():
+                command[0] = Path(command[0]).name
 
     materialization: dict[str, Any] | None = None
     configuration = projected.get("configuration")

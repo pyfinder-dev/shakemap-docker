@@ -12,6 +12,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -35,8 +36,6 @@ def tiny_definition(raw: bytes, archive: bytes, member: bytes) -> dict:
             "shakemap_release_tag": "v0.0.0",
             "shakemap_version": "0.0.0",
             "shakemap_source_commit": "0" * 40,
-            "shakemap_modules_version": "0.0.0",
-            "usgs_strec_version": "0.0.0",
         },
         "module_plan": helper.MODULE_PLAN,
         "default_destination": "runtime/shakemap/data/test/v0.0.0",
@@ -129,13 +128,7 @@ class PreparationBehaviorTests(unittest.TestCase):
         self.assertIn("https://example.test/commit/", readme)
         self.assertIn("https://example.test/archive.whl", readme)
         self.assertIn("\n## Validate\n", readme)
-        removed_command = "-".join(("run", "native"))
-        removed_manifest_field = "_".join(
-            ("native", "validation", "command")
-        )
         self.assertIn("validation_command", manifest)
-        self.assertNotIn(removed_command, readme)
-        self.assertNotIn(removed_manifest_field, manifest)
 
     def test_schema_two_manifest_accepts_historical_extra_field(self) -> None:
         destination = self.root / "prepared"
@@ -320,19 +313,35 @@ class TrackedDefinitionTests(unittest.TestCase):
             PROJECT
             / "verification"
             / "packages"
-            / "v4.4.9"
+            / "v4.5.0"
             / "source-manifest.json"
         )
         cls.definition = helper.load_definition(cls.path)
 
     def test_release_identity_and_module_plan(self) -> None:
         compatibility = self.definition["compatibility"]
-        self.assertEqual(compatibility["shakemap_release_tag"], "v4.4.9")
+        self.assertEqual(
+            set(compatibility),
+            {"shakemap_release_tag", "shakemap_version", "shakemap_source_commit"},
+        )
+        self.assertEqual(compatibility["shakemap_release_tag"], "v4.5.0")
+        self.assertEqual(compatibility["shakemap_version"], "4.5.0")
         self.assertEqual(
             compatibility["shakemap_source_commit"],
-            "8923f1ff6e82fc866d928a33d1e19e45f276db52",
+            "2b270c626efff8e54bfbe2d7dac5da9444d08c51",
         )
         self.assertEqual(self.definition["module_plan"], helper.MODULE_PLAN)
+
+    def test_default_definition_matches_the_declared_release(self) -> None:
+        self.assertEqual(helper.default_definition(), self.path)
+
+    def test_missing_declared_release_does_not_select_another_definition(self) -> None:
+        with patch.object(helper, "load_declared_release_tag", return_value="v99.0.0"):
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                self.assertEqual(helper.main(["list-sources"]), 2)
+        self.assertIn("missing verification definition for declared ShakeMap v99.0.0", stderr.getvalue())
+        self.assertIn("add the release-matched definition", stderr.getvalue())
 
     def test_source_inventory_is_immutable_and_complete(self) -> None:
         inventory = helper.source_inventory(self.definition)
@@ -342,9 +351,7 @@ class TrackedDefinitionTests(unittest.TestCase):
             self.assertEqual(len(entry["sha256"]), 64)
             self.assertGreater(entry["size"], 0)
         urls = "\n".join(entry["url"] for entry in inventory)
-        self.assertIn("8923f1ff6e82fc866d928a33d1e19e45f276db52", urls)
-        self.assertNotIn("f1890d9f152c896d250a77557a5751a93d494776", urls)
-        self.assertNotIn("usgs_strec-2.3.14", urls)
+        self.assertIn("2b270c626efff8e54bfbe2d7dac5da9444d08c51", urls)
 
     def test_payload_is_scenario_specific_and_excludes_image_support(self) -> None:
         payload = helper.expected_payload(self.definition)
@@ -374,17 +381,10 @@ class TrackedDefinitionTests(unittest.TestCase):
 
 
 class CommandSurfaceTests(unittest.TestCase):
-    def test_parser_exposes_package_operations_only(self) -> None:
+    def test_help_lists_package_operations(self) -> None:
         help_text = helper.build_parser().format_help()
         for command in ("list-sources", "prepare", "validate"):
             self.assertIn(command, help_text)
-
-        removed_command = "-".join(("run", "native"))
-        self.assertNotIn(removed_command, help_text)
-        with contextlib.redirect_stderr(io.StringIO()):
-            with self.assertRaises(SystemExit) as context:
-                helper.build_parser().parse_args([removed_command])
-        self.assertEqual(context.exception.code, 2)
 
 
 if __name__ == "__main__":

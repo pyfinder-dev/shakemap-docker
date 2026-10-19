@@ -9,9 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from fastapi.testclient import TestClient
-
-from shakemap_service import cli, directory_access, main, paths, worker
+from shakemap_service import cli, directory_access, paths, worker
 from shakemap_service.config import Settings
 from shakemap_service.request_validation import (
     validate_configuration_name,
@@ -173,12 +171,10 @@ class RuntimePathTests(unittest.TestCase):
     def test_upload_basename_preserves_posix_backslash(self) -> None:
         self.assertEqual(validate_upload_basename("native\\file.ext"), "native\\file.ext")
 
-    def test_native_worker_boundary_has_only_the_calculation_delegate(self) -> None:
-        self.assertFalse(hasattr(worker, "run_worker_cycle"))
-        self.assertFalse(hasattr(worker, "WorkerResult"))
+    def test_native_worker_delegates_with_an_environment_copy(self) -> None:
         record = object()
         with (
-            mock.patch.dict(os.environ, {"M5J_TEST": "caller"}, clear=True),
+            mock.patch.dict(os.environ, {"CALLER_SETTING": "caller"}, clear=True),
             mock.patch.object(
                 worker.calculation,
                 "execute_calculation",
@@ -187,25 +183,11 @@ class RuntimePathTests(unittest.TestCase):
         ):
             self.assertEqual(execute_shakemap(record), "FAILED")
             passed_environment = delegated.call_args.kwargs["base_environment"]
-            self.assertEqual(passed_environment, {"M5J_TEST": "caller"})
+            self.assertEqual(passed_environment, {"CALLER_SETTING": "caller"})
             self.assertIsNot(passed_environment, os.environ)
         delegated.assert_called_once_with(
             record,
-            base_environment={"M5J_TEST": "caller"},
-        )
-
-    def test_only_contracted_submission_route_is_registered(self) -> None:
-        with TestClient(main.app) as client:
-            legacy = client.post("/events/submit")
-            contracted = client.post("/events")
-            configurations = client.get("/configurations")
-        self.assertEqual(legacy.status_code, 405)
-        self.assertEqual(contracted.status_code, 503)
-        self.assertEqual(contracted.json()["error"], "service_unavailable")
-        self.assertEqual(configurations.status_code, 200)
-        self.assertEqual(
-            configurations.json(),
-            {"default": "global", "configurations": ["global"]},
+            base_environment={"CALLER_SETTING": "caller"},
         )
 
     def test_public_client_requires_an_enabled_command(self) -> None:

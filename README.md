@@ -1,6 +1,6 @@
 # ShakeMap Docker service
 
-Build and run ShakeMap v4.4.9 behind a REST API and the `shake-in-docker` host
+Build and run ShakeMap v4.5.0 behind a REST API and the `shake-in-docker` host
 client. Callers supply native inputs, a calculation ID and a configuration name.
 The service queues work, runs the complete native module sequence, and retains
 products, provenance, manifests and logs.
@@ -99,6 +99,9 @@ mounted-data readiness. Finalization runs a fixed global calculation before
 publishing readiness. To verify an already-running deployment:
 
 ```bash
+# Install host test dependencies; this also installs the client and helpers.
+python -m pip install -r requirements.txt
+
 # This submits a new run of the fixed verification calculation.
 make verify RUNTIME_ROOT=./runtime PORT=9010 MAX_CONCURRENT=10
 ```
@@ -117,9 +120,16 @@ alone is insufficient.
 
 A successful verification covers its recorded inputs and selected configuration;
 it does not establish all regional branches, geographic coverage or scientific
-accuracy. The supported native dependency pair is
-`shakemap-modules[all]==1.1.18` with `esi-shakelib==1.2.1`; the complete dependency
-environment is not fully locked.
+accuracy. Scientific dependency requirements come from the selected upstream
+release's `environment.yml` and package metadata. A build stage resolves that
+environment with Micromamba; the final image contains the resulting runtime
+without Conda, Mamba or Micromamba executables. The build records resolved
+versions and checks applicable Python and native library bounds. It does not
+reproduce the exact upstream Conda lock environment.
+
+ShakeMap 4.5 includes the standalone `sm_tune` maintenance command for BLAS/OpenMP
+thread calibration. It is available in the image but is not run automatically or
+added to calculation submissions. See [thread tuning](docs/configuration.md#thread-tuning).
 
 See the [REST and CLI guide](docs/rest-api.md),
 [runtime layout](docs/runtime-layout.md),

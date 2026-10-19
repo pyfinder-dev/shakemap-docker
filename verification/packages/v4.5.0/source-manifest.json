@@ -1,16 +1,14 @@
 {
   "schema_version": 2,
-  "package_id": "shakemap-california-verification-v4.4.9",
+  "package_id": "shakemap-california-verification-v4.5.0",
   "description": "Release-matched scenario-specific California data for the fixed SCENARIO request; generic STREC and Natural Earth support are supplied by the image",
   "compatibility": {
-    "shakemap_release_tag": "v4.4.9",
-    "shakemap_version": "4.4.9",
-    "shakemap_source_commit": "8923f1ff6e82fc866d928a33d1e19e45f276db52",
-    "shakemap_modules_version": "1.1.18",
-    "usgs_strec_version": "2.3.14"
+    "shakemap_release_tag": "v4.5.0",
+    "shakemap_version": "4.5.0",
+    "shakemap_source_commit": "2b270c626efff8e54bfbe2d7dac5da9444d08c51"
   },
   "module_plan": ["select", "assemble", "model", "contour", "mapping", "stations", "gridxml"],
-  "default_destination": "runtime/shakemap/data/test/v4.4.9",
+  "default_destination": "runtime/shakemap/data/test/v4.5.0",
   "coverage": {
     "scenario": "SCENARIO derived from nc72282711 (South Napa, California)",
     "event_longitude": -122.3123,
@@ -23,21 +21,21 @@
   "licenses": {
     "shakemap": {
       "summary": "USGS public domain in the United States and CC0-1.0 dedication unless otherwise noted",
-      "url": "https://code.usgs.gov/ghsc/esi/shakemap/-/blob/8923f1ff6e82fc866d928a33d1e19e45f276db52/LICENSE.md"
+      "url": "https://code.usgs.gov/ghsc/esi/shakemap/-/blob/2b270c626efff8e54bfbe2d7dac5da9444d08c51/LICENSE.md"
     }
   },
   "image_dependencies": {
     "natural_earth": "Pinned Natural Earth 10 m mapping layers under /opt/shakemap-support/cartopy",
-    "strec": "Installed usgs-strec 2.3.14 moment_tensors.db exposed by the image without duplication"
+    "strec": "Installed usgs-strec moment_tensors.db exposed by the image without duplication"
   },
   "sources": [
     {
       "id": "shakemap",
       "kind": "raw-files",
       "repository": "https://code.usgs.gov/ghsc/esi/shakemap.git",
-      "tag": "v4.4.9",
-      "commit": "8923f1ff6e82fc866d928a33d1e19e45f276db52",
-      "url_prefix": "https://code.usgs.gov/ghsc/esi/shakemap/-/raw/8923f1ff6e82fc866d928a33d1e19e45f276db52/",
+      "tag": "v4.5.0",
+      "commit": "2b270c626efff8e54bfbe2d7dac5da9444d08c51",
+      "url_prefix": "https://code.usgs.gov/ghsc/esi/shakemap/-/raw/2b270c626efff8e54bfbe2d7dac5da9444d08c51/",
       "license_id": "shakemap",
       "files": [
         {"source_path":"tests/data/install/config/extent.conf","target_path":"config/extent.conf","size":1970,"sha256":"9f0e126fd216923f5f780409060fb505b9608bb0070bb00c884ed0c914908c84","transformation":"copied unchanged"},

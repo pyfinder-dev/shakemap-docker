@@ -1,32 +1,18 @@
-FROM python:3.12-slim
+FROM python:3.12-slim-trixie AS build
 
-# Release identity is resolved and validated by the host build helper.
-ARG SHAKEMAP_SOURCE_URL
-ARG SHAKEMAP_RELEASE_TAG
-ARG SHAKEMAP_RELEASE_VERSION
-ARG SHAKEMAP_SOURCE_COMMIT
-ARG BUILD_TIMESTAMP_UTC
-
-# Runtime environment
-ENV PYTHONUNBUFFERED=1 \
-    RUNTIME_ROOT=/home/sysop/runtime \
-    SHAKEMAP_PORT=9010 \
-    CARTOPY_DATA_DIR=/opt/shakemap-support/cartopy \
-    SHAKEMAP_STREC_DB=/opt/shakemap-support/strec/moment_tensors.db
-
-# System packages needed to fetch and install ShakeMap and its native dependencies.
+# Micromamba is an installation tool in this stage only. The final image
+# receives the solved environment at the identical prefix, without the manager.
+COPY --from=mambaorg/micromamba:2.8.1 /bin/micromamba /usr/local/bin/micromamba
 RUN DEBIAN_FRONTEND=noninteractive apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    git \
-    gcc \
-    g++ \
-    gfortran \
-    libproj-dev \
-    libgeos-dev \
-    libopenblas-dev \
-    gdal-bin \
-    libgdal-dev \
+      git gcc g++ gfortran \
  && rm -rf /var/lib/apt/lists/*
+
+# Release identity is resolved and validated by the host build helper. Keep
+# changing build timestamps out of this stage so dependency solves are reusable.
+ARG SHAKEMAP_SOURCE_URL
+ARG SHAKEMAP_RELEASE_TAG
+ARG SHAKEMAP_SOURCE_COMMIT
 
 # The host resolver supplies one official stable tag and its full commit.
 # Fetch the tag, detach at the requested commit, and fail closed on mismatch.
@@ -42,26 +28,69 @@ RUN test -n "${SHAKEMAP_SOURCE_URL}" \
  && test "$(git -C /opt/shakemap rev-parse HEAD)" = "${SHAKEMAP_SOURCE_COMMIT}" \
  && test "$(git -C /opt/shakemap rev-parse HEAD^{commit})" = "${SHAKEMAP_SOURCE_COMMIT}"
 
-# The native module package imports names supplied by this shakelib release.
-# Install both constraints with ShakeMap so pip cannot upgrade either one.
-RUN pip install --no-cache-dir \
-      /opt/shakemap \
-      "shakemap-modules[all]==1.1.18" \
-      "esi-shakelib==1.2.1"
+# Upstream's lock has no Linux ARM64 entry. Solve its canonical environment
+# natively. Normalize the macOS-only selector and use the declared esi-core
+# requirement via PyPI on ARM64, where its Conda distribution is unavailable.
+COPY shakemap_service/upstream_environment.py /tmp/upstream_environment.py
+RUN python /tmp/upstream_environment.py normalize \
+      --source /opt/shakemap \
+      --output /opt/shakemap-build/environment-linux.yml \
+ && micromamba create --yes --prefix /opt/shakemap-env \
+      --file /opt/shakemap-build/environment-linux.yml \
+ && micromamba list --prefix /opt/shakemap-env --explicit \
+      > /opt/shakemap-build/conda-packages.txt
 
-# Copy the service identity implementation early so the resolved release's own
-# lock can supply plotting compatibility. This is release-derived: future
-# stable releases provide their own value or fail closed for explicit review.
+ENV PATH="/opt/shakemap-env/bin:${PATH}"
 WORKDIR /app
 COPY shakemap_service /app/shakemap_service
 COPY pyproject.toml README.md LICENSE /app/
 COPY VERSIONS.env /opt/shakemap-build/VERSIONS.env
-RUN python -m shakemap_service.build_identity apply-upstream-mapping-compatibility \
-      --source /opt/shakemap \
-      --output /opt/shakemap-build/mapping-compatibility.json
 
-# Install the service last, then validate the complete installed environment.
-RUN pip install --no-cache-dir /app \
+# Preserve every resolved upstream distribution while adding the wrapper.
+# Like the upstream installer, install ShakeMap itself without dependency
+# resolution so pip cannot replace the environment's scientific libraries.
+RUN python -m pip list --format=freeze > /opt/shakemap-build/upstream-resolved-python.txt \
+ && python -m pip install --no-cache-dir --no-deps /opt/shakemap \
+ && python -m pip install --no-cache-dir \
+      --constraint /opt/shakemap-build/upstream-resolved-python.txt \
+      PyYAML packaging /app \
+ && python -m pip check \
+ && python -m shakemap_service.upstream_environment verify \
+      --source /opt/shakemap \
+      --output /opt/shakemap-build/environment-compatibility.json
+
+FROM debian:trixie-slim
+ARG SHAKEMAP_SOURCE_URL
+ARG SHAKEMAP_RELEASE_TAG
+ARG SHAKEMAP_RELEASE_VERSION
+ARG SHAKEMAP_SOURCE_COMMIT
+ARG BUILD_TIMESTAMP_UTC
+
+ENV PATH="/opt/shakemap-env/bin:${PATH}" \
+    PYTHONUNBUFFERED=1 \
+    RUNTIME_ROOT=/home/sysop/runtime \
+    SHAKEMAP_PORT=9010 \
+    PROJ_DATA=/opt/shakemap-env/share/proj \
+    GDAL_DATA=/opt/shakemap-env/share/gdal \
+    GDAL_DRIVER_PATH=/opt/shakemap-env/lib/gdalplugins \
+    CPL_ZIP_ENCODING=UTF-8 \
+    CARTOPY_DATA_DIR=/opt/shakemap-support/cartopy \
+    SHAKEMAP_STREC_DB=/opt/shakemap-support/strec/moment_tensors.db
+
+RUN DEBIAN_FRONTEND=noninteractive apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      ca-certificates git \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=build /opt/shakemap-env /opt/shakemap-env
+COPY --from=build /opt/shakemap /opt/shakemap
+COPY --from=build /opt/shakemap-build /opt/shakemap-build
+COPY --from=build /app /app
+WORKDIR /app
+# The environment contains Conda-provided libraries and metadata, but the
+# service image must not include their installation/package-manager commands.
+RUN ! command -v conda \
+ && ! command -v mamba \
+ && ! command -v micromamba \
  && python -m pip check
 
 # Natural Earth is generic mapping support, not event/scenario data. The
@@ -82,11 +111,11 @@ RUN python /tmp/install-image-support.py natural-earth \
 # Repository configurations are immutable image seeds. Runtime materialization
 # and native profile placement are deliberately handled by finalization.
 COPY regional-configs /opt/shakemap-seeds/regional
-COPY verification/scenarios/v4.4.9/south-napa-global/event.xml \
-     verification/scenarios/v4.4.9/south-napa-global/event_dat.xml \
-     verification/scenarios/v4.4.9/south-napa-global/scenario-manifest.json \
+COPY verification/scenarios/v4.5.0/south-napa-global/event.xml \
+     verification/scenarios/v4.5.0/south-napa-global/event_dat.xml \
+     verification/scenarios/v4.5.0/south-napa-global/scenario-manifest.json \
      /opt/shakemap-verification/
-COPY verification/packages/v4.4.9/source-manifest.json \
+COPY verification/packages/v4.5.0/source-manifest.json \
      /opt/shakemap-verification/source-manifest.json
 
 COPY entrypoint.sh /app/entrypoint.sh
@@ -113,7 +142,7 @@ RUN mkdir -p /opt/shakemap-build \
       --cartopy-data-dir /opt/shakemap-support/cartopy \
       --slab2-manifest /opt/shakemap-support/slab2.json \
       --slab2-support-dir /opt/shakemap-support/slab2 \
-      --mapping-compatibility-record /opt/shakemap-build/mapping-compatibility.json \
+      --environment-compatibility-record /opt/shakemap-build/environment-compatibility.json \
  && chmod -R a+rX /opt/shakemap-support \
  && chmod -R a-w /opt/shakemap-support \
  && chmod -R a+rX /opt/shakemap-seeds \
@@ -121,7 +150,10 @@ RUN mkdir -p /opt/shakemap-build \
  && chmod -R a+rX /opt/shakemap-verification \
  && chmod -R a-w /opt/shakemap-verification \
  && chmod 0444 /opt/shakemap-build/identity.json /opt/shakemap-build/dependencies.txt \
-      /opt/shakemap-build/mapping-compatibility.json
+      /opt/shakemap-build/environment-compatibility.json \
+      /opt/shakemap-build/upstream-resolved-python.txt \
+      /opt/shakemap-build/conda-packages.txt \
+      /opt/shakemap-build/environment-linux.yml
 
 # Create the fixed non-root runtime identity.
 RUN groupadd -g 1000 sysop && useradd -u 1000 -g 1000 -ms /bin/bash sysop \

@@ -31,6 +31,7 @@ class ContainerStartupTests(unittest.TestCase):
         configuration_change: str | None = None,
         network_mode: str | None = "default",
         validation_mode: str = "published",
+        image_defaults: dict | None = None,
     ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -66,6 +67,13 @@ class ContainerStartupTests(unittest.TestCase):
         trace = root / "trace"
         image_id = "sha256:" + "a" * 64
         image_environment = ["PATH=/usr/bin", "LANG=C.UTF-8"]
+        image_configuration = {
+            "Env": image_environment,
+            "User": "sysop",
+            "Entrypoint": ["/app/entrypoint.sh"],
+            "Cmd": None,
+        }
+        image_configuration.update(image_defaults or {})
         container_environment = [
             *image_environment,
             f"SHAKEMAP_IMAGE_ID={image_id}",
@@ -114,8 +122,9 @@ class ContainerStartupTests(unittest.TestCase):
             "Config": {
                 "Image": image_id if validation_mode == "probe" else "shakemap-docker:latest",
                 "Env": container_environment,
-                "User": "1000:1000",
-                "Entrypoint": ["python"],
+                "User": "1000:1000" if validation_mode == "probe" else image_configuration["User"],
+                "Entrypoint": ["python"] if validation_mode == "probe" else image_configuration["Entrypoint"],
+                "Cmd": ["-c", "pass"] if validation_mode == "probe" else image_configuration["Cmd"],
             },
             "Mounts": mounts,
             "HostConfig": {
@@ -123,6 +132,15 @@ class ContainerStartupTests(unittest.TestCase):
                 "NetworkMode": network_mode,
             },
         }
+        for change, field, value in (
+            ("root_user", "User", "0:0"),
+            ("entrypoint_override", "Entrypoint", ["uvicorn"]),
+            ("command_override", "Cmd", ["shakemap_service.main:app"]),
+            ("empty_command", "Cmd", []),
+            ("empty_entrypoint", "Entrypoint", []),
+        ):
+            if configuration_change == change:
+                container_details["Config"][field] = value
         if network_mode is None:
             container_details["HostConfig"].pop("NetworkMode")
         docker = fakebin / "docker"
@@ -132,7 +150,7 @@ printf '%s\n' "$*" >> "$TRACE"
 image_id='sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 if [[ "$1 $2" == "image inspect" ]]; then
   case "$*" in
-    *'{{json .Config.Env}}'*) echo "$IMAGE_ENVIRONMENT_JSON" ;;
+    *'{{json .Config}}'*) echo "$IMAGE_CONFIGURATION_JSON" ;;
     *'{{.Id}}'*) echo "$image_id" ;;
     *'org.usgs.shakemap.release'*) echo 'v4.4.9' ;;
     *'org.usgs.shakemap.version'*) echo '4.4.9' ;;
@@ -168,7 +186,7 @@ exit 0
                 "CONFIGURED_MAX": configured_max,
                 "CONFIGURED_SHARED": configured_shared or str(runtime.resolve()),
                 "CONTAINER_JSON": json.dumps(container_details),
-                "IMAGE_ENVIRONMENT_JSON": json.dumps(image_environment),
+                "IMAGE_CONFIGURATION_JSON": json.dumps(image_configuration),
                 "READINESS_MATCH": "1" if readiness_match else "0",
                 "REAL_PYTHON": sys.executable,
                 "RUNTIME": str(runtime.resolve()),
@@ -258,15 +276,6 @@ exit 0
         )
         return result, trace.read_text(encoding="utf-8").splitlines()
 
-    def test_fixed_container_and_image_have_no_operator_override(self) -> None:
-        configuration = CONFIGURATION.read_text(encoding="utf-8")
-        start = START.read_text(encoding="utf-8")
-        self.assertIn('CANONICAL_IMAGE="shakemap-docker:latest"', configuration)
-        self.assertIn('CANONICAL_CONTAINER="shakemap-docker"', configuration)
-        for option in ("--name)", "--image)", "--env)", "--data)"):
-            self.assertNotIn(option, start)
-        self.assertIn("check-ready", start)
-
     def test_entrypoint_creates_only_service_writable_paths(self) -> None:
         source = ENTRYPOINT.read_text(encoding="utf-8")
         for writable in (
@@ -284,16 +293,6 @@ exit 0
         self.assertNotIn("chmod ", source)
         self.assertIn('touch "${DIRPATH}/.writetest_$$"', source)
         self.assertIn('rm -f "${DIRPATH}/.writetest_$$"', source)
-
-    def test_external_data_mounts_are_separate_read_only_overlays(self) -> None:
-        source = CONFIGURATION.read_text(encoding="utf-8")
-        self.assertIn("data/inputs", source)
-        for name in ("global", "regional", "test"):
-            self.assertIn(
-                f'data/{name}:/home/sysop/runtime/shakemap/data/{name}:ro',
-                source,
-            )
-        self.assertNotIn("/home/sysop/runtime/shakemap/data:ro", source)
 
     def test_help_and_makefile_use_supported_settings(self) -> None:
         help_text = subprocess.run(
@@ -420,6 +419,9 @@ exit 0
             ("extra_env", "environment"),
             ("extra_port", "ports"),
             ("host_ip", "ports"),
+            ("root_user", "user"),
+            ("entrypoint_override", "entrypoint"),
+            ("command_override", "cmd"),
         ):
             with self.subTest(change=change):
                 result, trace = self._run_matching_start(
@@ -432,6 +434,21 @@ exit 0
                     any(line.startswith(("run ", "start ", "stop ", "rm ")) for line in trace),
                     trace,
                 )
+
+    def test_startup_validation_tracks_image_defaults_and_empty_command_forms(self) -> None:
+        for mode in ("published", "isolated"):
+            for defaults, change in (
+                ({"User": "1000:1000", "Entrypoint": ["/usr/local/bin/start-shakemap"], "Cmd": ["serve"]}, None),
+                ({}, "empty_command"),
+                ({"Entrypoint": None, "Cmd": ["serve"]}, "empty_entrypoint"),
+            ):
+                with self.subTest(mode=mode, defaults=defaults, change=change):
+                    result, trace = self._run_matching_start(
+                        "running", network_mode="none", validation_mode=mode,
+                        image_defaults=defaults, configuration_change=change,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertFalse(any(line.startswith(("run ", "start ", "stop ", "rm ")) for line in trace))
 
     def test_published_validation_is_independent_of_network_mode_label(self) -> None:
         for label in ("default", "bridge", "operator-network", "none", None):

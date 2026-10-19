@@ -97,6 +97,7 @@ if os.environ.get('PRODUCER_FAIL'):
         )[0]
         script = "\n".join([
             "set -euo pipefail", "BEGUN=1", "COMMITTED=0", 'SEED_STAGING=""',
+            'OWNED_CONTAINER_ID=""',
             'CANONICAL_CONTAINER="shakemap-docker"',
             f"RUNTIME_ABS={shlex.quote(str(self.runtime))}",
             f"SERVICE_ABS={shlex.quote(str(self.runtime / 'shakemap'))}",

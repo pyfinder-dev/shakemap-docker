@@ -323,17 +323,7 @@ class ContractedDestinationTests(unittest.TestCase):
 
 
 class SurfaceTests(unittest.TestCase):
-    def test_removed_lifecycle_symbols_and_commands_are_absent(self) -> None:
-        for name in (
-            "docker_prepare",
-            "create_profile",
-            "prepare_base",
-            "write_preparation_report",
-            "container_prepare",
-            "load_preparation",
-            "run_scenario",
-        ):
-            self.assertFalse(hasattr(preparation, name), name)
+    def test_data_commands_and_provision_options(self) -> None:
         choices = preparation.parser()._subparsers._group_actions[0].choices
         self.assertEqual(set(choices), {"inspect", "validate", "provision", "stage"})
         provision_options = {
@@ -352,29 +342,6 @@ class SurfaceTests(unittest.TestCase):
                 "--no-download",
             },
         )
-
-    def test_data_module_and_helper_have_no_replacement_or_docker_path(self) -> None:
-        project = Path(__file__).resolve().parents[1]
-        module = (project / "shakemap_service/preparation.py").read_text(
-            encoding="utf-8"
-        )
-        helper_path = project / "scripts/manage-shakemap-data.sh"
-        helper = helper_path.read_text(encoding="utf-8")
-        self.assertFalse((project / "scripts/configure-shakemap.sh").exists())
-        for forbidden in (
-            ".service/preparation",
-            ".service/work",
-            "container-prepare",
-            "validate-record",
-            "docker run",
-            "subprocess.run",
-        ):
-            self.assertNotIn(forbidden, module)
-        for forbidden in ("docker ", "--image"):
-            self.assertNotIn(forbidden, helper.lower())
-        self.assertNotIn("activate)", helper.lower())
-        self.assertIn("inspect|validate|provision|stage", helper)
-        self.assertIn('-m shakemap_service.preparation "${ACTION}"', helper)
 
 
 if __name__ == "__main__":

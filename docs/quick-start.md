@@ -9,7 +9,8 @@ consistently to every helper. Deployment wrappers delegate to the reusable
 entry points in [the helper guide](../scripts/README.md#deployment-orchestration-boundary).
 
 ```bash
-python -m pip install -e .
+# Install the client, helpers and host test dependencies used by make verify.
+python -m pip install -r requirements.txt
 make build
 make data RUNTIME_ROOT=./runtime
 make finalize RUNTIME_ROOT=./runtime PORT=9010 MAX_CONCURRENT=10

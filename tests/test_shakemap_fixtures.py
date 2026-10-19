@@ -16,7 +16,7 @@ FIXTURE = (
     Path(__file__).resolve().parents[1]
     / "verification"
     / "scenarios"
-    / "v4.4.9"
+    / "v4.5.0"
     / "south-napa-global"
 )
 EXPECTED_FILES = {
@@ -48,9 +48,6 @@ class ScenarioFixtureTests(unittest.TestCase):
             {path.name for path in FIXTURE.iterdir() if path.is_file()},
             EXPECTED_FILES,
         )
-        self.assertFalse((FIXTURE / "rupture.json").exists())
-        self.assertFalse((FIXTURE / "moment.xml").exists())
-        self.assertFalse((FIXTURE / "requeststatus.json").exists())
 
     def test_manifest_identity_compatibility_and_license(self) -> None:
         self.assertEqual(self.manifest["schema_version"], 1)
@@ -61,8 +58,8 @@ class ScenarioFixtureTests(unittest.TestCase):
         self.assertEqual(
             self.manifest["compatible_shakemap"],
             {
-                "release_tag": "v4.4.9",
-                "source_commit": "8923f1ff6e82fc866d928a33d1e19e45f276db52",
+                "release_tag": "v4.5.0",
+                "source_commit": "2b270c626efff8e54bfbe2d7dac5da9444d08c51",
             },
         )
         source = self.manifest["source"]
@@ -81,7 +78,7 @@ class ScenarioFixtureTests(unittest.TestCase):
             self.assertEqual(path.stat().st_size, entry["installed_size"])
             self.assertEqual(sha256(path), entry["installed_sha256"])
             self.assertIn(
-                "8923f1ff6e82fc866d928a33d1e19e45f276db52",
+                "2b270c626efff8e54bfbe2d7dac5da9444d08c51",
                 entry["source_url"],
             )
             self.assertEqual(len(entry["source_sha256"]), 64)

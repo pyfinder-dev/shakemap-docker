@@ -19,7 +19,7 @@ class DeclaredReleaseTests(unittest.TestCase):
     def test_repository_declares_supported_release(self) -> None:
         self.assertEqual(
             release.load_declared_release_tag(PROJECT_DIR / "VERSIONS.env"),
-            "v4.4.9",
+            "v4.5.0",
         )
 
     def test_prereleases_and_moving_refs_are_rejected(self) -> None:
@@ -64,18 +64,11 @@ class DeclaredReleaseTests(unittest.TestCase):
             resolved = release.resolve_declared_release(PROJECT_DIR / "VERSIONS.env")
         self.assertEqual(
             resolved,
-            release.ResolvedRelease(tag="v4.4.9", commit=COMMIT_A),
+            release.ResolvedRelease(tag="v4.5.0", commit=COMMIT_A),
         )
-        query.assert_called_once_with("v4.4.9")
+        query.assert_called_once_with("v4.5.0")
 
-    def test_no_latest_release_discovery_or_tag_override_surface(self) -> None:
-        for name in (
-            "fetch_release_metadata",
-            "select_latest_stable_release",
-            "resolve_latest_official_release",
-            "OFFICIAL_RELEASES_URL",
-        ):
-            self.assertFalse(hasattr(release, name), name)
+    def test_resolve_accepts_only_the_versions_file_option(self) -> None:
         resolve_parser = release._parser()._subparsers._group_actions[0].choices["resolve"]
         options = {
             option

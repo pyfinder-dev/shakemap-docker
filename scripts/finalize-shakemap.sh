@@ -5,6 +5,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
 source "${SCRIPT_DIR}/container-configuration.sh"
+ORIGINAL_ARGUMENTS=("$@")
 
 RUNTIME_ROOT="${RUNTIME_ROOT:-${PROJECT_ROOT}/runtime}"
 PORT="${PORT:-9010}"
@@ -14,6 +15,7 @@ BEGUN=0
 COMMITTED=0
 CURRENT_STEP="initial checks"
 SEED_STAGING=""
+OWNED_CONTAINER_ID=""
 
 usage() {
     echo "Usage: $0 [--runtime-root DIR] [--port PORT] [--max-concurrent COUNT]"
@@ -52,9 +54,9 @@ fail_closed() {
     if [[ "${BEGUN}" == 1 && "${COMMITTED}" == 0 ]]; then
         failure_reason="finalization failed during ${CURRENT_STEP} with exit code ${result}; correct the reported error and rerun make finalize"
         failure_recorded=0
-        if docker container inspect "${CANONICAL_CONTAINER}" >/dev/null 2>&1 && \
-            [[ "$(docker container inspect --format '{{.State.Running}}' "${CANONICAL_CONTAINER}" 2>/dev/null || true)" == "true" ]]; then
-            if docker exec "${CANONICAL_CONTAINER}" python -m shakemap_service.finalization fail \
+        if [[ -n "${OWNED_CONTAINER_ID}" ]] && \
+            [[ "$(docker container inspect --format '{{.State.Running}}' "${OWNED_CONTAINER_ID}" 2>/dev/null || true)" == "true" ]]; then
+            if docker exec "${OWNED_CONTAINER_ID}" python -m shakemap_service.finalization fail \
                 --reason "${failure_reason}" >/dev/null 2>&1; then
                 failure_recorded=1
             fi
@@ -64,22 +66,38 @@ fail_closed() {
                 python -m shakemap_service.finalization fail \
                     --reason "${failure_reason}" >/dev/null 2>&1 || true
         fi
-        if docker container inspect "${CANONICAL_CONTAINER}" >/dev/null 2>&1 && \
-            [[ "$(docker container inspect --format '{{.State.Running}}' "${CANONICAL_CONTAINER}" 2>/dev/null || true)" == "true" ]]; then
-            docker stop --time 65 "${CANONICAL_CONTAINER}" >/dev/null 2>&1 || true
+        if [[ -n "${OWNED_CONTAINER_ID}" ]] && \
+            [[ "$(docker container inspect --format '{{.State.Running}}' "${OWNED_CONTAINER_ID}" 2>/dev/null || true)" == "true" ]]; then
+            docker stop --time 65 "${OWNED_CONTAINER_ID}" >/dev/null 2>&1 || true
         fi
     fi
     cleanup_seed_staging || echo "ERROR: could not remove seed staging at ${SEED_STAGING}; inspect the reported cleanup error." >&2
     exit "${result}"
 }
 trap fail_closed EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 require_project_environment
 validate_deployment_settings
 command -v docker >/dev/null 2>&1 || { echo "ERROR: docker is not installed." >&2; exit 1; }
-mkdir -p "${RUNTIME_ROOT}"
-RUNTIME_ABS="$(cd "${RUNTIME_ROOT}" && pwd -P)"
+acquire_finalization_lock "${SCRIPT_DIR}/finalize-shakemap.sh" "${CANONICAL_CONTAINER}" ${ORIGINAL_ARGUMENTS[@]+"${ORIGINAL_ARGUMENTS[@]}"}
+RUNTIME_ABS="$(python - finalization-runtime "${RUNTIME_ROOT}" <<'PY'
+from pathlib import Path
+import sys
+print(Path(sys.argv[2]).resolve())
+PY
+)"
 SERVICE_ABS="${RUNTIME_ABS}/shakemap"
+CURRENT_STEP="existing container mount inspection"
+presence="$(canonical_container_presence)"
+if [[ "${presence}" == present ]]; then
+    OWNED_CONTAINER_ID="$(inspect_finalization_mounts)"
+fi
+# Existing mount ownership is known before creating a first-install runtime or
+# changing either deployment's readiness. Old images and stopped probes remain
+# eligible for finalization; readiness/settings checks belong to normal start.
+mkdir -p "${RUNTIME_ABS}"
 load_image_identity
 
 CURRENT_STEP="unfinished-work gate"
@@ -92,26 +110,10 @@ if RUNTIME_ROOT="${RUNTIME_ABS}" SHAKEMAP_SHARED_RUNTIME_ROOT="${RUNTIME_ABS}" \
 fi
 BEGUN=1
 
-if docker container inspect "${CANONICAL_CONTAINER}" >/dev/null 2>&1; then
-    CURRENT_STEP="existing container mount inspection"
-    mount_lines="$(docker container inspect --format '{{range .Mounts}}{{.Source}}|{{.Destination}}{{"\n"}}{{end}}' "${CANONICAL_CONTAINER}")"
-    while IFS='|' read -r source destination; do
-        [[ -z "${source}" && -z "${destination}" ]] && continue
-        if [[ "${source}" != "${RUNTIME_ABS}" && "${source}" != "${RUNTIME_ABS}/"* ]]; then
-            echo "ERROR: canonical container has a mount outside ${RUNTIME_ABS}: ${source}; it was retained." >&2
-            exit 1
-        fi
-        if [[ "${destination}" != "/home/sysop/runtime" && "${destination}" != "/home/sysop/runtime/"* ]]; then
-            echo "ERROR: canonical container has an unexpected mount destination: ${destination}; it was retained." >&2
-            exit 1
-        fi
-    done <<<"${mount_lines}"
-fi
-
 CURRENT_STEP="graceful service stop"
-if docker container inspect "${CANONICAL_CONTAINER}" >/dev/null 2>&1 && \
-    [[ "$(docker container inspect --format '{{.State.Running}}' "${CANONICAL_CONTAINER}")" == "true" ]]; then
-    docker stop --time 65 "${CANONICAL_CONTAINER}" >/dev/null
+if [[ -n "${OWNED_CONTAINER_ID}" ]] && \
+    [[ "$(docker container inspect --format '{{.State.Running}}' "${OWNED_CONTAINER_ID}")" == "true" ]]; then
+    docker stop --time 65 "${OWNED_CONTAINER_ID}" >/dev/null
 fi
 
 CURRENT_STEP="runtime preparation"
@@ -172,12 +174,29 @@ for relative in ('products', 'logs', 'data/inputs', '.service', '.service/events
         # Opening service state read/write proves existing lock/state access
         # without truncating, acquiring locks, or changing its content.
         if relative == '.service':
-            for directory, directories, files in os.walk(path, onerror=traversal_error):
+            for directory, directories, files in os.walk(path, onerror=traversal_error, followlinks=False):
                 for name in directories + files:
                     state = Path(directory) / name
                     report_path = state
+                    operation = f'inspect existing state {state.relative_to(root)}'
                     if state.is_symlink():
                         raise OSError(f'symbolic service state: {state}')
+                    parts = state.relative_to(path).parts
+                    native_cache = (
+                        len(parts) == 4 and parts[0] == 'events'
+                        and parts[2:] == ('profile', 'cache')
+                    ) or (
+                        len(parts) == 5 and parts[0] == 'archive'
+                        and parts[2:] == ('service', 'profile', 'cache')
+                    )
+                    if native_cache:
+                        if name not in directories or not stat.S_ISDIR(state.lstat().st_mode):
+                            raise OSError(f'expected real native cache directory: {state}')
+                        # Native libraries own disposable cache contents, which
+                        # may contain links. Check the real boundary above,
+                        # then prune it without reading or repairing children.
+                        directories.remove(name)
+                        continue
                     if name in files:
                         operation = f'open existing state {state.relative_to(root)}'
                         if not stat.S_ISREG(state.lstat().st_mode):
@@ -191,7 +210,7 @@ for relative in ('products', 'logs', 'data/inputs', '.service', '.service/events
         if exc.errno not in (errno.EACCES, errno.EPERM):
             non_permission_failure = True
         try:
-            info = report_path.stat()
+            info = report_path.lstat()
             details = f'mode {stat.filemode(info.st_mode)}, UID:GID {info.st_uid}:{info.st_gid}'
         except OSError:
             details = 'mode/owner unavailable'
@@ -210,14 +229,15 @@ PY
 probe_writable_access() {
     local result
     local state
-    local presence
-    presence="$(canonical_container_presence)" || return 1
-    if [[ "${presence}" == present ]]; then
-        docker rm "${CANONICAL_CONTAINER}" >/dev/null || return 1
+    if [[ -n "${OWNED_CONTAINER_ID}" ]]; then
+        docker rm "${OWNED_CONTAINER_ID}" >/dev/null || return 1
+        OWNED_CONTAINER_ID=""
     fi
     container_create_command probe
     CONTAINER_COMMAND+=(-c "${probe_code}" "${SERVICE_ABS}")
-    "${CONTAINER_COMMAND[@]}" >/dev/null || return 1
+    created_container_id="$("${CONTAINER_COMMAND[@]}")" || return 1
+    [[ "${created_container_id}" =~ ^[0-9a-f]{64}$ ]] || { echo "ERROR: created probe identity is unavailable." >&2; return 1; }
+    OWNED_CONTAINER_ID="${created_container_id}"
     verify_canonical_container_configuration probe || return 1
     result=0
     docker start -a "${CANONICAL_CONTAINER}" || result=$?
@@ -248,12 +268,15 @@ if probe_writable_access; then :; else
 fi
 
 CURRENT_STEP="isolated canonical container creation"
-if docker container inspect "${CANONICAL_CONTAINER}" >/dev/null 2>&1; then
-    docker rm "${CANONICAL_CONTAINER}" >/dev/null
+if [[ -n "${OWNED_CONTAINER_ID}" ]]; then
+    docker rm "${OWNED_CONTAINER_ID}" >/dev/null
+    OWNED_CONTAINER_ID=""
 fi
 resolve_runtime_root
 container_create_command isolated
-"${CONTAINER_COMMAND[@]}" >/dev/null
+created_container_id="$("${CONTAINER_COMMAND[@]}")"
+[[ "${created_container_id}" =~ ^[0-9a-f]{64}$ ]] || { echo "ERROR: created isolated container identity is unavailable." >&2; exit 1; }
+OWNED_CONTAINER_ID="${created_container_id}"
 CURRENT_STEP="image regional seed extraction"
 SEED_STAGING="$(mktemp -d "${TMPDIR:-/tmp}/shakemap-regional-seeds.XXXXXX")"
 # Host tar delays directory-mode restoration until their children are extracted.
@@ -319,8 +342,11 @@ PY
 CURRENT_STEP="published canonical container recreation"
 docker stop --time 65 "${CANONICAL_CONTAINER}" >/dev/null
 docker rm "${CANONICAL_CONTAINER}" >/dev/null
+OWNED_CONTAINER_ID=""
 container_run_command published
-"${CONTAINER_COMMAND[@]}" >/dev/null
+created_container_id="$("${CONTAINER_COMMAND[@]}")"
+[[ "${created_container_id}" =~ ^[0-9a-f]{64}$ ]] || { echo "ERROR: created published container identity is unavailable." >&2; exit 1; }
+OWNED_CONTAINER_ID="${created_container_id}"
 wait_for_container_health false
 
 BASE_URL="http://127.0.0.1:${PORT}"

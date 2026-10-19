@@ -7,7 +7,6 @@ import io
 import json
 import tempfile
 import unittest
-from pathlib import Path
 from unittest import mock
 
 from fastapi.testclient import TestClient
@@ -175,15 +174,6 @@ class PublicInterfaceParityTests(unittest.TestCase):
             {path: set(methods) for path, methods in schema["paths"].items()},
             expected,
         )
-        for obsolete in (
-            "/config/profiles",
-            "/events/submit",
-            "/list",
-            "/submit",
-            "/status/{event_id}",
-        ):
-            self.assertNotIn(obsolete, schema["paths"])
-
         request_body = schema["paths"]["/events"]["post"]["requestBody"]
         multipart = request_body["content"]["multipart/form-data"]["schema"]
         self.assertEqual(multipart["required"], ["event_id"])

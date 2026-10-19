@@ -30,7 +30,7 @@ The official immutable download URLs are:
 `event.xml` preserves the official embedded identity `us1000731j` and classifies
 the earthquake as `ACTUAL`. It does not repeat the optional `productcode`
 attribute. `rupture.json` retains the source product code, so the effective
-v4.4.9 merge and output identity must be observed during native execution
+v4.5.0 merge and output identity must be observed during native execution
 rather than assumed here. The service still treats each caller-selected public
 ID as the calculation identity and does not rewrite the embedded origin. The
 source `rake` value remains unchanged in `rupture.json`; it is not converted
@@ -66,7 +66,7 @@ USGS policy references:
 ## Evidence boundary
 
 The source product reports ShakeMap version `4.0.2+335.gcbad862.dirty`, while
-this project targets ShakeMap `v4.4.9`. Parsing the XML and JSON, matching
+this project targets ShakeMap `v4.5.0`. Parsing the XML and JSON, matching
 hashes, and checking metadata consistency establish only static fixture
 integrity. They do not establish native compatibility, container behavior,
 deployment readiness, scientific correctness, regional suitability, or

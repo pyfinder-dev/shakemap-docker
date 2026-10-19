@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from threading import Condition, RLock
@@ -45,7 +46,8 @@ class Scheduler:
         self._idle = Condition(self._lock)
         self._worker_slots: dict[int, str] = {}
         self._event_reservations: dict[str, int] = {}
-        self._errors: list[SchedulerError] = []
+        # Admission faults can recur every tick; retain recent diagnostics only.
+        self._errors: deque[SchedulerError] = deque(maxlen=100)
         self._closed = False
 
     @property

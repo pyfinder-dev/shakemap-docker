@@ -40,6 +40,8 @@ root = Path(os.environ['GATE_FIXTURE'])
 arguments = sys.argv[1:]
 with (root / 'docker-calls').open('a') as trace:
     trace.write(json.dumps(arguments) + '\n')
+if arguments[0] == 'run':
+    print('c' * 64)
 if arguments[0] != 'exec':
     raise SystemExit(0)
 # Docker does not forward stdin without -i. Python reading an unattached stdin

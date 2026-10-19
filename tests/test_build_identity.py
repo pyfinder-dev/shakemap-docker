@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import hashlib
 import os
-import stat
 import subprocess
 import sys
 import tempfile
@@ -165,23 +164,6 @@ def make_slab2_support(root: Path) -> tuple[Path, Path]:
     return manifest, support
 
 
-def make_mapping_compatibility(root: Path, version: str) -> Path:
-    path = root / "mapping-compatibility.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({
-        "schema_version": 1,
-        "policy": "resolved_release_conda_lock",
-        "distribution": "matplotlib",
-        "platform": "linux-64",
-        "source_lock_path": "/opt/shakemap/conda-lock.yml",
-        "before_version": version,
-        "locked_version": version,
-        "installed_version": version,
-        "changed": False,
-    }), encoding="utf-8")
-    return path
-
-
 class BuildIdentityTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tempdir = tempfile.TemporaryDirectory(prefix="build_identity_")
@@ -243,38 +225,29 @@ class BuildIdentityTests(unittest.TestCase):
             ):
                 build_identity.validate_build_identity(invalid)
 
-    def test_mapping_compatibility_comes_from_resolved_release_lock(self) -> None:
-        source = self.root / "resolved-release"
-        source.mkdir()
-        (source / "conda-lock.yml").write_text(
-            "package:\n"
-            "  - name: matplotlib\n"
-            "    version: 3.10.8\n"
-            "    manager: pip\n"
-            "    platform: linux-64\n",
-            encoding="utf-8",
-        )
-        output = self.root / "compatibility.json"
-        with patch.object(
-            build_identity,
-            "_distribution_version",
-            side_effect=["3.11.1", "3.10.8"],
-        ), patch.object(build_identity.subprocess, "run") as run:
-            record = build_identity.apply_upstream_mapping_compatibility(source, output)
-        self.assertEqual(record["before_version"], "3.11.1")
-        self.assertEqual(record["locked_version"], "3.10.8")
-        self.assertEqual(record["installed_version"], "3.10.8")
-        self.assertTrue(record["changed"])
-        self.assertIn("matplotlib==3.10.8", run.call_args_list[0].args[0])
-
-    def test_mapping_compatibility_fails_closed_without_linux_lock(self) -> None:
-        source = self.root / "future-release"
-        source.mkdir()
-        (source / "conda-lock.yml").write_text("package: []\n", encoding="utf-8")
-        with self.assertRaisesRegex(build_identity.BuildIdentityError, "exactly one"):
-            build_identity.apply_upstream_mapping_compatibility(
-                source, self.root / "unused.json"
-            )
+    def test_environment_compatibility_is_accepted_alongside_legacy_reader(self) -> None:
+        manifest = identity_manifest()
+        installed = manifest["immutable_image"]["installed"]
+        del installed["mapping_compatibility"]
+        installed["environment_compatibility"] = {
+            "schema_version": 1,
+            "policy": "resolved_release_environment",
+            "source_environment_path": "/opt/shakemap/environment.yml",
+            "source_environment_sha256": "a" * 64,
+            "record_path": "/opt/shakemap-build/environment-compatibility.json",
+            "requirements": ["numpy<2.5,>=1.26"],
+            "installed_versions": {"numpy": "2.4.0"},
+            "native_versions": {"proj": {"pyproj": "9.7.1"}},
+            "native_requirements": {"proj": "proj<9.8"},
+            "provider_differences": {"lock_replication": False},
+            "native_check_scope": "exposed runtime libraries",
+        }
+        self.assertTrue(build_identity.validate_build_identity(manifest))
+        for field, value in (("policy", "invented"), ("requirements", []), ("source_environment_sha256", "bad")):
+            invalid = json.loads(json.dumps(manifest))
+            invalid["immutable_image"]["installed"]["environment_compatibility"][field] = value
+            with self.subTest(field=field), self.assertRaises(build_identity.BuildIdentityError):
+                build_identity.validate_build_identity(invalid)
 
     def test_deployment_identity_accepts_only_supported_docker_formats(self) -> None:
         with patch.dict(
@@ -326,7 +299,22 @@ class BuildIdentityTests(unittest.TestCase):
         output = self.root / "written.json"
         natural_manifest, cartopy, strec_database, strec_link = make_support(self.root / "support-api")
         slab2_manifest, slab2_support = make_slab2_support(self.root / "support-api")
-        mapping_compatibility = make_mapping_compatibility(self.root / "support-api", "1.2.3")
+        # Exercise the new writer without importing the scientific stack on the
+        # host: native version verification belongs to the built image.
+        environment = {
+            "schema_version": 1,
+            "policy": "resolved_release_environment",
+            "source_environment_path": "/opt/shakemap/environment.yml",
+            "source_environment_sha256": "a" * 64,
+            "requirements": ["numpy<2.5,>=1.26"],
+            "installed_versions": {"numpy": "2.4.0"},
+            "native_versions": {"proj": {"pyproj": "9.7.1"}},
+            "native_requirements": {"proj": "proj<9.8"},
+            "provider_differences": {"lock_replication": False},
+            "native_check_scope": "exposed runtime libraries",
+        }
+        environment_path = self.root / "environment-compatibility.json"
+        environment_path.write_text(json.dumps(environment))
         class FakeStrec:
             version = "2.3.14"
             files = [Path("strec/data/moment_tensors.db")]
@@ -336,7 +324,9 @@ class BuildIdentityTests(unittest.TestCase):
             build_identity,
             "_distribution_version",
             side_effect=lambda name: "4.4.10" if name == "shakemap" else "1.2.3",
-        ), patch.object(build_identity.importlib.metadata, "distribution", return_value=FakeStrec()):
+        ), patch.object(build_identity.importlib.metadata, "distribution", return_value=FakeStrec()), patch(
+            "shakemap_service.upstream_environment.verify", return_value=environment
+        ) as verify_environment:
             manifest = build_identity.write_build_identity(
                 output=output,
                 dependencies=dependencies,
@@ -349,88 +339,47 @@ class BuildIdentityTests(unittest.TestCase):
                 cartopy_data_dir=cartopy,
                 slab2_manifest=slab2_manifest,
                 slab2_support_dir=slab2_support,
-                mapping_compatibility_record=mapping_compatibility,
+                environment_compatibility_record=environment_path,
                 strec_database_link=strec_link,
             )
+        verify_environment.assert_called_once_with(Path("/opt/shakemap"))
         self.assertEqual(json.loads(output.read_text(encoding="utf-8")), manifest)
         self.assertNotIn("service", manifest["immutable_image"])
         installed = manifest["immutable_image"]["installed"]
         self.assertEqual(installed["dependency_inventory_path"], str(dependencies))
         self.assertEqual(dependencies.read_text(), "example==1.0\n")
         self.assertNotIn("dependency_inventory_sha256", installed)
-        compatibility = installed["mapping_compatibility"]
-        self.assertEqual(compatibility["installed_version"], "1.2.3")
-        self.assertNotIn("source_lock_sha256", compatibility)
-        self.assertNotIn("record_sha256", compatibility)
+        compatibility = installed["environment_compatibility"]
+        self.assertEqual(compatibility["installed_versions"], {"numpy": "2.4.0"})
+        self.assertEqual(compatibility["source_environment_sha256"], "a" * 64)
+        self.assertEqual(compatibility["record_path"], str(environment_path))
 
-    def test_module_cli_writes_manifest(self) -> None:
-        metadata_root = self.root / "metadata"
-        metadata_root.mkdir()
-        for directory, name, version in (
-            ("shakemap-4.4.10.dist-info", "shakemap", "4.4.10"),
-            ("shakemap_modules-1.2.3.dist-info", "shakemap-modules", "1.2.3"),
-            ("usgs_strec-2.3.14.dist-info", "usgs-strec", "2.3.14"),
-            ("matplotlib-3.10.8.dist-info", "matplotlib", "3.10.8"),
-        ):
-            dist_info = metadata_root / directory
-            dist_info.mkdir()
-            (dist_info / "METADATA").write_text(
-                f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n",
-                encoding="utf-8",
-            )
-        natural_manifest, cartopy, strec_database, strec_link = make_support(metadata_root)
-        slab2_manifest, slab2_support = make_slab2_support(metadata_root)
-        strec_record = metadata_root / "usgs_strec-2.3.14.dist-info" / "RECORD"
-        strec_record.write_text("strec/data/moment_tensors.db,,\n", encoding="utf-8")
-        dependencies = self.root / "cli-dependencies.txt"
-        dependencies.write_text("example==1.0\n", encoding="utf-8")
+    def test_module_cli_requires_environment_record(self) -> None:
+        # The API test covers a full write. CLI validation must reject an
+        # omitted compatibility record before reading installation metadata.
         output = self.root / "cli-identity.json"
-        mapping_compatibility = make_mapping_compatibility(self.root / "metadata", "3.10.8")
-        environment = os.environ.copy()
-        environment["PYTHONPATH"] = os.pathsep.join((str(metadata_root), str(PROJECT_DIR)))
         result = subprocess.run(
             [
-                sys.executable,
-                "-m",
-                "shakemap_service.build_identity",
-                "write",
+                sys.executable, "-m", "shakemap_service.build_identity", "write",
                 "--output", str(output),
-                "--dependencies", str(dependencies),
+                "--dependencies", str(self.root / "dependencies.txt"),
                 "--source-url", release.OFFICIAL_REPOSITORY_URL,
                 "--release-tag", "v4.4.10",
                 "--release-version", "4.4.10",
                 "--source-commit", COMMIT_A,
                 "--build-timestamp-utc", "2026-07-22T12:00:00Z",
-                "--natural-earth-manifest", str(natural_manifest),
-                "--cartopy-data-dir", str(cartopy),
-                "--slab2-manifest", str(slab2_manifest),
-                "--slab2-support-dir", str(slab2_support),
-                "--mapping-compatibility-record", str(mapping_compatibility),
-                "--strec-database-link", str(strec_link),
+                "--natural-earth-manifest", str(self.root / "natural-earth.json"),
+                "--cartopy-data-dir", str(self.root / "cartopy"),
+                "--slab2-manifest", str(self.root / "slab2.json"),
+                "--slab2-support-dir", str(self.root / "slab2-support"),
             ],
             cwd=PROJECT_DIR,
-            env=environment,
             capture_output=True,
             text=True,
         )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(build_identity.validate_build_identity(json.loads(output.read_text())))
-
-
-class StartupHelperTests(unittest.TestCase):
-    def test_arbitrary_environment_option_is_not_exposed(self) -> None:
-        script = PROJECT_DIR / "scripts" / "start-shakemap-docker.sh"
-        result = subprocess.run(
-            ["bash", str(script), "--env", "ANY_KEY=value"],
-            cwd=PROJECT_DIR,
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("unknown option: --env", result.stderr)
-        source = script.read_text(encoding="utf-8")
-        self.assertNotIn("EXTRA_ENVS", source)
-        self.assertNotIn("validate_extra_env", source)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("required: --environment-compatibility-record", result.stderr)
+        self.assertFalse(output.exists())
 
 
 if __name__ == "__main__":

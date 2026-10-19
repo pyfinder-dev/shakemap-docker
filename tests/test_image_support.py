@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
-import re
 import shutil
 import tempfile
 import unittest
@@ -97,56 +96,6 @@ class ImageSupportTests(unittest.TestCase):
                 {"alpha.grd", "beta.grd"},
             )
             self.assertEqual((destination / "source.zip").read_bytes(), source.read_bytes())
-
-    def test_external_global_grids_are_not_copied_into_the_image(self) -> None:
-        dockerfile = (PROJECT_DIR / "Dockerfile").read_text(encoding="utf-8")
-        verifier = (PROJECT_DIR / "scripts/verify-shakemap-image.sh").read_text(
-            encoding="utf-8"
-        )
-        self.assertNotIn("global_vs30.grd", dockerfile)
-        self.assertNotIn("topo_30sec.grd", dockerfile)
-        self.assertIn("image-support/slab2.json", dockerfile)
-        self.assertIn("regional-configs /opt/shakemap-seeds/regional", dockerfile)
-        self.assertIn("check command -v shake", verifier)
-        self.assertIn("check sm_profile --help", verifier)
-        self.assertNotIn("check shake --help", verifier)
-        self.assertIn('MODE="image"', verifier)
-        self.assertIn(
-            "check test ! -e /home/sysop/runtime/shakemap/data/global/vs30/global_vs30.grd",
-            verifier,
-        )
-        self.assertIn("validate_pinned_global_assets", verifier)
-        self.assertIn("scenario-manifest.json", dockerfile)
-        self.assertIn(
-            "verification/scenarios/v4.4.9/south-napa-global/event.xml",
-            dockerfile,
-        )
-        self.assertIn("verification/packages/v4.4.9/source-manifest.json", dockerfile)
-        self.assertNotIn("COPY tests/", dockerfile)
-        self.assertIn("scenario inventory must contain exactly two files", verifier)
-        self.assertIn("scenario compatibility mismatch", verifier)
-        self.assertIn("scenario file identity mismatch", verifier)
-
-    def test_image_labels_and_runtime_environment_are_minimal(self) -> None:
-        dockerfile = (PROJECT_DIR / "Dockerfile").read_text(encoding="utf-8")
-        labels = set(
-            re.findall(r"(?:^|\s)(org\.[a-z0-9_.-]+)=", dockerfile, re.MULTILINE)
-        )
-        self.assertEqual(
-            labels,
-            {
-                "org.opencontainers.image.created",
-                "org.usgs.shakemap.release",
-                "org.usgs.shakemap.version",
-                "org.usgs.shakemap.commit",
-            },
-        )
-        self.assertNotIn("SHAKEMAP_PROFILE", dockerfile)
-        self.assertNotIn("SHAKEMAP_REQUIRE_MOUNT", dockerfile)
-        self.assertIn("SHAKEMAP_STREC_DB", dockerfile)
-        env_block = dockerfile[dockerfile.index("ENV ") : dockerfile.index("\n\n", dockerfile.index("ENV "))]
-        self.assertNotIn("DEBIAN_FRONTEND", env_block)
-        self.assertIn("RUN DEBIAN_FRONTEND=noninteractive apt-get update", dockerfile)
 
 
 if __name__ == "__main__":

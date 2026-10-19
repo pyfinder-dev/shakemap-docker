@@ -240,7 +240,6 @@ class ProvenanceTests(unittest.TestCase):
                 side_effect=AssertionError("profile materialization repeated"),
             ),
         ):
-            self.assertNotIn("preparation", provenance.__dict__)
             provenance_file = provenance.publish_provenance(record, facts)
 
         forbidden_preparation.load_global_assets.assert_not_called()

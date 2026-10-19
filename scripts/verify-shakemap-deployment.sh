@@ -69,7 +69,7 @@ docker exec "${CANONICAL_CONTAINER}" /app/scripts/verify-shakemap-image.sh --dep
 echo "== Running-service checks =="
 CURRENT_STEP="running-service checks"
 BASE_URL="http://127.0.0.1:${PORT}"
-python - "${BASE_URL}" "${PROJECT_CLI}" <<'PY'
+python - "${BASE_URL}" "${PROJECT_CLI}" "${IMAGE_RELEASE}" <<'PY'
 import json
 import pathlib
 import subprocess
@@ -78,9 +78,14 @@ import time
 import urllib.parse
 import urllib.request
 
-base, cli = sys.argv[1:]
+base, cli, release = sys.argv[1:]
 event_id = "shakemap-docker-verification"
-scenario = pathlib.Path.cwd() / "verification/scenarios/v4.4.9/south-napa-global"
+scenario = pathlib.Path.cwd() / "verification" / "scenarios" / release / "south-napa-global"
+if not scenario.is_dir():
+    raise SystemExit(
+        f"missing verification scenario for image ShakeMap {release}: {scenario}; "
+        "use the matching project release and rebuild/finalize the canonical image"
+    )
 
 def rest(method, path, body=None, content_type=None):
     headers = {"Accept": "application/json"}

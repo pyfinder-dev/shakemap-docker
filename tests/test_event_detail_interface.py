@@ -185,7 +185,12 @@ class EventDetailInterfaceTests(unittest.TestCase):
                 "deployment": {"available": False, "source": "unavailable"},
             },
             "native_execution": {
-                "command": ["shake", event_id, "select", "assemble"],
+                "command": [
+                    "/opt/shakemap-env/bin/python", "-m",
+                    "shakemap_service.native_launcher", event_id,
+                    "select", "assemble", "model", "contour", "mapping",
+                    "stations", "gridxml",
+                ],
                 "started_at": "2026-08-16T12:00:01Z",
                 "completed_at": "2026-08-16T12:00:02.123456Z",
                 "exit_code": 1,
@@ -389,7 +394,7 @@ class EventDetailInterfaceTests(unittest.TestCase):
                 self.assertNotIn("/site-packages/strec/database.db", rendered)
                 self.assertEqual(
                     projected["native_execution"]["command"],
-                    ["shake", event_id, "select", "assemble"],
+                    ["python", *current_provenance["native_execution"]["command"][1:]],
                 )
                 self.assertEqual(
                     projected["configuration"]["profile_files"][0]["path"],

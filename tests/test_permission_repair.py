@@ -317,9 +317,7 @@ class PermissionRepairTests(unittest.TestCase):
                         open_socket.bind(str(special))
                     except PermissionError:
                         open_socket.close()
-                        source = HELPER.read_text(encoding="utf-8")
-                        self.assertIn('elif [[ -S "$path" ]]', source)
-                        continue
+                        self.skipTest("Unix socket creation is not permitted in this environment")
                 paths = (runtime, runtime / "shakemap", data, data / "test", safe)
                 for path in paths[:-1]:
                     path.chmod(0o700)
@@ -334,10 +332,6 @@ class PermissionRepairTests(unittest.TestCase):
                 self.assertIn(f"Selected target is a {special_kind}", result.stderr)
                 self.assertEqual(self._modes(paths), original_modes)
                 self.assertEqual(self._mode(safe), 0o600)
-
-        source = HELPER.read_text(encoding="utf-8")
-        self.assertIn('elif [[ -b "$path" ]]', source)
-        self.assertIn('elif [[ -c "$path" ]]', source)
 
     def test_uninspectable_explicit_directory_fails_before_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

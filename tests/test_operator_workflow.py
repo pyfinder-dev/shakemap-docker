@@ -3,16 +3,38 @@
 from __future__ import annotations
 
 import re
+import fcntl
+import hashlib
+import json
 import os
+import signal
+import shutil
 import stat
 import subprocess
 import tarfile
 import tempfile
+import sys
+import time
 import unittest
 from pathlib import Path
 
 
 PROJECT = Path(__file__).resolve().parents[1]
+
+
+def remove_fixture_lock(daemon: str) -> None:
+    """Remove only the idle lock for this test's unique fake daemon."""
+    key = hashlib.sha256((daemon + "\0shakemap-docker").encode()).hexdigest()
+    path = Path("/tmp") / f"shakemap-finalization-{key}.lock"
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        path.unlink()
+    finally:
+        os.close(descriptor)
 
 
 class OperatorWorkflowTests(unittest.TestCase):
@@ -56,13 +78,16 @@ exit 0
         fakebin = root / "bin"
         fakebin.mkdir()
         docker_trace = root / "docker-trace"
+        self.addCleanup(remove_fixture_lock, str(docker_trace))
         docker = fakebin / "docker"
         docker.write_text(
             """#!/usr/bin/env bash
 printf '%s\n' "$*" >> "$DOCKER_TRACE"
+if [[ "$1 $2" == "context show" ]]; then echo fixture-context; exit 0; fi
+if [[ "$1" == info ]]; then echo "$DOCKER_TRACE"; exit 0; fi
 if [[ "$1 $2" == "image inspect" ]]; then
   case "$*" in
-    *'{{json .Config.Env}}'*) echo '[]' ;;
+    *'{{json .Config}}'*) echo '{"Env":[],"User":"sysop","Entrypoint":["/app/entrypoint.sh"],"Cmd":null}' ;;
     *'{{.Id}}'*) echo 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ;;
     *'org.usgs.shakemap.release'*) echo 'v4.4.9' ;;
     *'org.usgs.shakemap.version'*) echo '4.4.9' ;;
@@ -88,6 +113,7 @@ exit 0
             {
                 "PATH": os.pathsep.join((str(fake_env), str(fakebin), environment["PATH"])),
                 "VIRTUAL_ENV": str(root / "venv"),
+                    "REAL_PYTHON": sys.executable,
                 "PYTHON_TRACE": str(python_trace),
                 "DOCKER_TRACE": str(docker_trace),
                 "INTERNAL_FAIL": "1" if failure == "internal" else "0",
@@ -199,15 +225,6 @@ printf '%s\n' "${{CONTAINER_COMMAND[*]}}"
         self.assertNotIn(" -d ", created)
         self.assertNotIn(" -p ", created)
 
-    def test_helpers_have_no_name_image_or_arbitrary_environment_options(self) -> None:
-        for name in ("start-shakemap-docker.sh", "finalize-shakemap.sh"):
-            source = (PROJECT / "scripts" / name).read_text(encoding="utf-8")
-            for forbidden in ("--name)", "--image)", "--env)"):
-                self.assertNotIn(forbidden, source)
-        stop = (PROJECT / "scripts/stop-shakemap-docker.sh").read_text(encoding="utf-8")
-        self.assertIn("docker stop --time 65", stop)
-        self.assertNotIn("docker rm", stop)
-
     def test_finalization_retains_required_publication_and_ownership_gates(self) -> None:
         source = (PROJECT / "scripts/finalize-shakemap.sh").read_text(encoding="utf-8")
         ready = source.index("python -m shakemap_service.finalization ready")
@@ -238,9 +255,10 @@ printf '%s\n' "${{CONTAINER_COMMAND[*]}}"
         ).read_text(encoding="utf-8")
         self.assertIn("verify-shakemap-image.sh --deployment", deployment_verifier)
         self.assertIn(
-            "verification/scenarios/v4.4.9/south-napa-global",
+            '"verification" / "scenarios" / release / "south-napa-global"',
             deployment_verifier,
         )
+        self.assertIn('"${PROJECT_CLI}" "${IMAGE_RELEASE}"', deployment_verifier)
         self.assertIn('str(scenario / "event.xml")', deployment_verifier)
         self.assertIn('str(scenario / "event_dat.xml")', deployment_verifier)
 
@@ -264,6 +282,7 @@ printf '%s\n' "${{CONTAINER_COMMAND[*]}}"
             python.write_text(
                 """#!/usr/bin/env bash
 printf '%s\n' "$*" >> "$PYTHON_TRACE"
+if [[ "$1" == - && "${2:-}" == finalization-* ]]; then exec "$REAL_PYTHON" "$@"; fi
 [[ "$*" == *'prepare-runtime'* ]] && exit 9
 if [[ "${FAIL_BEGIN:-0}" == 1 && "$*" == *'finalization begin'* ]]; then
   echo 'ERROR: accepted calculations are unfinished; wait for them to finish' >&2
@@ -280,10 +299,13 @@ exit 0
             fakebin = root / "bin"
             fakebin.mkdir()
             docker_trace = root / "docker-trace"
+            self.addCleanup(remove_fixture_lock, str(docker_trace))
             docker = fakebin / "docker"
             docker.write_text(
                 """#!/usr/bin/env bash
 printf '%s\n' "$*" >> "$DOCKER_TRACE"
+if [[ "$1 $2" == "context show" ]]; then echo fixture-context; exit 0; fi
+if [[ "$1" == info ]]; then echo "$DOCKER_TRACE"; exit 0; fi
 if [[ "$1 $2" == "image inspect" ]]; then
   case "$*" in
     *'{{.Id}}'*) echo 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ;;
@@ -293,10 +315,11 @@ if [[ "$1 $2" == "image inspect" ]]; then
   esac
   exit 0
 fi
+if [[ "$1 $2" == "container ls" ]]; then echo shakemap-docker; exit 0; fi
 if [[ "$1 $2" == "container inspect" ]]; then
   case "$*" in
     *'{{.State.Running}}'*) echo true ;;
-    *'range .Mounts'*) echo "$RUNTIME|/home/sysop/runtime" ;;
+    *'{{json .}}'*) "$REAL_PYTHON" -c 'import json,os; r=os.environ["RUNTIME"]; print(json.dumps(dict(Id="b"*64,Name="/shakemap-docker",Mounts=[dict(Type="bind",Source=r,Destination="/home/sysop/runtime",RW=True)]+[dict(Type="bind",Source=r+"/shakemap/data/"+n,Destination="/home/sysop/runtime/shakemap/data/"+n,RW=False) for n in ("global","regional","test")])))' ;;
   esac
   exit 0
 fi
@@ -310,6 +333,7 @@ exit 0
                 {
                     "PATH": os.pathsep.join((str(fake_env), str(fakebin), environment["PATH"])),
                     "VIRTUAL_ENV": str(root / "venv"),
+                    "REAL_PYTHON": sys.executable,
                     "PYTHON_TRACE": str(python_trace),
                     "DOCKER_TRACE": str(docker_trace),
                     "RUNTIME": str(runtime.resolve()),
@@ -346,7 +370,7 @@ exit 0
         self.assertTrue(any("finalization begin" in call for call in python_calls))
         self.assertTrue(any("prepare-runtime" in call for call in python_calls))
         self.assertTrue(any("finalization fail" in call for call in docker_calls))
-        self.assertTrue(any(call.startswith("stop --time 65 shakemap-docker") for call in docker_calls))
+        self.assertTrue(any(call.startswith("stop --time 65 " + "b" * 64) for call in docker_calls))
         self.assertFalse(any(call.startswith("rm ") for call in docker_calls))
 
     def test_deployment_verification_failure_revokes_stops_and_retains(self) -> None:
@@ -429,7 +453,11 @@ exit 0
             python_trace = root / "python-trace"
             python = fake_env / "python"
             python.write_text(
-                "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$PYTHON_TRACE\"\nexit 0\n",
+                """#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$PYTHON_TRACE"
+if [[ "$1" == - && "${2:-}" == finalization-* ]]; then exec "$REAL_PYTHON" "$@"; fi
+exit 0
+""",
                 encoding="utf-8",
             )
             python.chmod(python.stat().st_mode | stat.S_IXUSR)
@@ -439,11 +467,14 @@ exit 0
             fakebin = root / "bin"
             fakebin.mkdir()
             docker_trace = root / "docker-trace"
+            self.addCleanup(remove_fixture_lock, str(docker_trace))
             container_state = root / "container-state"
             docker = fakebin / "docker"
             docker.write_text(
                 """#!/usr/bin/env bash
 printf '%s\n' "$*" >> "$DOCKER_TRACE"
+if [[ "$1 $2" == "context show" ]]; then echo fixture-context; exit 0; fi
+if [[ "$1" == info ]]; then echo "$DOCKER_TRACE"; exit 0; fi
 if [[ "$1 $2" == "image inspect" ]]; then
   case "$*" in
     *'{{.Id}}'*) echo 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ;;
@@ -463,7 +494,7 @@ if [[ "$1 $2" == "container ls" ]]; then
   [[ ! -e "$CONTAINER_STATE" ]] || echo shakemap-docker
   exit 0
 fi
-if [[ "$1" == "create" ]]; then touch "$CONTAINER_STATE"; echo fake-container; exit 0; fi
+if [[ "$1" == "create" ]]; then touch "$CONTAINER_STATE"; echo bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb; exit 0; fi
 if [[ "$1" == "cp" ]]; then cat "$SEED_ARCHIVE"; exit 0; fi
 if [[ "$1 $2" == "start -a" ]]; then exit 0; fi
 if [[ "$1" == "start" ]]; then exit 17; fi
@@ -480,6 +511,7 @@ exit 0
                 {
                     "PATH": os.pathsep.join((str(fake_env), str(fakebin), environment["PATH"])),
                     "VIRTUAL_ENV": str(root / "venv"),
+                    "REAL_PYTHON": sys.executable,
                     "PYTHON_TRACE": str(python_trace),
                     "DOCKER_TRACE": str(docker_trace),
                     "CONTAINER_STATE": str(container_state),
@@ -526,6 +558,280 @@ exit 0
         self.assertNotIn(str(PROJECT / "regional-configs"), seeded[0])
         staged = Path(seeded[0].split("--regional-seeds ", 1)[1])
         self.assertFalse(staged.exists())
+
+
+class FinalizerSafetyTests(unittest.TestCase):
+    """Run the real host lifecycle boundary with Docker replaced by fixtures."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory(prefix="finalizer safety ")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.addCleanup(remove_fixture_lock, str(self.root))
+        self.runtime = self.root / "selected runtime"
+        self.bin = self.root / "bin"
+        self.venv = self.root / "venv"
+        self.bin.mkdir()
+        (self.venv / "bin").mkdir(parents=True)
+        self.env = dict(os.environ, PATH=f"{self.venv / 'bin'}:{self.bin}:{os.environ['PATH']}",
+                        VIRTUAL_ENV=str(self.venv), REAL_PYTHON=sys.executable,
+                        SAFETY_FIXTURE=str(self.root), DOCKER_CONTEXT="fixture-alias-a")
+        self.env.pop("RUNTIME_ROOT", None)
+        self.helper = PROJECT / "scripts/finalize-shakemap.sh"
+        self.executable(self.venv / "bin/python", r'''#!/usr/bin/env bash
+if [[ "$1 $2 $3" == '-m shakemap_service.finalization prepare-runtime' ]]; then
+    touch "$SAFETY_FIXTURE/preparing"
+    if [[ "${NESTED_HELPER:-}" != '' ]]; then
+        bash "$NESTED_HELPER" --runtime-root "$SAFETY_FIXTURE/nested-runtime" > "$SAFETY_FIXTURE/nested-output" 2>&1
+        echo "$?" > "$SAFETY_FIXTURE/nested-result"
+    fi
+    if [[ "${PAUSE_PREPARATION:-}" == 1 ]]; then
+        exec "$REAL_PYTHON" - <<'PY'
+import os, time
+from pathlib import Path
+while not Path(os.environ['SAFETY_FIXTURE'], 'release').exists():
+    time.sleep(.02)
+raise SystemExit(29)
+PY
+    fi
+    exit 29
+fi
+exec "$REAL_PYTHON" "$@"
+''')
+        self.executable(self.venv / "bin/shake-in-docker", "#!/usr/bin/env bash\nexit 0\n")
+        self.executable(self.bin / "docker", f"#!{sys.executable}\n" + r'''
+import json, os, sys
+from pathlib import Path
+root = Path(os.environ['SAFETY_FIXTURE'])
+a = sys.argv[1:]
+with (root / 'docker-calls').open('a') as trace:
+    trace.write(json.dumps(a) + '\n')
+current = root / 'canonical.json'
+if a[:2] == ['context', 'show']:
+    print('fixture-default')
+elif a[0] == 'info':
+    print(root)
+elif a[:2] == ['container', 'ls']:
+    if os.environ.get('FAIL_PRESENCE'): raise SystemExit(37)
+    if current.exists(): print('shakemap-docker')
+elif a[:2] == ['container', 'inspect']:
+    if os.environ.get('FAIL_INSPECTION'): raise SystemExit(38)
+    target = current if a[-1] == 'shakemap-docker' else root / (a[-1] + '.json')
+    if not target.exists(): raise SystemExit(1)
+    data = json.loads(target.read_text())
+    if '{{json .}}' in a: print(json.dumps(data))
+    elif '{{.State.Running}}' in a: print(str(data['State']['Running']).lower())
+elif a[:2] == ['image', 'inspect']:
+    fmt = a[3]
+    print('sha256:' + 'a' * 64 if '.Id' in fmt else 'v4.5.0' if 'release' in fmt
+          else '4.5.0' if 'version' in fmt else 'a' * 40 if 'commit' in fmt else '')
+elif a[0] == 'exec':
+    target = root / (a[1] + '.json')
+    if not target.exists(): raise SystemExit(1)
+    data = json.loads(target.read_text())
+    data['failure_recorded'] = True
+    target.write_text(json.dumps(data))
+elif a[0] == 'stop':
+    target = root / (a[-1] + '.json')
+    if not target.exists(): raise SystemExit(1)
+    data = json.loads(target.read_text())
+    data['State']['Running'] = False
+    target.write_text(json.dumps(data))
+''')
+
+    @staticmethod
+    def executable(path: Path, source: str) -> None:
+        path.write_text(source)
+        path.chmod(0o755)
+
+    def container(self, runtime: Path, *, identifier: str = "b", running: bool = True) -> dict:
+        data = dict(Id=identifier * 64, Name="/shakemap-docker", Image="sha256:" + "c" * 64,
+                    Config=dict(User="old-user", Entrypoint=["old-entrypoint"], Cmd=["old-command"]),
+                    State=dict(Running=running), Mounts=[dict(Type="bind", Source=str(runtime),
+                    Destination="/home/sysop/runtime", RW=True)] + [dict(Type="bind",
+                    Source=str(runtime / "shakemap/data" / name),
+                    Destination=f"/home/sysop/runtime/shakemap/data/{name}", RW=False)
+                    for name in ("global", "regional", "test")])
+        self.publish_container(data)
+        return data
+
+    def publish_container(self, data: dict) -> None:
+        source = json.dumps(data)
+        (self.root / "canonical.json").write_text(source)
+        (self.root / (data["Id"] + ".json")).write_text(source)
+
+    def command(self, runtime: Path | None = None, *, helper: Path | None = None) -> list[str]:
+        return ["/bin/bash", str(helper or self.helper), "--runtime-root", str(runtime or self.runtime)]
+
+    def run_finalizer(self, runtime: Path | None = None, **options) -> subprocess.CompletedProcess:
+        return subprocess.run(self.command(runtime), env=self.env, cwd=self.root,
+                              capture_output=True, text=True, timeout=15, **options)
+
+    def calls(self) -> list[list[str]]:
+        path = self.root / "docker-calls"
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def wait_preparation(self, process: subprocess.Popen) -> None:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if (self.root / "preparing").exists():
+                return
+            if process.poll() is not None:
+                self.fail(f"finalizer exited early: {process.communicate()}")
+            time.sleep(.02)
+        self.fail("finalizer did not reach preparation")
+
+    def copied_helper(self) -> Path:
+        scripts = self.root / "another checkout/scripts"
+        scripts.mkdir(parents=True)
+        for name in ("container-configuration.sh", "finalize-shakemap.sh"):
+            shutil.copyfile(PROJECT / "scripts" / name, scripts / name)
+        return scripts / "finalize-shakemap.sh"
+
+    def test_foreign_mounts_preserve_container_and_both_readiness_records(self) -> None:
+        actual = self.root / "actual runtime"
+        for runtime in (self.runtime, actual):
+            record = runtime / "shakemap/.service/readiness.json"
+            record.parent.mkdir(parents=True)
+            record.write_bytes(b"existing readiness must stay byte-identical")
+        data = self.container(actual)
+        before = (self.root / "canonical.json").read_bytes()
+        result = self.run_finalizer()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("To switch runtimes deliberately", result.stderr)
+        self.assertEqual((self.root / "canonical.json").read_bytes(), before)
+        self.assertEqual(json.loads((self.root / (data['Id'] + '.json')).read_text()), data)
+        for runtime in (self.runtime, actual):
+            self.assertEqual((runtime / "shakemap/.service/readiness.json").read_bytes(),
+                             b"existing readiness must stay byte-identical")
+        self.assertFalse(any(call[0] in {"exec", "stop", "rm", "start", "create", "run"} for call in self.calls()))
+        missing = self.root / "not-created-runtime"
+        result = self.run_finalizer(missing)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(missing.exists())
+
+    def test_mount_shapes_and_inspection_errors_fail_before_runtime_creation(self) -> None:
+        for alteration in ("missing-overlay", "foreign-overlay", "writable-overlay", "extra-mount",
+                           "FAIL_PRESENCE", "FAIL_INSPECTION"):
+            with self.subTest(alteration=alteration):
+                data = self.container(self.runtime)
+                if alteration == "missing-overlay": data['Mounts'].pop()
+                if alteration == "foreign-overlay": data['Mounts'][1]['Source'] = str(self.root / 'foreign')
+                if alteration == "writable-overlay": data['Mounts'][1]['RW'] = True
+                if alteration == "extra-mount": data['Mounts'].append(dict(Type='bind', Source='/other', Destination='/other', RW=True))
+                self.publish_container(data)
+                environment = dict(self.env)
+                if alteration.startswith("FAIL_"): environment[alteration] = "1"
+                result = subprocess.run(self.command(), cwd=self.root, env=environment,
+                                        capture_output=True, text=True, timeout=15)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(self.runtime.exists())
+        self.assertFalse(any(call[0] in {"exec", "stop", "rm", "start", "create", "run"} for call in self.calls()))
+
+    def test_same_runtime_old_image_and_stopped_probe_are_refinalizable(self) -> None:
+        for probe in (False, True):
+            with self.subTest(probe=probe):
+                data = self.container(self.runtime, running=not probe)
+                if probe:
+                    data['Config'].update(User='1000:1000', Entrypoint=['python'], Cmd=['-c', 'old probe'])
+                    self.publish_container(data)
+                result = self.run_finalizer()
+                self.assertEqual(result.returncode, 29, result.stderr)
+                self.assertTrue((self.root / "preparing").exists())
+                self.assertNotIn("mounts do not belong", result.stderr)
+
+    def test_first_install_external_cwd_flags_and_no_argument_defaults(self) -> None:
+        relative = self.root / "relative runtime"
+        result = subprocess.run(["/bin/bash", str(self.helper), "--runtime-root", relative.name,
+                                 "--port", "19017", "--max-concurrent", "3"],
+                                cwd=self.root, env=self.env, capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 29, result.stderr)
+        self.assertTrue((relative / "shakemap/.service/readiness.json").is_file())
+        copied = self.copied_helper()
+        result = subprocess.run(["/bin/bash", str(copied)], cwd=self.root, env=self.env,
+                                capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 29, result.stderr)
+        self.assertTrue((copied.parent.parent / "runtime/shakemap/.service/readiness.json").is_file())
+        # Help stays usable without an active project environment or Docker.
+        result = subprocess.run(["/bin/bash", str(self.helper), "--help"], cwd=self.root,
+                                env=dict(PATH="/usr/bin:/bin"), capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_failure_cleanup_uses_owned_id_after_name_replacement(self) -> None:
+        owned = self.container(self.runtime)
+        env = dict(self.env, PAUSE_PREPARATION="1")
+        process = subprocess.Popen(self.command(), cwd=self.root, env=env, text=True,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+        self.addCleanup(lambda: process.poll() is None and os.killpg(process.pid, signal.SIGKILL))
+        self.wait_preparation(process)
+        replacement = self.container(self.root / "another runtime", identifier="d")
+        (self.root / "release").touch()
+        stdout, stderr = process.communicate(timeout=10)
+        self.assertEqual(process.returncode, 29, stderr)
+        cleanup = [call for call in self.calls() if call[0] in {"exec", "stop"}]
+        self.assertTrue(cleanup)
+        self.assertTrue(all(call[-1] == owned['Id'] if call[0] == 'stop' else call[1] == owned['Id'] for call in cleanup))
+        self.assertEqual(json.loads((self.root / (replacement['Id'] + '.json')).read_text()), replacement)
+        self.assertEqual(json.loads((self.root / "canonical.json").read_text()), replacement)
+
+    def test_lock_overlaps_runtimes_checkouts_context_aliases_and_recovers(self) -> None:
+        copied = self.copied_helper()
+        process = subprocess.Popen(self.command(), cwd=self.root,
+                                   env=dict(self.env, PAUSE_PREPARATION="1", NESTED_HELPER=str(copied)),
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+        self.addCleanup(lambda: process.poll() is None and os.killpg(process.pid, signal.SIGKILL))
+        self.wait_preparation(process)
+        second_runtime = self.root / "second runtime"
+        second_env = dict(self.env, DOCKER_CONTEXT="fixture-alias-b")
+        refused = subprocess.run(self.command(second_runtime, helper=copied), cwd=self.root,
+                                 env=second_env, capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("another finalization is already running", refused.stderr)
+        self.assertFalse(second_runtime.exists())
+        deadline = time.monotonic() + 5
+        while not (self.root / "nested-result").exists() and time.monotonic() < deadline:
+            time.sleep(.02)
+        self.assertNotEqual((self.root / "nested-result").read_text().strip(), "0")
+        self.assertIn("another finalization is already running", (self.root / "nested-output").read_text())
+        # An ordinary interrupted attempt releases the kernel lock; no stale
+        # marker cleanup or special flag is needed for another installation.
+        os.killpg(process.pid, signal.SIGTERM)
+        process.communicate(timeout=10)
+        retried = subprocess.run(self.command(second_runtime, helper=copied), cwd=self.root,
+                                 env=second_env, capture_output=True, text=True, timeout=10)
+        self.assertEqual(retried.returncode, 29, retried.stderr)
+        self.assertTrue(second_runtime.exists())
+
+    def test_killed_owner_cannot_release_lock_while_its_child_is_still_working(self) -> None:
+        process = subprocess.Popen(self.command(), cwd=self.root,
+                                   env=dict(self.env, PAUSE_PREPARATION="1"),
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   start_new_session=True)
+        self.addCleanup(lambda: self._kill_process_group(process.pid))
+        self.wait_preparation(process)
+        # Kill only the owning Bash. Its in-progress preparation child still
+        # owns an inherited descriptor until that operation actually exits.
+        process.kill()
+        process.wait(timeout=5)
+        refused = self.run_finalizer(self.root / "second-runtime")
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("another finalization is already running", refused.stderr)
+        (self.root / "release").touch()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            retried = self.run_finalizer(self.root / "second-runtime")
+            if retried.returncode == 29:
+                break
+            self.assertIn("another finalization is already running", retried.stderr)
+            time.sleep(.02)
+        self.assertEqual(retried.returncode, 29, retried.stderr)
+
+    @staticmethod
+    def _kill_process_group(identifier: int) -> None:
+        try:
+            os.killpg(identifier, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
 
 if __name__ == "__main__":

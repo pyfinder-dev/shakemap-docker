@@ -149,6 +149,25 @@ profile's `data/GenericAmpFactors` area; reproducible Swiss materialization ther
 remains implementation work. Do not invent replacement grids, polygons or model
 classes to make a run finish.
 
+## Thread tuning
+
+ShakeMap 4.5 provides `sm_tune`, a standalone maintenance command that benchmarks
+BLAS/OpenMP scaling and writes `blas_threads` and `openmp_threads` under `[system]`
+in a native `model.conf`. It supports `--dry-run` and an explicit `--model-conf`
+target. Missing thread keys receive native defaults; tuning is not a prerequisite
+for parsing an otherwise valid older configuration and does not repair broken
+scientific paths or module references.
+
+The service does not run tuning automatically. Each calculation creates a new
+private profile, so tuning an unrelated default profile does not affect future
+calculations. Regional profiles retain their operator-owned `model.conf`.
+Persistence and precedence of deployment-wide tuning settings remain design
+questions; no tuning REST endpoint or host CLI operation is currently provided.
+Do not benchmark during image builds or every calculation. Any deliberate tuning
+should use the intended deployment hardware and container resource limits, and
+be evaluated with the configured number of concurrent calculations. A faster
+native implementation does not guarantee a particular workload's speedup.
+
 ## Scientific ownership and provisioning
 
 The scientific owner chooses model branches, weights, datasets, geographic
