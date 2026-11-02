@@ -392,6 +392,18 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except (FinalizationError, OSError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
+        if args.command != "check-ready":
+            # Retain the precise Python failure alongside the shell phase/outcome.
+            # A diagnostic write failure must preserve the original error code.
+            from .service_logging import record_operation
+
+            try:
+                record_operation(
+                    f"Finalization {args.command} failed: {exc}",
+                    level="ERROR",
+                )
+            except (OSError, ValueError) as log_error:
+                print(f"ERROR: {log_error}", file=sys.stderr)
         recovery = finalization_recovery(exc, paths.runtime_root())
         if recovery:
             print(recovery, file=sys.stderr)

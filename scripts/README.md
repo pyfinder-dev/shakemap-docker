@@ -66,6 +66,13 @@ host shell utilities and needs neither Docker nor a Python environment.
 See [permissions](../docs/permissions.md) for its preconditions and manual
 `sudo` usage. Never elevate the entire finalization helper.
 
+Finalization and startup append phase/outcome records to the selected runtime's
+`shakemap/logs/operations.log`. The entrypoint and API append startup/runtime
+diagnostics to `shakemap/logs/service.log`, retaining their console records.
+These are operational histories rather than complete child-output transcripts;
+image build output stays in the terminal. See [service diagnostics](../README.md#service-diagnostics)
+for viewing, retention and the existing host/container access requirements.
+
 ## Deployment orchestration boundary
 
 These helpers remain the reusable workflow implementations. This repository's

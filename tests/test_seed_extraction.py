@@ -92,11 +92,14 @@ if os.environ.get('PRODUCER_FAIL'):
         # Docker archive producer is replaced; tar and Python publication are real.
         cleanup = source.split("cleanup_seed_staging() {", 1)[1].split("\nwhile [[ $#", 1)[0]
         failure = source.split("fail_closed() {", 1)[1].split("\nrequire_project_environment", 1)[0]
-        extraction = source.split('CURRENT_STEP="image regional seed extraction"', 1)[1].split(
+        extraction = source.split('finalization_step "image regional seed extraction"', 1)[1].split(
             '\nRUNTIME_ROOT="${RUNTIME_ABS}" SHAKEMAP_SHARED_RUNTIME_ROOT="${RUNTIME_ABS}" \\\n    python -m shakemap_service.finalization arm', 1
         )[0]
         script = "\n".join([
             "set -euo pipefail", "BEGUN=1", "COMMITTED=0", 'SEED_STAGING=""',
+            # This fragment starts after operation logging setup; its tests own
+            # archive extraction and cleanup, not the separate log destination.
+            "OPERATION_LOG_STARTED=0",
             'OWNED_CONTAINER_ID=""',
             'CANONICAL_CONTAINER="shakemap-docker"',
             f"RUNTIME_ABS={shlex.quote(str(self.runtime))}",

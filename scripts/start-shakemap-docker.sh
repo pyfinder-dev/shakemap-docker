@@ -28,6 +28,18 @@ require_project_environment
 validate_deployment_settings
 command -v docker >/dev/null 2>&1 || { echo "ERROR: docker is not installed." >&2; exit 1; }
 resolve_runtime_root
+record_operation INFO "Service start requested."
+finish_start() {
+    result=$?
+    trap - EXIT
+    level=INFO
+    [[ "${result}" == 0 ]] || level=ERROR
+    if record_operation "${level}" "Service start ended; exit code ${result}."; then :; else
+        [[ "${result}" != 0 ]] || result=1
+    fi
+    exit "${result}"
+}
+trap finish_start EXIT
 load_image_identity
 
 if ! RUNTIME_ROOT="${RUNTIME_ABS}" SHAKEMAP_SHARED_RUNTIME_ROOT="${RUNTIME_ABS}" \

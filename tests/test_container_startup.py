@@ -32,6 +32,7 @@ class ContainerStartupTests(unittest.TestCase):
         network_mode: str | None = "default",
         validation_mode: str = "published",
         image_defaults: dict | None = None,
+        terminal_log_failure: bool = False,
     ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -48,6 +49,7 @@ class ContainerStartupTests(unittest.TestCase):
             ".service",
         ):
             service.joinpath(relative).mkdir(parents=True, exist_ok=True)
+        self.operation_log = service / "logs/operations.log"
         fake_env = root / "venv/bin"
         fake_env.mkdir(parents=True)
         python = fake_env / "python"
@@ -55,6 +57,8 @@ class ContainerStartupTests(unittest.TestCase):
             "#!/usr/bin/env bash\n"
             "if [[ \"$*\" == *'finalization check-ready'* && \"$READINESS_MATCH\" != 1 ]]; then exit 1; fi\n"
             "if [[ \"$1\" == - ]]; then exec \"$REAL_PYTHON\" \"$@\"; fi\n"
+            "if [[ \"$*\" == *service_logging*ended* && \"$TERMINAL_LOG_FAILURE\" == 1 ]]; then echo 'ERROR: operations.log write failed' >&2; exit 77; fi\n"
+            "if [[ \"$*\" == *shakemap_service.service_logging* ]]; then exec \"$REAL_PYTHON\" \"$@\"; fi\n"
             "exit 0\n",
             encoding="utf-8",
         )
@@ -188,6 +192,7 @@ exit 0
                 "CONTAINER_JSON": json.dumps(container_details),
                 "IMAGE_CONFIGURATION_JSON": json.dumps(image_configuration),
                 "READINESS_MATCH": "1" if readiness_match else "0",
+                "TERMINAL_LOG_FAILURE": "1" if terminal_log_failure else "0",
                 "REAL_PYTHON": sys.executable,
                 "RUNTIME": str(runtime.resolve()),
                 "SERVICE": str(service.resolve()),
@@ -275,6 +280,31 @@ exit 0
             text=True,
         )
         return result, trace.read_text(encoding="utf-8").splitlines()
+
+    def test_start_phase_and_failure_remain_persistent_with_original_exit(self) -> None:
+        result, _ = self._run_matching_start("stopped", readiness_match=False)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        history = self.operation_log.read_text()
+        self.assertIn("Service start requested.", history)
+        self.assertIn("Service start ended; exit code 1.", history)
+        self.assertIn("Service start requested.", result.stdout)
+        self.assertIn("run make finalize", result.stderr)
+
+    def test_terminal_log_failure_preserves_original_failure_and_is_visible(self) -> None:
+        for ready in (False, True):
+            with self.subTest(ready=ready):
+                result, _ = self._run_matching_start(
+                    "stopped",
+                    readiness_match=ready,
+                    terminal_log_failure=True,
+                )
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("operations.log write failed", result.stderr)
+
+    def test_successful_start_records_terminal_outcome(self) -> None:
+        result, _ = self._run_matching_start("stopped")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Service start ended; exit code 0.", self.operation_log.read_text())
 
     def test_entrypoint_creates_only_service_writable_paths(self) -> None:
         source = ENTRYPOINT.read_text(encoding="utf-8")

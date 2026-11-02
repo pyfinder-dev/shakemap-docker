@@ -228,13 +228,13 @@ printf '%s\n' "${{CONTAINER_COMMAND[*]}}"
     def test_finalization_retains_required_publication_and_ownership_gates(self) -> None:
         source = (PROJECT / "scripts/finalize-shakemap.sh").read_text(encoding="utf-8")
         ready = source.index("python -m shakemap_service.finalization ready")
-        parity = source.index('CURRENT_STEP="pre-ready public parity checks"')
+        parity = source.index('finalization_step "pre-ready public parity checks"')
         self.assertGreater(ready, parity)
         self.assertIn("--file /opt/shakemap-verification/event.xml", source)
         self.assertIn("verify-shakemap-image.sh --deployment", source)
         self.assertLess(
             source.index('CURRENT_STEP="existing container mount inspection"'),
-            source.index('CURRENT_STEP="graceful service stop"'),
+            source.index('finalization_step "graceful service stop"'),
         )
         self.assertLess(
             source.index("python -m shakemap_service.finalization arm"),
@@ -283,6 +283,7 @@ printf '%s\n' "${{CONTAINER_COMMAND[*]}}"
                 """#!/usr/bin/env bash
 printf '%s\n' "$*" >> "$PYTHON_TRACE"
 if [[ "$1" == - && "${2:-}" == finalization-* ]]; then exec "$REAL_PYTHON" "$@"; fi
+if [[ "$*" == *shakemap_service.service_logging* ]]; then exec "$REAL_PYTHON" "$@"; fi
 [[ "$*" == *'prepare-runtime'* ]] && exit 9
 if [[ "${FAIL_BEGIN:-0}" == 1 && "$*" == *'finalization begin'* ]]; then
   echo 'ERROR: accepted calculations are unfinished; wait for them to finish' >&2
@@ -351,6 +352,7 @@ exit 0
                 capture_output=True,
                 text=True,
             )
+            history = (runtime / "shakemap/logs/operations.log").read_text()
             docker_calls = docker_trace.read_text(encoding="utf-8").splitlines()
             python_calls = python_trace.read_text(encoding="utf-8").splitlines()
             # Exercise the shell boundary too: a refused begin must keep its
@@ -361,6 +363,9 @@ exit 0
                  '--runtime-root', str(runtime)],
                 cwd=PROJECT, env=environment, capture_output=True, text=True,
             )
+        self.assertIn("Finalization: runtime preparation.", history)
+        self.assertIn("Finalization ended during runtime preparation; exit code 9.", history)
+        self.assertIn("Finalization: runtime preparation.", result.stdout)
         self.assertEqual(result.returncode, 9)
         self.assertNotIn('sudo', result.stderr)
         self.assertEqual(refused.returncode, 8)

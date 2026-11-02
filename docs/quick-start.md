@@ -57,3 +57,9 @@ for an explicit service URL. Use `make stop` for graceful shutdown and
 `make start` for a matching, already-finalized deployment. Changing the image
 or runtime requires finalization. Keep the project environment active; do not
 run finalization with `sudo`.
+
+Read persisted setup/start phases in `runtime/shakemap/logs/operations.log` and
+container startup/API diagnostics in `runtime/shakemap/logs/service.log`.
+`docker logs shakemap-docker` still shows console output. See
+[service diagnostics](../README.md#service-diagnostics) for exact scope,
+calculation-log separation, access requirements and retention.

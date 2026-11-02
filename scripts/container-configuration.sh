@@ -394,3 +394,10 @@ PY
     echo "ERROR: canonical service did not report ready=${expected}." >&2
     return 1
 }
+
+# Operation records are phase history, not copies of every child's output.
+# Keep this in the helper layer so Make and deployment wrappers share it.
+record_operation() {
+    RUNTIME_ROOT="${RUNTIME_ABS}" "${PROJECT_PYTHON}" \
+        -m shakemap_service.service_logging operations "${1}" "${2}"
+}

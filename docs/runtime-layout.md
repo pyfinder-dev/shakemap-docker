@@ -4,6 +4,8 @@
 runtime/shakemap/
 ├── products/
 ├── logs/
+│   ├── service.log
+│   └── operations.log
 ├── data/
 │   ├── global/
 │   │   ├── vs30/
@@ -22,6 +24,12 @@ runtime/shakemap/
 
 The user-facing top level is exactly `products/`, `logs/`, and `data/`.
 Service-owned state is under `.service/events/` and `.service/archive/`.
+
+Top-level logs follow the service lifetime: `service.log` records container
+startup/API diagnostics; `operations.log` records host setup/finalization/start
+phases and outcomes. Per-calculation logs remain in the current or archived
+service record. See [service diagnostics](../README.md#service-diagnostics)
+for viewing, retention and access requirements.
 
 New runs do not use `incoming/`, `.service/work/`, `.service/preparation/`, or
 top-level `events/`, `work/`, `archive/`, or `preparation/`.

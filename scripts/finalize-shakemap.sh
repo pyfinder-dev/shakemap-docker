@@ -16,6 +16,7 @@ COMMITTED=0
 CURRENT_STEP="initial checks"
 SEED_STAGING=""
 OWNED_CONTAINER_ID=""
+OPERATION_LOG_STARTED=0
 
 usage() {
     echo "Usage: $0 [--runtime-root DIR] [--port PORT] [--max-concurrent COUNT]"
@@ -72,6 +73,14 @@ fail_closed() {
         fi
     fi
     cleanup_seed_staging || echo "ERROR: could not remove seed staging at ${SEED_STAGING}; inspect the reported cleanup error." >&2
+    if [[ "${OPERATION_LOG_STARTED}" == 1 ]]; then
+        level=INFO
+        [[ "${result}" == 0 ]] || level=ERROR
+        # A secondary logging failure must not hide the original workflow error.
+        if record_operation "${level}" "Finalization ended during ${CURRENT_STEP}; exit code ${result}."; then :; else
+            [[ "${result}" != 0 ]] || result=1
+        fi
+    fi
     exit "${result}"
 }
 trap fail_closed EXIT
@@ -98,9 +107,16 @@ fi
 # changing either deployment's readiness. Old images and stopped probes remain
 # eligible for finalization; readiness/settings checks belong to normal start.
 mkdir -p "${RUNTIME_ABS}"
+record_operation INFO "Finalization starting."
+OPERATION_LOG_STARTED=1
 load_image_identity
 
-CURRENT_STEP="unfinished-work gate"
+finalization_step() {
+    CURRENT_STEP="$1"
+    record_operation INFO "Finalization: ${CURRENT_STEP}."
+}
+
+finalization_step "unfinished-work gate"
 if RUNTIME_ROOT="${RUNTIME_ABS}" SHAKEMAP_SHARED_RUNTIME_ROOT="${RUNTIME_ABS}" \
     python -m shakemap_service.finalization begin; then :; else
     result=$?
@@ -110,27 +126,27 @@ if RUNTIME_ROOT="${RUNTIME_ABS}" SHAKEMAP_SHARED_RUNTIME_ROOT="${RUNTIME_ABS}" \
 fi
 BEGUN=1
 
-CURRENT_STEP="graceful service stop"
+finalization_step "graceful service stop"
 if [[ -n "${OWNED_CONTAINER_ID}" ]] && \
     [[ "$(docker container inspect --format '{{.State.Running}}' "${OWNED_CONTAINER_ID}")" == "true" ]]; then
     docker stop --time 65 "${OWNED_CONTAINER_ID}" >/dev/null
 fi
 
-CURRENT_STEP="runtime preparation"
+finalization_step "runtime preparation"
 if RUNTIME_ROOT="${RUNTIME_ABS}" SHAKEMAP_SHARED_RUNTIME_ROOT="${RUNTIME_ABS}" \
     python -m shakemap_service.finalization prepare-runtime; then :; else
     result=$?
     exit "${result}"
 fi
-CURRENT_STEP="staged data activation"
+finalization_step "staged data activation"
 RUNTIME_ROOT="${RUNTIME_ABS}" SHAKEMAP_SHARED_RUNTIME_ROOT="${RUNTIME_ABS}" \
     python -m shakemap_service.finalization activate-data \
         --data-root "${SERVICE_ABS}/data"
-CURRENT_STEP="verification data preparation"
+finalization_step "verification data preparation"
 python "${PROJECT_ROOT}/scripts/prepare-shakemap-verification-data.py" prepare \
     --destination "${SERVICE_ABS}/data/test/${IMAGE_VERSION}"
 
-CURRENT_STEP="container writable access probe"
+finalization_step "container writable access probe"
 # Replace the stopped canonical container only after its mounts and unfinished
 # work were checked. The probe overrides the entrypoint, never runs the API,
 # and retains its stopped container on failure for inspection.
@@ -252,14 +268,14 @@ probe_writable_access() {
 if probe_writable_access; then :; else
     result=$?
     [[ "${result}" == 73 ]] || exit "${result}"
-    CURRENT_STEP="service writable path repair"
+    finalization_step "service writable path repair"
     if "${SCRIPT_DIR}/repair-shakemap-writable-paths.sh" --runtime-root "${RUNTIME_ABS}"; then :; else
         result=$?
         # A failed shell utility does not prove missing privilege. Preserve the
         # helper's operation-specific diagnostic and stop before any reprobe.
         exit "${result}"
     fi
-    CURRENT_STEP="container writable access reprobe"
+    finalization_step "container writable access reprobe"
     if probe_writable_access; then :; else
         result=$?
         [[ "${result}" != 73 ]] || manual_repair_guidance
@@ -267,7 +283,7 @@ if probe_writable_access; then :; else
     fi
 fi
 
-CURRENT_STEP="isolated canonical container creation"
+finalization_step "isolated canonical container creation"
 if [[ -n "${OWNED_CONTAINER_ID}" ]]; then
     docker rm "${OWNED_CONTAINER_ID}" >/dev/null
     OWNED_CONTAINER_ID=""
@@ -277,7 +293,7 @@ container_create_command isolated
 created_container_id="$("${CONTAINER_COMMAND[@]}")"
 [[ "${created_container_id}" =~ ^[0-9a-f]{64}$ ]] || { echo "ERROR: created isolated container identity is unavailable." >&2; exit 1; }
 OWNED_CONTAINER_ID="${created_container_id}"
-CURRENT_STEP="image regional seed extraction"
+finalization_step "image regional seed extraction"
 SEED_STAGING="$(mktemp -d "${TMPDIR:-/tmp}/shakemap-regional-seeds.XXXXXX")"
 # Host tar delays directory-mode restoration until their children are extracted.
 # pipefail keeps a failed Docker producer from being hidden by a successful tar.
@@ -298,13 +314,13 @@ RUNTIME_ROOT="${RUNTIME_ABS}" SHAKEMAP_SHARED_RUNTIME_ROOT="${RUNTIME_ABS}" \
 cleanup_seed_staging
 RUNTIME_ROOT="${RUNTIME_ABS}" SHAKEMAP_SHARED_RUNTIME_ROOT="${RUNTIME_ABS}" \
     python -m shakemap_service.finalization arm --image-id "${IMAGE_ID}"
-CURRENT_STEP="isolated canonical container start"
+finalization_step "isolated canonical container start"
 docker start "${CANONICAL_CONTAINER}" >/dev/null
 wait_for_container_health true
-CURRENT_STEP="container-internal checks"
+finalization_step "container-internal checks"
 docker exec "${CANONICAL_CONTAINER}" /app/scripts/verify-shakemap-image.sh --deployment
 
-CURRENT_STEP="isolated verification calculation"
+finalization_step "isolated verification calculation"
 submission="$(docker exec "${CANONICAL_CONTAINER}" shake-in-docker \
     --url http://127.0.0.1:9010 submit "${EVENT_ID}" \
     --configuration global --overwrite true \
@@ -339,7 +355,7 @@ if products["internal_sequence"] != sequence or products["status"] != "SUCCESS" 
     raise SystemExit("verification product summary does not match the successful sequence")
 PY
 
-CURRENT_STEP="published canonical container recreation"
+finalization_step "published canonical container recreation"
 docker stop --time 65 "${CANONICAL_CONTAINER}" >/dev/null
 docker rm "${CANONICAL_CONTAINER}" >/dev/null
 OWNED_CONTAINER_ID=""
@@ -350,7 +366,7 @@ OWNED_CONTAINER_ID="${created_container_id}"
 wait_for_container_health false
 
 BASE_URL="http://127.0.0.1:${PORT}"
-CURRENT_STEP="pre-ready public parity checks"
+finalization_step "pre-ready public parity checks"
 rest_health="$(python - "${BASE_URL}" <<'PY'
 import json,sys,urllib.request
 with urllib.request.urlopen(sys.argv[1]+"/healthz", timeout=30) as response: print(json.dumps(json.load(response), sort_keys=True))
@@ -384,9 +400,10 @@ if values[4]["current"].get("internal_sequence") != sequence:
     raise SystemExit("retained product summary identifies another sequence")
 PY
 
-CURRENT_STEP="durable readiness publication"
+finalization_step "durable readiness publication"
 docker exec "${CANONICAL_CONTAINER}" python -m shakemap_service.finalization ready
 wait_for_container_health true
 COMMITTED=1
+record_operation INFO "Finalization completed; exit code 0. Deployment is ready."
 trap - EXIT
 echo "Canonical ShakeMap deployment finalized and ready at ${BASE_URL}."

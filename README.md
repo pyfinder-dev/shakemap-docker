@@ -50,6 +50,44 @@ repository's helpers; they do not replace their data or lifecycle logic.
 See [quick start](docs/quick-start.md) and [helper interfaces](scripts/README.md)
 for manual imports and detailed operation.
 
+## Service diagnostics
+
+The selected runtime keeps two append-only diagnostic histories under
+`<RUNTIME_ROOT>/shakemap/logs/`:
+
+| File | Persisted scope |
+|---|---|
+| `service.log` | Entrypoint startup/permission messages, Uvicorn startup, access and shutdown records, and Python service warnings/errors. Console output remains available through `docker logs shakemap-docker`. |
+| `operations.log` | Host finalization and start phases and terminal outcomes, including precise errors caught by the Python finalization boundary. This covers runtime installation/setup; image build output remains in the invoking terminal. |
+
+These files contain diagnostic records, not a full transcript of child process
+stdout/stderr. Failures before a runtime is safely identified, and failures to
+open its log destination, remain console diagnostics. Runtime log-write failures
+also report to stderr. Helpers preserve the original nonzero workflow exit code
+when reporting a secondary logging failure.
+
+For example, from the directory containing your selected runtime:
+
+```bash
+tail -n 100 runtime/shakemap/logs/operations.log
+tail -f runtime/shakemap/logs/service.log
+docker logs --tail 100 shakemap-docker
+```
+
+Both files survive service/container restarts and calculation replacement. They
+are not moved into calculation archives, rotated, or automatically deleted;
+operators manage their retention while service and helper writers are stopped.
+The existing service-writable access policy applies: UID:GID `1000:1000` needs
+access, and host helpers need authorized access too. On native Linux, arrange
+the operator identity/ACL policy described in [permissions](docs/permissions.md)
+before ownership repair; logging does not widen permissions or bypass it.
+
+Authoritative calculation output remains in
+`.service/events/<event_id>/logs/service.log` and `shake.log`. Recalculation with
+`overwrite=False` preserves these in the archived `service/logs/` tree;
+`overwrite=True` discards the preceding calculation as before. Use
+`shake-in-docker status <event_id>` for its log locations and execution outcome.
+
 ## Data and configurations
 
 Global VS30 and topography remain external, operator-owned files:

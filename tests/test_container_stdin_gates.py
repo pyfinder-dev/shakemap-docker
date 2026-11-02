@@ -99,12 +99,17 @@ exec(compile(program, '<docker-stdin>', 'exec'), {'__name__': '__main__'})
 
     def polling_script(self) -> str:
         source = (PROJECT / "scripts/finalize-shakemap.sh").read_text()
+        phase = source.split("finalization_step() {", 1)[1].split("\n}\n", 1)[0]
         start = source.index("docker exec ", source.index('sequence="$(python -c'))
         end = source.index('\nBASE_URL=', start)
         return "\n".join([
             'CANONICAL_CONTAINER="shakemap-docker"', 'EVENT_ID="fixture event"', 'sequence=7',
             'container_run_command() { CONTAINER_COMMAND=(docker run); }',
             'wait_for_container_health() { :; }',
+            # Keep the production phase transition; only its diagnostic sink is
+            # outside this fixture's stdin/sequence/publication responsibility.
+            'record_operation() { :; }',
+            'finalization_step() {' + phase + '\n}',
             source[start:end],
         ])
 

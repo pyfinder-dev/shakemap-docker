@@ -18,15 +18,26 @@ RUNTIME_ROOT="${RUNTIME_ROOT:-/home/sysop/runtime}"
 SERVICE_ROOT="${RUNTIME_ROOT}/shakemap"
 PORT="${SHAKEMAP_PORT:-9010}"
 
-# [2/6] Log environment
-echo "[entrypoint] Starting ShakeMap Docker service..."
-echo "[entrypoint] RUNTIME_ROOT            = ${RUNTIME_ROOT}"
-echo "[entrypoint] SERVICE_ROOT            = ${SERVICE_ROOT}"
-echo "[entrypoint] SHAKEMAP_PORT           = ${PORT}"
-
-# [3/6] Ensure runtime root exists
-echo "[entrypoint] [3/6] Ensuring runtime root exists"
+# The API remains the exec'd PID 1. Explicit shell records cover startup;
+# Uvicorn's logging configuration owns persistence once the API takes over.
+export RUNTIME_ROOT
 mkdir -p "${RUNTIME_ROOT}"
+log_startup() {
+    python -m shakemap_service.service_logging service "${2:-INFO}" "$1"
+}
+startup_failed() {
+    result=$?
+    trap - ERR
+    python -m shakemap_service.service_logging service ERROR \
+        "[entrypoint] Startup failed with exit code ${result}. Inspect the preceding console diagnostic." >&2 || true
+    exit "${result}"
+}
+trap startup_failed ERR
+
+log_startup "[entrypoint] Starting ShakeMap Docker service..."
+log_startup "[entrypoint] RUNTIME_ROOT = ${RUNTIME_ROOT}"
+log_startup "[entrypoint] SERVICE_ROOT = ${SERVICE_ROOT}"
+log_startup "[entrypoint] SHAKEMAP_PORT = ${PORT}"
 
 # [4/6] Create service directories and verify permissions
 #
@@ -35,7 +46,7 @@ mkdir -p "${RUNTIME_ROOT}"
 #   External read-only data:  data/
 #   Internal (.service/):     .service/events/ .service/archive/
 #
-echo "[entrypoint] [4/6] Creating service directories and verifying permissions"
+log_startup "[entrypoint] [4/6] Creating service directories and verifying permissions"
 
 # User-facing directories
 for dir in products logs data/inputs; do
@@ -51,34 +62,35 @@ done
 for dir in products logs data/inputs .service/events .service/archive .service/queue; do
     DIRPATH="${SERVICE_ROOT}/${dir}"
     if ! touch "${DIRPATH}/.writetest_$$" 2>/dev/null; then
-        echo "" >&2
-        echo "[entrypoint] ERROR: ${DIRPATH} is not writable." >&2
-        echo "" >&2
-        echo "  Directory:      ${DIRPATH}" >&2
+        log_startup "" >&2
+        log_startup "[entrypoint] ERROR: ${DIRPATH} is not writable." ERROR >&2
+        log_startup "" >&2
+        log_startup "  Directory:      ${DIRPATH}" >&2
         OWNER="$(stat -c '%u:%g' "${DIRPATH}" 2>/dev/null || stat -f '%u:%g' "${DIRPATH}" 2>/dev/null || echo 'unknown')"
-        echo "  Current owner:  ${OWNER}" >&2
-        echo "  Required service access: UID:GID 1000:1000" >&2
-        echo "" >&2
-        echo "  Suggested fix:" >&2
-        echo "    Stop the service, then run the host project's helper:" >&2
-        echo "    sudo /path/to/shakemap-docker/scripts/repair-shakemap-writable-paths.sh --runtime-root <host-runtime-dir>" >&2
-        echo "    Then rerun finalization normally." >&2
-        echo "" >&2
+        log_startup "  Current owner:  ${OWNER}" >&2
+        log_startup "  Required service access: UID:GID 1000:1000" >&2
+        log_startup "" >&2
+        log_startup "  Suggested fix:" >&2
+        log_startup "    Stop the service, then run the host project's helper:" >&2
+        log_startup "    sudo /path/to/shakemap-docker/scripts/repair-shakemap-writable-paths.sh --runtime-root <host-runtime-dir>" >&2
+        log_startup "    Then rerun finalization normally." >&2
+        log_startup "" >&2
         exit 1
     fi
     rm -f "${DIRPATH}/.writetest_$$"
 done
-echo "[entrypoint] All service directories writable by sysop (UID $(id -u))"
+log_startup "[entrypoint] All service directories writable by sysop (UID $(id -u))"
 
 # [5/6] Verify ShakeMap CLI available (smoke check)
-echo "[entrypoint] [5/6] Verifying ShakeMap CLI"
+log_startup "[entrypoint] [5/6] Verifying ShakeMap CLI"
 if command -v shake >/dev/null 2>&1; then
-    echo "[entrypoint] ShakeMap CLI found: $(command -v shake)"
+    log_startup "[entrypoint] ShakeMap CLI found: $(command -v shake)"
 else
-    echo "[entrypoint] WARNING: 'shake' not found on PATH. ShakeMap may not be installed correctly."
+    log_startup "[entrypoint] WARNING: 'shake' not found on PATH. ShakeMap may not be installed correctly." WARNING
 fi
 
 # [6/6] Start the FastAPI service
-echo "[entrypoint] [6/6] Starting shakemap_service on port ${PORT}"
+log_startup "[entrypoint] [6/6] Starting shakemap_service on port ${PORT}"
 cd /app
-exec uvicorn shakemap_service.main:app --host 0.0.0.0 --port "${PORT}"
+exec uvicorn shakemap_service.main:app --host 0.0.0.0 --port "${PORT}" \
+    --log-config /app/shakemap_service/data/service-logging.json

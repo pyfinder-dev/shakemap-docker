@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "disable_existing_loggers": false,
+  "formatters": {
+    "diagnostic": {
+      "format": "%(asctime)s %(levelname)s %(name)s: %(message)s"
+    }
+  },
+  "handlers": {
+    "console": {
+      "class": "logging.StreamHandler",
+      "stream": "ext://sys.stderr",
+      "formatter": "diagnostic"
+    },
+    "access_console": {
+      "class": "logging.StreamHandler",
+      "stream": "ext://sys.stdout",
+      "formatter": "diagnostic"
+    },
+    "persistent": {
+      "()": "shakemap_service.service_logging.ServiceLogHandler",
+      "formatter": "diagnostic"
+    }
+  },
+  "root": {
+    "handlers": [
+      "console",
+      "persistent"
+    ],
+    "level": "INFO"
+  },
+  "loggers": {
+    "uvicorn": {
+      "handlers": [],
+      "level": "INFO",
+      "propagate": true
+    },
+    "uvicorn.error": {
+      "handlers": [],
+      "level": "INFO",
+      "propagate": true
+    },
+    "uvicorn.access": {
+      "handlers": [
+        "access_console",
+        "persistent"
+      ],
+      "level": "INFO",
+      "propagate": false
+    }
+  }
+}
