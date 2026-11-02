@@ -27,12 +27,16 @@ class ProjectPackagingTests(unittest.TestCase):
 
     def test_command_help_describes_all_public_operations(self) -> None:
         output = io.StringIO()
-        with contextlib.redirect_stdout(output), self.assertRaisesRegex(SystemExit, "0"):
+        with contextlib.redirect_stdout(output), self.assertRaises(SystemExit) as exited:
             cli.main(["--help"])
-        self.assertIn(
-            "{health,config,configurations,check,submit,list,queue,status,products}",
-            output.getvalue(),
-        )
+        self.assertEqual(exited.exception.code, 0)
+        # Keep command visibility without fixing argparse's order or wrapping.
+        for command in (
+            "health", "config", "configurations", "check", "submit",
+            "list", "queue", "status", "products",
+        ):
+            with self.subTest(command=command):
+                self.assertRegex(output.getvalue(), rf"\b{command}\b")
         self.assertIn("--url", output.getvalue())
 
 

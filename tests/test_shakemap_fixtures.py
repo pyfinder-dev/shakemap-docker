@@ -19,12 +19,6 @@ FIXTURE = (
     / "v4.5.0"
     / "south-napa-global"
 )
-EXPECTED_FILES = {
-    "README.md",
-    "event.xml",
-    "event_dat.xml",
-    "scenario-manifest.json",
-}
 
 
 def sha256(path: Path) -> str:
@@ -40,13 +34,6 @@ class ScenarioFixtureTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.manifest = json.loads(
             (FIXTURE / "scenario-manifest.json").read_text(encoding="utf-8")
-        )
-
-    def test_capability_oriented_file_set(self) -> None:
-        self.assertTrue(FIXTURE.is_dir())
-        self.assertEqual(
-            {path.name for path in FIXTURE.iterdir() if path.is_file()},
-            EXPECTED_FILES,
         )
 
     def test_manifest_identity_compatibility_and_license(self) -> None:

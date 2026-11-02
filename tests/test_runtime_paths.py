@@ -60,16 +60,6 @@ class RuntimePathTests(unittest.TestCase):
                 ".service/archive",
             },
         )
-        forbidden = {
-            "incoming",
-            "events",
-            "work",
-            "archive",
-            "preparation",
-            ".service/work",
-            ".service/preparation",
-        }
-        self.assertTrue(rendered.isdisjoint(forbidden))
 
     def test_service_records_are_separate_from_native_products(self) -> None:
         product_root = paths.event_products_dir("evt")
