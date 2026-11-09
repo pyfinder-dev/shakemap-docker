@@ -15,6 +15,11 @@ an example; choose one runtime root and pass it consistently to every helper.
 You need Docker and an activated project Python environment with Python 3.10 or
 newer. Run these commands from this repository's root:
 
+The host package provides the management tools and `shake-in-docker`, which
+sends HTTP requests to the container. Installing it with pip does not install
+USGS ShakeMap on the host; the image build installs the calculation software.
+The current shared host package also installs its declared service libraries.
+
 ```bash
 # Install the host client and helpers into the active environment.
 python -m pip install -e .
@@ -35,8 +40,12 @@ checks succeed. Read its state before submitting work:
 ```bash
 shake-in-docker health
 shake-in-docker configurations
-make check CONFIGURATION=italy
+make check CONFIGURATION=global
 ```
+
+`health` must report `ready: true` before submissions. Repeat `make check` with
+the exact regional profile you intend to use; a profile name in the list means
+its directory exists, not that its calculation has been tested.
 
 `make start` starts an already-finalized deployment with matching image, mounts
 and settings. `make stop` stops it gracefully and preserves its runtime. Use the
@@ -90,7 +99,8 @@ Authoritative calculation output remains in
 
 ## Data and configurations
 
-Global VS30 and topography remain external, operator-owned files:
+Global VS30 (ground conditions) and topography (terrain for map drawing) remain
+external, operator-owned files:
 
 ```text
 runtime/shakemap/data/
@@ -104,7 +114,7 @@ runtime/shakemap/data/
 
 The data helper manages only the two global grids. `inspect` checks presence and
 readability; `validate` performs full pinned checksums. Both are read-only.
-`provision` reuses valid files or installs missing ones. Invalid or unexpected
+`provision` reuses valid files or downloads missing ones. Invalid or unexpected
 existing files are retained with an explanation and corrective action. Manual
 placement and explicit replacement staging are supported.
 
@@ -134,7 +144,9 @@ or scientific suitability. See [diagnostic details](docs/configuration.md#read-o
 Verification has three separate levels: host tests, installed image/module
 checks, and running-service checks. A successful build does not establish
 mounted-data readiness. Finalization runs a fixed global calculation before
-publishing readiness. To verify an already-running deployment:
+accepting ordinary calculations. Successful finalization is sufficient to finish
+that installation step. For an optional comprehensive recheck of an already-running
+deployment:
 
 ```bash
 # Install host test dependencies; this also installs the client and helpers.

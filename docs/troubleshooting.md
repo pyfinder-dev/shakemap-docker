@@ -2,14 +2,17 @@
 
 ## An asset is reported absent
 
-Confirm that the service mounted the intended exact tree:
+Check the runtime folder used by this service. In a combined installation, use
+`SHAKEMAP_RUNTIME_ROOT` from `deployment.env`; it points to
+`pyfinder-deploy/runtime`. From the service checkout, inspect that exact folder:
 
 ```bash
 ./scripts/manage-shakemap-data.sh inspect --runtime /path/to/runtime
 ```
 
-An empty disposable runtime proves only that its own data tree is empty. Use
-the same `RUNTIME_ROOT` for data helpers, finalization, startup, and verification.
+Replace `/path/to/runtime` with that path. A copy in another runtime or checkout
+does not satisfy this deployment. Use the same `RUNTIME_ROOT` for data helpers,
+finalization, startup and verification.
 The deployment does not accept a separate `--data` mount override.
 
 ## An asset is present but not validated

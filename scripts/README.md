@@ -22,8 +22,10 @@ may take time. `manage-shakemap-data.sh provision` reuses a valid existing asset
 and installs only a missing one. It never replaces an invalid or unexpected
 existing asset.
 
-Activate the project Python environment and install the package before running
-the build helper. The helper checks this prerequisite and never installs it:
+Activate the project Python environment and install the host tools before running
+the build helper. This pip command creates `shake-in-docker`, the HTTP client used
+to talk to the container; USGS ShakeMap is installed by the Docker build. The
+helper checks for these host tools but does not install them:
 
 ```bash
 python -m pip install -e .
@@ -32,7 +34,9 @@ python -m pip install -e .
 
 Before `verify-shakemap-deployment.sh` or `make verify`, install the host test
 dependencies with `python -m pip install -r requirements.txt`. That file also
-installs the client and helpers into the active environment.
+installs the client and helpers into the active environment. This comprehensive
+recheck is separate from ordinary installation: successful finalization already
+runs the container checks and supplied global calculation.
 
 Keep that environment active before running the data helper:
 

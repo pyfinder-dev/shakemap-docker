@@ -1,9 +1,10 @@
 # Configuration and external data
 
-The caller chooses a named configuration. Each service submission runs exactly
-that selection; omission means `global`. The service never infers a country from
-coordinates, substitutes another configuration, or retries the native calculation
-with different scientific settings.
+A profile tells USGS ShakeMap which scientific models, settings and datasets to
+use. Regional profiles are directories containing the five configuration files
+listed below. The caller names a profile when it submits a calculation; omission
+means `global`. The service runs that choice inside Docker. It does not select
+another profile from earthquake coordinates or retry with different settings.
 
 PyFinder owns a separate, bounded recovery policy: submit the requested region
 first, retain confirmed configuration-failure evidence, then make at most one new
@@ -170,12 +171,13 @@ native implementation does not guarantee a particular workload's speedup.
 
 ## Scientific ownership and provisioning
 
-The scientific owner chooses model branches, weights, datasets, geographic
-coverage and site treatment. Operators install those agreed assets and preserve
-their identities. ShakeMap validates and uses its native configuration during
-execution. The service owns safe materialization, one complete native attempt,
-and honest outcome reporting; it does not implement an independent scientific
-compatibility validator or configuration-loadability preflight.
+Use the model branches, weights, datasets, coverage and site treatment chosen for
+your workflow. If someone supplies the profile, obtain its referenced files and
+compatible model implementations from them. Record file versions and sources so
+the calculation can be reproduced. The service prepares a private copy of the
+selected files for each calculation, then USGS ShakeMap loads and uses them.
+Static checks can find missing prerequisites; a real calculation is still needed
+to test execution, and its scientific output must be reviewed for your use case.
 
 Image presets are immutable seed sources. Finalization copies only missing
 regional profile directories. Existing mounted copies are operator-owned and
@@ -204,8 +206,9 @@ For a standalone service runtime, run this from the service checkout:
   --runtime ./runtime
 ```
 
-`provision` explicitly installs missing global VS30/topography assets and reuses
-valid existing ones. It leaves invalid existing assets unchanged. The service
+`provision` downloads missing global VS30/topography files and reuses valid
+existing ones. It leaves invalid existing files unchanged. VS30 describes ground
+conditions; topography is used to draw maps. The service
 helper also accepts `--vs30-source`, `--topo-source`, and `--no-download` for
 manual imports, and `stage` validates replacements without publishing them.
 These commands currently do **not** provision regional grids, custom modules,
@@ -219,17 +222,120 @@ may stop the service or revoke readiness. They are not regional inspection
 commands. See [scripts](../scripts/README.md) and
 [deployment guidance](../../pyfinder-deploy/README.md).
 
-## Global, Italy and Switzerland prerequisites
+## Regional profile file checklist
 
-The shipped seeds describe scientific choices; they are not complete regional
-installations. Inspect the selected runtime and image rather than assuming data
-is present or absent from a seed directory listing.
+Global installation and regional scientific capability are separate. The two
+global grids below are installation inputs; missing optional regional files do
+not prevent global finalization or service startup. They do prevent an affected
+regional calculation from completing. The service reports that failure and keeps
+running; it never silently substitutes global.
 
-| Selection | Required configuration and assets | Installation limitation |
+Use this checklist to collect files from the profile's scientific owner. The
+tables describe the shipped seeds. Existing mounted profiles are authoritative
+and may already use different reviewed paths or model definitions. Inspect them
+with the running-service check before deciding that an asset is missing.
+
+### What installation already supplies
+
+Here `<RUNTIME_ROOT>` is the host runtime parent; in a combined deployment it is
+`pyfinder-deploy/runtime`. The container prefix is always `/home/sysop/runtime`.
+
+| Item | Host location | Container location | Who supplies it |
+|---|---|---|---|
+| Global VS30 | `<RUNTIME_ROOT>/shakemap/data/global/vs30/global_vs30.grd` | `/home/sysop/runtime/shakemap/data/global/vs30/global_vs30.grd` | Data helper downloads or imports the pinned USGS grid and verifies its checksum. |
+| Mapping topography | `<RUNTIME_ROOT>/shakemap/data/global/topo/topo_30sec.grd` | `/home/sysop/runtime/shakemap/data/global/topo/topo_30sec.grd` | Data helper downloads or imports the pinned USGS grid and verifies its checksum. Regional profiles can reference this same approved file. |
+| Five native files for each region | `<RUNTIME_ROOT>/shakemap/data/regional/<name>/{gmpe_sets,model,modules,products,select}.conf` | `/home/sysop/runtime/shakemap/data/regional/<name>/` | Finalization copies a missing seed directory. Existing copies remain operator-owned and are not updated. |
+| Release-matched native verification inputs | `<RUNTIME_ROOT>/shakemap/data/test/<resolved-version>/` | `/home/sysop/runtime/shakemap/data/test/<resolved-version>/` | Finalization's verification-data helper prepares the fixed package. This is test input, not regional science data. |
+| Mapping, STREC and Slab2 support | No separate host input required | `/opt/shakemap-support/` and installed native package data | Image build supplies the pinned support. It does not supply every regional grid, polygon or custom model. |
+
+The [global asset manifest](../shakemap_service/data/global-assets.json) records
+the two supported downloads and content identities. `provision` does not create
+the regional inputs in the next table.
+
+### Files named by each seed
+
+Every row also needs its five native files and mapping topography. Polygon names
+below are native selection inputs: each subsection in `select.conf [layers]`
+expects a file with that name plus `.wkt` in `layers.layer_dir`.
+
+The **common set** means `california.wkt`, `taiwan.wkt`, `japan.wkt`, `china.wkt`,
+`new_zealand.wkt`, `chile.wkt` and `europe_share.wkt`. Native `sm_profile` can copy
+release-bundled layers from the image; it does not collect extra regional polygons
+from beside the five files. Check which originals the installed release supplies.
+
+| Profile | `model.conf [data] vs30file`: intended grid basename | Required native WKT files | Additional model/site requirements |
+|---|---|---|---|
+| `albania` | `global_italy_vs30_clobber.grd` | `albania.wkt`, `scr.wkt`, `europe_share.wkt` | Release-compatible module mappings for the selected GMPE/GMICE/IPE/correlation branches. |
+| `belgium` | `global_italy_vs30_clobber.grd` | `mob.wkt`, `lgz.wkt`, `rvrs.wkt`, `belgium.wkt`, `europe_share.wkt` | Review selected `Fcea10` / `FaccioliEtAl2010`; its seed module path contains `openquake.hazrdlib`, which is not the intended installed package name. |
+| `croatia` | `global_italy_vs30_clobber.grd` | Common set | Release-compatible module mappings; retain this profile's scientific branches and weights. |
+| `france` | `global_italy_vs30_clobber.grd` | Common set | Release-compatible module mappings; its GMICE choices differ from Croatia/Slovenia. |
+| `greece` | `Hellas-geology_18-30_34-43_30s_NoNan.grd` | `greece.wkt`, `europe_share.wkt` | Compatible selected OpenQuake models, including the seed's `Bea20` / `BooreEtAl2020`, and native module mappings. |
+| `italy` | `global_italy_vs30_clobber.grd` | Common set plus `volcanic_italy.wkt`, `sicily_area.wkt`, `italy.wkt` | Compatible `OFM22` GMICE implementation for the branches that select it. |
+| `romania` | `global_italy_vs30_clobber.grd` | `carpathians.wkt`, `europe_share.wkt` | Release-compatible module mappings for the selected branches, including the Vrancea sets. |
+| `slovenia` | `global_italy_vs30_clobber.grd` | Common set | Release-compatible module mappings; retain this profile's scientific branches and weights. |
+| `switzerland` | `null_vs30.grd` | `swiss_foreland.wkt`, `swiss_alpine.wkt` | EF2013 Alpine/Foreland GMPE classes, compatible `FM11_CH`, and the intended generic amplification/site treatment described below. |
+
+Seven seeds name the same Italy-clobbered VS30 file. Its name is
+not permission to replace it with `global_vs30.grd`; the profile owner must confirm
+the intended grid, coverage and site treatment for each selection. For a newly
+added runtime profile, use its own five files and check report; this seed inventory
+does not define its requirements.
+
+### Where to put regional inputs and connect them
+
+The seeds' `/home/shake/shakemap_data/...` references are legacy container paths,
+not this deployment's mounts. A grid can already exist on the host while that
+reference still fails. Do not redownload it merely because the old path is missing.
+Use an approved file in the mounted data tree and deliberately update the named
+native key to its container-visible path; the service does not rewrite regional
+paths for you.
+
+| Input | Supported host placement | Native reference to review |
 |---|---|---|
-| `global` | Pinned global VS30 and topography, plus image support and a finalized native profile. | Image installation and file presence alone do not prove deployment readiness. Run finalization against the intended runtime. |
-| `italy` | The intended `global_italy_vs30_clobber.grd`, topography, complete selection polygons, and the OFM22 custom GMICE implementation. | The seed contains legacy absolute data paths and `<INSTALL_DIR>/data/layers`. The global helper does not provision its grid, polygons or custom module; those paths need explicit wiring and the module needs current-release compatibility checks. |
-| `switzerland` | EF2013 model branches, FM11_CH, Swiss selection polygons, and the intended generic amplification data and site treatment. | The seed references `null_vs30.grd` and enables generic amplification. The image does not supply FM11_CH and the service does not materialize regional amplification data. Site treatment remains unresolved; do not substitute a grid or constant to make the run finish. |
+| Shared regional VS30 grid | For example `<RUNTIME_ROOT>/shakemap/data/regional/global_italy_vs30_clobber.grd` | Set `model.conf [data] vs30file` to `/home/sysop/runtime/shakemap/data/regional/global_italy_vs30_clobber.grd` if this is the approved grid. Greece/Swiss grids need their own approved files and references. |
+| Existing global topography | `<RUNTIME_ROOT>/shakemap/data/global/topo/topo_30sec.grd` | `products.conf [products][mapping][layers] topography` uses `/home/sysop/runtime/shakemap/data/global/topo/topo_30sec.grd` when that is the intended mapping dataset. |
+| Original native polygons | `<RUNTIME_ROOT>/shakemap/data/regional/<name>/layers/<polygon>.wkt` | `select.conf [layers] layer_dir` can explicitly name `/home/sysop/runtime/shakemap/data/regional/<name>/layers`. Include every WKT named by that profile, including any common-set polygons it uses. |
+| Custom model implementation | Install the compatible package/module in the image | `modules.conf` declares the exact class and importable module, for example `OFM22, shakelib.gmice.ofm22` in the Italy seed. A `.py` beside `model.conf` is not installed or imported automatically. |
+
+Keep shared grids as regular files or under an existing profile directory. A new
+generic directory directly below `regional/` would be advertised as another
+profile. Preserve existing files and coordinate any deliberate profile updates
+with accepted work; do not edit a profile while a calculation may copy it.
+
+`<INSTALL_DIR>/data/layers` instead resolves within each calculation's private
+native installation. Placing WKT files beside a seed does not populate that
+directory. Use an explicit mounted `layer_dir` when appropriate, or establish a
+supported materialization change before relying on private-install assets.
+Likewise, Swiss `model.conf [modeling] apply_generic_amp_factors=true` expects
+the intended native amplification files under that private installation's
+`data/GenericAmpFactors`. The current service does not copy them there;
+placing files in a mounted directory alone does not enable that feature. This
+limitation applies to profiles that enable generic amplification, including this
+Swiss seed; it is not a requirement for every operator using a Swiss region.
+The seeds do not specify a complete amplification-file inventory or a validated
+replacement for `null_vs30.grd`: obtain the scientific owner's site-treatment,
+coverage, units and intensity-measure requirements before implementing that step.
+Do not manufacture a null/uniform grid or disable amplification just to pass.
+The Swiss seed also leaves `model.conf [modeling] gmice` unspecified; a static
+check reports that default/selection behavior as unknown even though
+`select.conf` names `FM11_CH`. Review the intended precedence with the profile
+owner rather than guessing a value to remove the finding.
+
+### Model compatibility and provenance
+
+The five native files, original polygons and regional datasets belong to the
+profile's scientific owner. Collect the intended release/source and integrity
+evidence; regional seeds do not contain a complete regional download/checksum
+manifest. The global-data helper cannot supply missing regional science assets.
+
+Older `shakelib.*` module references must match the installed native release.
+The current 4.5 image exposes standard modules through `esi_shakelib`, for example
+`esi_shakelib.gmice.ak07`, `esi_shakelib.gmice.wgrw12`,
+`esi_shakelib.correlation.loth_baker_2013` and `esi_shakelib.virtualipe`.
+Review the declared class/module pairs with the profile owner and rerun the
+installed-service check; namespace substitution alone does not establish class
+compatibility, scientific equivalence or a usable custom model. Unused custom
+aliases in a file do not establish that an event actually selects them.
 
 The upstream INGV sources provide
 [OFM22](https://github.com/INGV/shakemap/blob/f3632031a46e487f72b96dcb0df3657f4acdc2ea/ext/ofm22.py),
@@ -241,16 +347,47 @@ for this release. Preserve scientific coefficients, units and asset identities
 while establishing compatibility. Regional provisioning must record source and
 integrity evidence rather than silently accepting an arbitrary replacement.
 
-Swiss site treatment and amplification coverage, units and supported intensity
-measures require a bounded compatibility experiment. No uniform VS30 value is
-prescribed here, and uniform VS30 must not be used as proof of normal readiness.
-Successful global execution does not resolve these regional requirements.
+Swiss site treatment and amplification still require a bounded compatibility
+experiment. Successful global execution does not resolve regional requirements.
+
+### Check the selected profile and follow its findings
+
+From the **service checkout**, with the host client installed and service running:
+
+```bash
+# Replace italy with the exact profile you intend to use.
+make check CONFIGURATION=italy
+```
+
+From the **deployment checkout**, use the host CLI for one exact profile, or
+`make check` for the accumulated caller-routing assessment:
+
+```bash
+shake-in-docker --url http://127.0.0.1:9010 check --configuration italy
+make check
+```
+
+Use your configured host URL/port instead of the example when different. A
+`MISSING` path means check its exact namespace, mount and existing file before
+collecting another copy. A missing module means review the class/module mapping
+and installed package. `UNKNOWN`, including unmaterialized amplification, needs
+the stated compatibility or implementation decision. Rerun static checks after
+an explicit correction, then verify the intended regional native calculation
+separately. A static pass does not qualify its coverage or scientific output.
 
 ## Submission, evidence and corrective actions
 
-The caller's `PYFINDER_SHAKEMAP_CONFIGURATION` setting selects the initial profile;
-it defaults to `global`. It does not enable the listener. The deployment example
-keeps `PYFINDER_SHAKEMAP_ENABLED=false` as a separate activation decision.
+PyFinder's installed `regional-configurations` WKT catalog selects the initial
+profile from the selected solution's location. Its coverage WKT resources are
+separate from the native selection polygons listed above. Uncovered or unusable
+optional coverage uses global with diagnostics. The obsolete
+`PYFINDER_SHAKEMAP_CONFIGURATION` setting warns and is ignored; it does not force
+a service profile. The deployment example keeps `PYFINDER_SHAKEMAP_ENABLED=false`
+as a separate activation decision.
+Caller coverage resources come from the PyFinder checkout's
+`pyfinder/extern/shakemap_regional_wkt/` and are packaged in its image; changing
+them requires caller rebuild/redeployment, not placement in the service's
+`regional/<name>/layers/`. See [coverage authoring](../../pyfinder/docs/shakemap-region-coverage.md).
 The caller container uses its configured reachable service URL and canonical
 input path; the host CLI uses the host URL. See the
 [PyFinder adapter](../../pyfinder/docs/shakemap-adapter.md).

@@ -10,6 +10,12 @@ A responsive service returns HTTP 200 even when `ready=false`. A ready service
 returns `reason=null`. HTTP availability alone does not permit submissions:
 `POST /events` returns HTTP 503 while the service is not ready.
 
+`ready=true` means this deployment accepts calculations. If it is `false`, read
+`reason`, correct that error and rerun `make finalize` with the same runtime and
+settings. `make start` cannot complete a failed installation. See
+[readiness troubleshooting](troubleshooting.md#readiness-remains-false) and
+[permission recovery](permissions.md) for the corresponding errors.
+
 Readiness is recorded by successful finalization and checked against the
 current deployment identity. Missing, invalid, failed, or mismatching readiness
 records cannot authorize calculation admission. Normal startup does not rerun
@@ -25,6 +31,5 @@ evaluate scientific coverage. Data validation proves the scope reported by the
 data helper; a successful calculation proves the recorded inputs, selected
 configuration, module sequence, and product gates for that calculation only.
 
-Missing assets in an isolated runtime describe only that isolated runtime.
-Operators must inspect the exact mounted data tree before concluding that
-datasets are missing.
+When investigating missing data, inspect the runtime folder mounted by this
+service. A file in another runtime or checkout does not satisfy this deployment.
