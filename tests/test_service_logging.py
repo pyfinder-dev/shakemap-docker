@@ -161,7 +161,7 @@ for name in ('uvicorn', 'uvicorn.error', 'uvicorn.access', 'shakemap_service.mai
             "".join(call.args[0] for call in console.write.call_args_list),
         )
 
-    def _entrypoint(self, body: str) -> tuple[subprocess.Popen[str], Path]:
+    def _entrypoint(self, body: str, *, missing_shake: bool = False) -> tuple[subprocess.Popen[str], Path]:
         binary = self.root / "bin"
         binary.mkdir()
         fake = binary / "uvicorn"
@@ -177,6 +177,13 @@ for name in ('uvicorn', 'uvicorn.error', 'uvicorn.access', 'shakemap_service.mai
         # The host has no /app mount. Only that final working-directory change
         # is intercepted; the real entrypoint and safe logging module run.
         environment["BASH_FUNC_cd%%"] = '() { if [[ "$1" == /app ]]; then return 0; else builtin cd "$@"; fi; }'
+        if missing_shake:
+            # Exercise the diagnostic branch even on a host with ShakeMap
+            # installed, without replacing the entrypoint or logging module.
+            environment["BASH_FUNC_command%%"] = (
+                '() { if [[ "$1" == -v && "$2" == shake ]]; then return 1; '
+                'else builtin command "$@"; fi; }'
+            )
         process = subprocess.Popen(
             ["bash", str(PROJECT / "entrypoint.sh")],
             cwd=PROJECT,
@@ -189,12 +196,17 @@ for name in ('uvicorn', 'uvicorn.error', 'uvicorn.access', 'shakemap_service.mai
         return process, pid_file
 
     def test_entrypoint_persists_startup_and_preserves_exec_exit_code(self) -> None:
-        process, _ = self._entrypoint("echo 'uvicorn failure' >&2\nexit 23\n")
+        process, _ = self._entrypoint("echo 'uvicorn failure' >&2\nexit 23\n", missing_shake=True)
         stdout, stderr = process.communicate(timeout=10)
         self.assertEqual(process.returncode, 23)
         self.assertIn("uvicorn failure", stderr)
         self.assertIn("Starting shakemap_service", stdout)
-        self.assertIn("Starting shakemap_service", (paths.logs_dir() / "service.log").read_text())
+        persisted = (paths.logs_dir() / "service.log").read_text()
+        self.assertIn("Starting shakemap_service", persisted)
+        for text in (stdout, persisted):
+            self.assertIn("'shake' not found", text)
+            self.assertIn("make build COMPONENT=shakemap", text)
+            self.assertIn("API will still start for diagnostics", text)
 
     def test_exec_keeps_pid_and_term_delivery(self) -> None:
         process, pid_file = self._entrypoint(

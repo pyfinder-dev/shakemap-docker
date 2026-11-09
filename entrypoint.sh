@@ -87,6 +87,10 @@ if command -v shake >/dev/null 2>&1; then
     log_startup "[entrypoint] ShakeMap CLI found: $(command -v shake)"
 else
     log_startup "[entrypoint] WARNING: 'shake' not found on PATH. ShakeMap may not be installed correctly." WARNING
+    log_startup "[entrypoint] Native calculations cannot run without 'shake'. Rebuild the image on the host: "\
+"make build COMPONENT=shakemap in pyfinder-deploy, or make build in shakemap-docker." WARNING
+    log_startup "[entrypoint] Then follow image verification and explicit container replacement/finalization in "\
+"pyfinder-deploy/README.md or shakemap-docker/docs/quick-start.md. The API will still start for diagnostics." WARNING
 fi
 
 # [6/6] Start the FastAPI service
